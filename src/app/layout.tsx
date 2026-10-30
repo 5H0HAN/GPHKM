@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "GPHKM | Guest placement workspace",
-  description: "A clear workspace for guest placement orders and publication progress.",
+  title: "GPHKM | Guest placements, clearly managed",
+  description: "Find guest placement opportunities and follow every order through publication updates.",
 };
 
 export const viewport: Viewport = {

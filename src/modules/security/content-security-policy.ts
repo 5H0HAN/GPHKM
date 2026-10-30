@@ -5,10 +5,11 @@ export function buildContentSecurityPolicy(nonce: string, options: { development
   const stripeConnections = options.customerSurface
     ? " https://api.stripe.com https://r.stripe.com https://q.stripe.com https://m.stripe.network https://*.stripe.com https://*.stripe.network"
     : "";
+  const stylePolicy = options.development ? "style-src 'self' 'unsafe-inline'" : `style-src 'self' 'nonce-${nonce}'`;
   const directives = [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${options.development ? " 'unsafe-eval'" : ""}${stripeScript}`,
-    `style-src 'self' 'nonce-${nonce}'`,
+    stylePolicy,
     `connect-src 'self'${stripeConnections}`,
     `frame-src 'self'${stripeFrames}`,
     `img-src 'self' data: blob:${options.customerSurface ? " https://*.stripe.com https://*.stripe.network" : ""}`,

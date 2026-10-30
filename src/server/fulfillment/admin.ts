@@ -49,11 +49,13 @@ export async function listFulfillmentQueue(headers: Headers, requestedPage?: unk
       customerStatus: orderItemFulfillment.customerStatus,
       assignedAdminId: orderItemFulfillment.assignedAdminId,
       assignedAdminName: user.name,
+      fulfillmentSupplierId: orderItemFulfillmentSupplier.supplierId,
       nextUpdateAt: orderItemFulfillment.nextUpdateAt,
       updatedAt: orderItemFulfillment.updatedAt,
       createdAt: orderItemFulfillment.createdAt,
     }).from(orderItemFulfillment)
       .leftJoin(user, eq(user.id, orderItemFulfillment.assignedAdminId))
+      .leftJoin(orderItemFulfillmentSupplier, eq(orderItemFulfillmentSupplier.orderItemId, orderItemFulfillment.orderItemId))
       .where(filter)
       .orderBy(asc(orderItemFulfillment.nextUpdateAt), desc(orderItemFulfillment.updatedAt), asc(orderItemFulfillment.orderItemId))
       .limit(FULFILLMENT_QUEUE_PAGE_SIZE).offset(pagination.offset);

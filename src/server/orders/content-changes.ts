@@ -72,7 +72,11 @@ export async function submitContentChangeRequest(headers: Headers, organizationI
   if (!validId(itemId) || !organizationId || organizationId.length > 128) throw new Error("Order item unavailable");
   const actor = await requireVerifiedCustomer(headers);
   return withProtectedOrganizationContext(headers, organizationId, async (tx) => {
-    const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, itemId)).for("update").limit(1);
+    // The customer can read this row but intentionally has no UPDATE privilege,
+    // so SELECT FOR UPDATE is filtered by the staff-only UPDATE policy. The
+    // insert trigger locks the same row and revalidates the pre-handoff state,
+    // serializing this request with handoff without weakening customer RLS.
+    const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, itemId)).limit(1);
     const [item] = await tx.select({ orderId: customerOrder.id, organizationId: customerOrder.organizationId, ordererId: customerOrder.actorUserId, writingSelected: customerOrderItem.writingSelected })
       .from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
       .where(and(eq(customerOrderItem.id, itemId), eq(customerOrder.organizationId, organizationId))).limit(1);
@@ -112,7 +116,11 @@ export async function reviewContentChangeRequest(headers: Headers, requestId: st
     await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
     const [request] = await tx.select().from(orderItemContentChangeRequest).where(eq(orderItemContentChangeRequest.id, requestId)).limit(1);
     if (!request) throw new Error("Change request unavailable");
-    const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, request.orderItemId)).for("update").limit(1);
+    // The database trigger locks and revalidates fulfillment before accepting
+    // the consent event. Customer SELECT FOR UPDATE cannot pass the staff-only
+    // UPDATE policy, so use the scoped read here and keep the trigger as the
+    // concurrency boundary.
+    const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, request.orderItemId)).limit(1);
     if (!fulfillment || !mayReadFulfillmentContent({ role: actor.role, userId: actor.userId, assignedAdminId: fulfillment.assignedAdminId })) throw new Error("Change request unavailable");
     if (!mayRequestContentChange({ requesterId: request.requestedByUserId, ordererId: request.requestedByUserId, handedOffAt: fulfillment.handedOffAt, state: fulfillment.state })) throw new Error("Review is closed after handoff");
     const events = await latestRequestEvents(tx, requestId);
@@ -158,7 +166,10 @@ export async function consentToContentChange(headers: Headers, organizationId: s
   return withProtectedOrganizationContext(headers, organizationId, async (tx) => {
     const [request] = await tx.select().from(orderItemContentChangeRequest).where(eq(orderItemContentChangeRequest.id, requestId)).limit(1);
     if (!request || request.requestedByUserId !== actor.userId) throw new Error("Content consent is unavailable");
-    const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, request.orderItemId)).for("update").limit(1);
+    // The consent-event trigger locks this fulfillment row and rechecks that
+    // handoff has not started. Keep the customer command on a read-only RLS
+    // path and retain the serialization guard at the database boundary.
+    const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, request.orderItemId)).limit(1);
     if (!fulfillment || fulfillment.handedOffAt || ["IN_FULFILLMENT", "PUBLICATION_PENDING", "EVIDENCE_REVIEW", "COMPLETED", "CANCELED_REFUNDED"].includes(fulfillment.state)) throw new Error("Content consent is closed after handoff");
     const events = await latestRequestEvents(tx, requestId);
     if (contentChangeStatus(events) !== "APPROVED_AWAITING_CONSENT" || !events[0]?.versionId) throw new Error("No approved content version is awaiting consent");

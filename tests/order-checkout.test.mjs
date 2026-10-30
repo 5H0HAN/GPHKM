@@ -53,14 +53,14 @@ test("customer order projection exposes only customer-facing fields", () => {
   assert.equal("websiteUrl" in result.items[0].listing, false);
 });
 
-test("order checkout snapshots versioned commercial disclosures and binds them to idempotency", () => {
+test("order checkout binds commercial disclosure versions to idempotency without mixing them into listing snapshots", () => {
   const service = readFileSync(new URL("../src/server/orders/checkout.ts", import.meta.url), "utf8");
   assert.match(service, /PLACEMENT_DISCLOSURE_VERSION/);
   assert.match(service, /WRITING_REFUND_DISCLOSURE_VERSION/);
-  assert.match(service, /placementDisclosureVersion: PLACEMENT_DISCLOSURE_VERSION/);
-  assert.match(service, /writingRefundDisclosureVersion: useWriting \? WRITING_REFUND_DISCLOSURE_VERSION : null/);
   assert.match(service, /requestDigest[\s\S]*placementDisclosureVersion: PLACEMENT_DISCLOSURE_VERSION/);
   assert.match(service, /requestDigest[\s\S]*writingRefundDisclosureVersion: item\.useWriting === true \? WRITING_REFUND_DISCLOSURE_VERSION : null/);
+  const snapshot = service.split("function listingSnapshot")[1].split("export async function createWalletFundedOrder")[0];
+  assert.doesNotMatch(snapshot, /placementDisclosureVersion|writingRefundDisclosureVersion/);
 });
 
 const orderWithStatuses = (...statuses) => ({

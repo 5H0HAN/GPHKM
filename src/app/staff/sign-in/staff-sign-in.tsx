@@ -7,9 +7,10 @@ import { staffAuthClient } from "@/auth/staff-client";
 import SignInForm from "../../sign-in/sign-in-form";
 import styles from "./sign-in.module.css";
 
-export function StaffSignIn({ session, localEnabled, googleEnabled }: {
+export function StaffSignIn({ session, localEnabled, localMfaDisabled, googleEnabled }: {
   session: { email: string; twoFactorEnabled: boolean } | null;
   localEnabled: boolean;
+  localMfaDisabled: boolean;
   googleEnabled: boolean;
 }) {
   if (session && !session.twoFactorEnabled) return <StaffMfaSetup />;
@@ -18,7 +19,7 @@ export function StaffSignIn({ session, localEnabled, googleEnabled }: {
     <p className={styles.note}>Use your authenticator to verify this staff session.</p>
     <Link href="/staff/sign-in/verify" className={styles.link}>Continue to verification</Link>
   </>;
-  return <SignInForm localEnabled={localEnabled} googleEnabled={googleEnabled} returnTo="/staff" surface="staff" />;
+  return <SignInForm localEnabled={localEnabled} localMfaDisabled={localMfaDisabled} googleEnabled={googleEnabled} returnTo="/staff" surface="staff" />;
 }
 
 function StaffMfaSetup() {

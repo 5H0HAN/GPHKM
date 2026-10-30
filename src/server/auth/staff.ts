@@ -8,6 +8,7 @@ import { getAuthForSurface } from "./index";
 import { resolveAuthSurface } from "./surfaces";
 import { assertStaffPermission, hasStaffPermission, type StaffPermission, type StaffRole } from "../identity/policy";
 import { logSafeEvent } from "@/server/observability/safe-log";
+import { localStaffMfaDisabled } from "./policy";
 
 export type StaffActor = {
   userId: string;
@@ -17,6 +18,7 @@ export type StaffActor = {
 
 export async function requireStaffAccess(headers: Headers, permission: StaffPermission): Promise<StaffActor> {
   const requestId = randomUUID();
+  const skipLocalMfaProof = localStaffMfaDisabled(process.env);
   if (resolveAuthSurface(headers, process.env) !== "staff") {
     logSafeEvent("staff_authorization_denied", requestId, { permission, surface: "wrong_surface", reasonCode: "WRONG_AUTH_SURFACE" });
     throw new Error("Unauthorized");
@@ -31,7 +33,11 @@ export async function requireStaffAccess(headers: Headers, permission: StaffPerm
     await tx.execute(sql`select set_config('app.user_id', ${authenticated.user.id}, true)`);
     const [staffRow] = await tx.select({ role: staffAccount.role, active: staffAccount.active })
       .from(staffAccount).where(eq(staffAccount.userId, authenticated.user.id)).limit(1);
-    if (!staffRow || !staffRow.active || !authenticated.user.twoFactorEnabled) return { staff: null, verifiedSession: null };
+    const hasVerifiedFactor = "twoFactorEnabled" in authenticated.user && authenticated.user.twoFactorEnabled === true;
+    if (!staffRow || !staffRow.active || (!skipLocalMfaProof && !hasVerifiedFactor)) {
+      return { staff: null, verifiedSession: null };
+    }
+    if (skipLocalMfaProof) return { staff: staffRow, verifiedSession: { sessionId: authenticated.session.id } };
     const [proof] = await tx.select({ sessionId: staffMfaSession.sessionId })
       .from(staffMfaSession)
       .where(and(

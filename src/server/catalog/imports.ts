@@ -21,11 +21,14 @@ export type StageInventoryInput = {
   file?: { name: string; bytes: Buffer };
   sheetReference?: string;
   sheetIndex?: number;
+  headerRowNumber?: number;
   mapping: ImportMapping;
 };
 
 export async function stageInventoryImport(headers: Headers, input: StageInventoryInput) {
   await requireStaffAccess(headers, "supplier.manage");
+  const headerRowNumber = input.headerRowNumber ?? 1;
+  if (!Number.isInteger(headerRowNumber) || headerRowNumber < 1 || headerRowNumber > 100) throw new Error("IMPORT_HEADER_ROW_INVALID");
   let parsed;
   let content: Buffer;
   let sourceReference: string | null = null;
@@ -50,7 +53,7 @@ export async function stageInventoryImport(headers: Headers, input: StageInvento
   const sheetIndex = input.sourceType === "XLSX" ? input.sheetIndex ?? 0 : 0;
   if (!Number.isInteger(sheetIndex) || sheetIndex < 0 || sheetIndex >= parsed.length) throw new Error("IMPORT_SHEET_INVALID");
   const sheet = parsed[sheetIndex];
-  const mapping = buildImportMapping(sheet.rows[0] ?? [], input.mapping);
+  const mapping = buildImportMapping(sheet.rows[headerRowNumber - 1] ?? [], input.mapping);
   const contentSha256 = createHash("sha256").update(content).digest("hex");
   const batchId = randomUUID();
   const sourceObjectKey = await savePrivateFile(content);
@@ -61,10 +64,11 @@ export async function stageInventoryImport(headers: Headers, input: StageInvento
     const [supplierRow] = await tx.select({ id: supplier.id }).from(supplier).where(eq(supplier.id, input.supplierId)).limit(1);
     if (!supplierRow) throw new Error("Supplier unavailable");
     const existingListings = await tx.select({ id: listingUrl.listingId, websiteUrl: listingUrl.websiteUrl }).from(listingUrl);
-    const candidates = stageImportRows({ rows: sheet.rows, mapping, existingListings });
+    const candidates = stageImportRows({ rows: sheet.rows, mapping, existingListings, headerRowNumber });
     await tx.insert(catalogImportBatch).values({
       id: batchId, supplierId: input.supplierId, sourceType: input.sourceType, sourceReference,
-      sourceFilename, sourceObjectKey, sourceBytes: content.byteLength, contentSha256, mapping: mapping as Record<string, number>, createdByUserId: userId,
+      sourceFilename, sourceObjectKey, sourceBytes: content.byteLength, contentSha256,
+      mapping: { ...mapping, __headerRowNumber: headerRowNumber }, createdByUserId: userId,
     });
     const stagedRows = candidates.map((candidate) => {
       const row = sheet.rows[candidate.rowNumber - 1] ?? [];

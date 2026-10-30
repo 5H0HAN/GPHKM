@@ -11,6 +11,7 @@ export type CustomerApprovedContent = Readonly<{
 export function ContentChangeForm(props: {
   organizationId: string;
   itemId: string;
+  canAct: boolean;
   writingSelected: boolean;
   writingStopped?: boolean;
   targetUrl: string;
@@ -25,7 +26,7 @@ export function ContentChangeForm(props: {
       <dl><dt>Target URL</dt><dd>{props.targetUrl}</dd><dt>Anchor text</dt><dd>{props.anchorText}</dd></dl>
       {props.articleText && <><h4>{props.writingSelected ? "Approved GPHKM Writing article" : "Current article"}</h4><pre>{props.articleText}</pre></>}
     </details>
-    {props.canRequest ? <form action={submitContentChangeAction}>
+    {props.canRequest && props.canAct ? <form action={submitContentChangeAction}>
       <input type="hidden" name="organizationId" value={props.organizationId} />
       <input type="hidden" name="itemId" value={props.itemId} />
       <input type="hidden" name="writingSelected" value={String(props.writingSelected)} />
@@ -35,7 +36,7 @@ export function ContentChangeForm(props: {
       {(!props.writingSelected || props.writingStopped) && <label>{props.writingStopped ? "Your complete article" : "Article"}<textarea name="articleText" maxLength={20000} rows={12} required={props.writingStopped} placeholder={props.writingStopped ? "Paste the article you want GPHKM to review" : "Leave blank to keep the current article"} /></label>}
       <label>Publication instructions<textarea name="instructions" maxLength={4000} rows={4} placeholder="Optional text instructions; leave blank to keep the current instructions" /></label>
       <button type="submit">Submit for review</button>
-    </form> : <p>Content changes are unavailable while this order item is under review or after fulfillment has started.</p>}
+    </form> : <p>{props.canAct ? "Content changes are unavailable while this order item is under review or after fulfillment has started." : "Only the person who placed this order can request a content change."}</p>}
     {props.approvedChange && <div>
       <h4>Review approved content, version {props.approvedChange.content.version}</h4>
       <dl>
@@ -45,11 +46,11 @@ export function ContentChangeForm(props: {
       {props.approvedChange.content.articleText !== null && <><h5>Article to share</h5><pre>{props.approvedChange.content.articleText}</pre></>}
       {props.approvedChange.content.instructions && <><h5>Publication instructions</h5><pre>{props.approvedChange.content.instructions}</pre></>}
       <p>By confirming, you authorize GPHKM to share this exact approved content and the placement instructions with the publication partner that will fulfill your order. Your personal, account, organization, billing, and payment details are not shared.</p>
-      <form action={consentToContentChangeAction}>
+      {props.canAct ? <form action={consentToContentChangeAction}>
         <input type="hidden" name="organizationId" value={props.organizationId} />
         <input type="hidden" name="requestId" value={props.approvedChange.requestId} />
         <button type="submit">Approve sharing this version</button>
-      </form>
+      </form> : <p>Only the person who placed this order can approve sharing a revised version.</p>}
     </div>}
   </section>;
 }

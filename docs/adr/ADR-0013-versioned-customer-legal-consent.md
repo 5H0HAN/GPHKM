@@ -12,7 +12,7 @@ Customer onboarding and protected actions require consent to the current Terms a
 
 - Configure the published Terms and Privacy URLs and immutable document versions through `GPHKM_TERMS_URL`, `GPHKM_PRIVACY_URL`, `GPHKM_TERMS_VERSION`, and `GPHKM_PRIVACY_VERSION`.
 - Local development may use the development-only, explicitly nonbinding placeholder pages to exercise the consent flow. Those routes return 404 outside development and never satisfy a production legal launch gate.
-- Fail closed for public customer Google sign-in and customer protected actions when any value is missing or invalid.
+- Fail closed for public customer signup (Google or email/password) and customer protected actions when any value is missing or invalid.
 - Require an explicit checkbox at first organization onboarding. Re-prompt existing customers when either version or URL no longer matches acceptance evidence.
 - Store acceptance by customer user, document versions and URLs, server timestamp, and actor. Keep acceptance append-only; a new document version creates a new acceptance record.
 - Keep newsletter consent separate. Local test credential authentication remains available only under the existing local-development opt-in.
