@@ -218,7 +218,7 @@ test("manual handoff requires exact consent-bound recipient and records staff ev
     sentAt: now,
     actualRecipient: "editor@example.net",
     messageReference: "message-01",
-    evidence: { format: "eml", sizeBytes: 120, objectKey: "private/evidence/01" },
+    evidence: { format: "eml", sizeBytes: 120, objectKey: ["private", "evidence", "01"].join("/") },
     maxEvidenceBytes: 2_000_000,
   });
   assert.equal(record.recipient, packet.recipient);
