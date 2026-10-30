@@ -20,7 +20,7 @@
     "worker:notifications": "node --env-file=.env scripts/customer-notification-worker.ts"
   },
   "dependencies": {
-    "@stripe/react-stripe-js": "7.0.0",
+    "@stripe/react-stripe-js": "7.0.1",
     "@stripe/stripe-js": "10.2.0",
     "better-auth": "1.7.14",
     "drizzle-orm": "0.45.4",
