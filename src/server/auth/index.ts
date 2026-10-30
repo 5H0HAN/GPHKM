@@ -7,9 +7,10 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { normalizeDisplayName } from "@/server/identity/policy";
-import { assertLoopbackUrl, authTrustedProxyCidrs, hasStrongAuthSecret, localAuthEnabled, requiredEnv } from "./policy";
+import { assertLoopbackUrl, authTrustedProxyCidrs, hasStrongAuthSecret, localAuthEnabled, localStaffMfaDisabled, requiredEnv } from "./policy";
 import { authSurfaceOrigins, type AuthSurface } from "./surfaces";
 import { currentLegalDocuments } from "@/modules/legal/policy";
+import { customerAuthEmailAvailable, sendCustomerAuthEmailInBackground } from "./email-delivery";
 
 const CUSTOMER_SESSION_REVOCATION_PATHS = new Set([
   "/revoke-session",
@@ -20,6 +21,8 @@ const CUSTOMER_SESSION_FRESH_AGE_MS = 10 * 60 * 1000;
 
 function createAuth(surface: AuthSurface) {
   const local = localAuthEnabled(process.env);
+  const publicCustomerCredentials = surface === "customer" && process.env.NODE_ENV !== "development" && customerAuthEmailAvailable();
+  const localMfaDisabled = surface === "staff" && localStaffMfaDisabled(process.env);
   const origins = authSurfaceOrigins(process.env);
   const baseURL = origins[surface];
   let url: URL;
@@ -56,16 +59,35 @@ function createAuth(surface: AuthSurface) {
     baseURL,
     trustedOrigins: [url.origin],
     database: drizzleAdapter(db, { provider: "pg", schema: authSchema, transaction: true }),
-    emailAndPassword: { enabled: local, disableSignUp: true, requireEmailVerification: true, minPasswordLength: 16 },
+    emailAndPassword: {
+      enabled: local || surface === "customer",
+      disableSignUp: surface === "staff" || !publicCustomerCredentials,
+      requireEmailVerification: true,
+      minPasswordLength: 16,
+      revokeSessionsOnPasswordReset: true,
+      sendResetPassword: surface === "customer" ? async ({ user, token }) => {
+        const resetUrl = new URL("/sign-in/reset-password", baseURL);
+        resetUrl.hash = new URLSearchParams({ token }).toString();
+        sendCustomerAuthEmailInBackground({ to: user.email, subject: "Reset your GPHKM password", text: `Use this one-time link to reset your GPHKM password:\n\n${resetUrl.toString()}\n\nIf you did not request this, ignore this email. The link expires automatically.` });
+      } : undefined,
+    },
+    emailVerification: surface === "customer" ? {
+      sendOnSignUp: publicCustomerCredentials,
+      sendOnSignIn: publicCustomerCredentials,
+      autoSignInAfterVerification: true,
+      sendVerificationEmail: async ({ user, url }) => {
+        sendCustomerAuthEmailInBackground({ to: user.email, subject: "Verify your GPHKM email", text: `Verify your email address to continue setting up your GPHKM account:\n\n${url}\n\nIf you did not create this account, ignore this email.` });
+      },
+    } : undefined,
     socialProviders: googleId && googleSecret ? { google: { clientId: googleId, clientSecret: googleSecret } } : {},
     account: { accountLinking: { enabled: false } },
     session: { freshAge: 10 * 60, cookieCache: { enabled: false } },
     rateLimit: { enabled: true, storage: "database", modelName: "rateLimit" },
     advanced: { ipAddress: { ipAddressHeaders: ["x-forwarded-for"], trustedProxies } },
     // Staff must verify MFA every session; trusted-device bypass is deliberately expired immediately.
-    plugins: [twoFactor({ issuer: "GPHKM", trustDeviceMaxAge: 0 })],
+    plugins: localMfaDisabled ? [] : [twoFactor({ issuer: "GPHKM", trustDeviceMaxAge: 0 })],
     // No public credential provisioning, password recovery email transport, or MFA removal in this slice.
-    disabledPaths: ["/sign-up/email", "/two-factor/disable", "/delete-user", "/change-email", "/set-password", "/request-password-reset", "/reset-password"],
+    disabledPaths: ["/two-factor/disable", "/delete-user", "/change-email", "/set-password", ...(surface === "staff" ? ["/request-password-reset", "/reset-password"] : [])],
     hooks: {
       before: createAuthMiddleware(async (context) => {
         if (surface === "customer" && CUSTOMER_SESSION_REVOCATION_PATHS.has(context.path)) {
@@ -106,6 +128,10 @@ function createAuth(surface: AuthSurface) {
           }
         }
         if (surface === "customer" && context.path === "/sign-in/social") {
+          try { currentLegalDocuments(process.env); }
+          catch { throw APIError.from("SERVICE_UNAVAILABLE", { code: "CUSTOMER_REGISTRATION_UNAVAILABLE", message: "Customer registration is temporarily unavailable" }); }
+        }
+        if (surface === "customer" && context.path === "/sign-up/email") {
           try { currentLegalDocuments(process.env); }
           catch { throw APIError.from("SERVICE_UNAVAILABLE", { code: "CUSTOMER_REGISTRATION_UNAVAILABLE", message: "Customer registration is temporarily unavailable" }); }
         }
@@ -152,5 +178,6 @@ const instances: Partial<Record<AuthSurface, ReturnType<typeof createAuth>>> = {
 export function getAuthForSurface(surface: AuthSurface) {
   // Recheck even with a cached instance: the local opt-in must never run outside development.
   localAuthEnabled(process.env);
+  localStaffMfaDisabled(process.env);
   return instances[surface] ??= createAuth(surface);
 }

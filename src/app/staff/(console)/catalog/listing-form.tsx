@@ -17,8 +17,9 @@ const flags = [
 const dollars = (cents: number | string | null) => cents === null ? "" : (Number(cents) / 100).toFixed(2);
 const triState = (value: boolean | null) => value === true ? "yes" : value === false ? "no" : "unset";
 
-export function ListingForm({ suppliers, listing, action, children }: {
+export function ListingForm({ suppliers, listing, action, children, initialSupplierId, initialCommercialSource }: {
   suppliers: SupplierRows; listing?: ListingEdit; action: (formData: FormData) => void | Promise<void>; children: ReactNode;
+  initialSupplierId?: string; initialCommercialSource?: "PLATFORM_OWNED" | "SUPPLIER_SOURCED";
 }) {
   const terms = listing?.terms;
   return <form action={action} className={styles.listingForm}>
@@ -45,8 +46,8 @@ export function ListingForm({ suppliers, listing, action, children }: {
     </fieldset>
     <fieldset><legend>Internal sourcing</legend>
       <div className={styles.formGrid}>
-        <label>Commercial source<select name="commercialSource" defaultValue={listing?.sourcing.commercialSource ?? "PLATFORM_OWNED"}><option value="PLATFORM_OWNED">Platform owned</option><option value="SUPPLIER_SOURCED">Supplier sourced</option></select></label>
-        <label>Source supplier<select name="supplierId" defaultValue={listing?.sourcing.supplierId ?? ""}><option value="">Choose if supplier sourced</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>
+        <label>Commercial source<select name="commercialSource" defaultValue={listing?.sourcing.commercialSource ?? initialCommercialSource ?? "PLATFORM_OWNED"}><option value="PLATFORM_OWNED">Platform owned</option><option value="SUPPLIER_SOURCED">Supplier sourced</option></select></label>
+        <label>Source supplier<select name="supplierId" defaultValue={listing?.sourcing.supplierId ?? initialSupplierId ?? ""}><option value="">Choose if supplier sourced</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>
         <label>Fulfillment supplier (optional)<select name="fulfillmentSupplierId" defaultValue={listing?.sourcing.fulfillmentSupplierId ?? ""}><option value="">None</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>
         <label>Show website URL during allowed browsing?<select name="urlVisibleWithoutRecharge" defaultValue={listing?.sourcing.urlVisibleWithoutRecharge ? "yes" : "no"}><option value="no">No, keep hidden</option><option value="yes">Yes</option></select></label>
       </div>

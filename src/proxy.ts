@@ -28,17 +28,36 @@ export function proxy(request: NextRequest) {
   try {
     origins = authSurfaceOrigins(process.env);
   } catch {
-    return process.env.NODE_ENV === "production"
-      ? new NextResponse("Application host configuration is unavailable", { status: 503 })
-      : NextResponse.next();
+    if (process.env.NODE_ENV === "production") {
+      return new NextResponse("Application host configuration is unavailable", { status: 503 });
+    }
+    const path = request.nextUrl.pathname;
+    if (path === "/" || path.startsWith("/api/") || path.startsWith("/_next/") || path === "/favicon.ico") {
+      return NextResponse.next();
+    }
+    return new NextResponse("Customer and staff hostnames are not configured", { status: 404 });
   }
 
   const host = request.headers.get("host");
   const surface = host ? authSurfaceForHost(host, origins) : null;
   if (!surface) {
-    return process.env.NODE_ENV === "production"
-      ? new NextResponse("Not found", { status: 404 })
-      : NextResponse.next();
+    if (process.env.NODE_ENV === "production") return new NextResponse("Not found", { status: 404 });
+
+    const pathname = request.nextUrl.pathname;
+    if (pathname.startsWith("/api/") || pathname.startsWith("/_next/") || pathname === "/favicon.ico") {
+      return NextResponse.next();
+    }
+    if (pathname === "/") return pageResponse(request, "customer");
+
+    const destination = pathname.startsWith("/staff")
+      ? origins.staff
+      : pathname.startsWith("/customer") || pathname.startsWith("/sign-in") || pathname.startsWith("/invitations/")
+        ? origins.customer
+        : null;
+    if (!destination) return NextResponse.redirect(new URL("/", request.nextUrl));
+
+    const target = new URL(`${pathname}${request.nextUrl.search}`, destination);
+    return NextResponse.redirect(target);
   }
 
   const pathname = request.nextUrl.pathname;
@@ -47,7 +66,7 @@ export function proxy(request: NextRequest) {
   }
 
   if (surface === "customer") {
-    if (pathname === "/sign-in" || pathname === "/invitations/accept" || pathname.startsWith("/customer")) return pageResponse(request, surface);
+    if (pathname.startsWith("/sign-in") || pathname === "/invitations/accept" || pathname.startsWith("/customer")) return pageResponse(request, surface);
     const target = request.nextUrl.clone();
     target.pathname = pathname === "/" ? "/customer" : `/customer${pathname}`;
     return pageResponse(request, surface, target);

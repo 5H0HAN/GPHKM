@@ -13,7 +13,8 @@ export async function preparePacketsAction(form: FormData) {
   try { packetIds = await prepareSupplierPackets(await headers(), orderId, itemIds); }
   catch { redirect(`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&error=prepare`); }
   if (!packetIds.length) redirect(`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&error=empty`);
-  redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetIds[0])}?prepared=${packetIds.length}`);
+  const preparedIds = encodeURIComponent(packetIds.join(","));
+  redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetIds[0])}?preparedIds=${preparedIds}`);
 }
 
 export async function sendSupplierPacketAction(form: FormData) {

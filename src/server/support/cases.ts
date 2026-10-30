@@ -10,6 +10,7 @@ import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganiza
 import { assertSupportTransition, customerSupportProjection, financeOutcome, supportState, supportText, type SupportAudience } from "@/modules/support/cases";
 import { staffCatalogPagination } from "@/modules/catalog/pagination";
 import { decodeSupportEventCursor, encodeSupportEventCursor } from "@/modules/support/event-cursor";
+import { logSafeFailure } from "@/server/observability/safe-log";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function identity(value: string) { if (!UUID.test(value)) throw new Error("Support request is unavailable"); return value; }
@@ -48,7 +49,7 @@ async function appendHistory(tx: DbTransaction, input: {
   return true;
 }
 
-async function audit(tx: DbTransaction, row: CaseRow, actorUserId: string, action: string, result: string) {
+async function audit(tx: DbTransaction, row: Pick<CaseRow, "id" | "organizationId">, actorUserId: string, action: string, result: string) {
   await appendAuditEvent(tx, { organizationId: row.organizationId, actorUserId, action, targetType: "SUPPORT_CASE", targetId: row.id, metadata: { result } });
 }
 
@@ -57,27 +58,42 @@ export async function openCustomerSupportCase(headers: Headers, organizationId: 
   const summary = supportText(input.summary, 2000);
   const actor = await requireVerifiedCustomer(headers);
   const requestHash = digest({ orderItemId: input.orderItemId, summary });
-  return withProtectedOrganizationContext(headers, organizationId, async (tx) => {
+  const requestId = randomUUID();
+  let stage = "order_item_scope";
+  try { return await withProtectedOrganizationContext(headers, organizationId, async (tx) => {
+    // PostgreSQL ON CONFLICT performs checks against RLS-hidden rows and can
+    // reject this insert for the restricted runtime role. Serialize by the
+    // scoped idempotency key, then use an ordinary insert under customer RLS.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
+      'gphkm:support-open:' || ${organizationId} || ':' || ${actor.userId} || ':' || ${input.idempotencyKey}, 0))`);
+    const [prior] = await tx.select().from(supportCase).where(and(eq(supportCase.organizationId, organizationId),
+      eq(supportCase.openedByUserId, actor.userId), eq(supportCase.idempotencyKey, input.idempotencyKey))).limit(1);
+    if (prior) {
+      if (prior.requestHash !== requestHash) throw new Error("Support action idempotency conflict");
+      return { caseId: prior.id };
+    }
     const [item] = await tx.select({ orderId: customerOrder.id }).from(customerOrderItem)
       .innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
       .where(and(eq(customerOrderItem.id, input.orderItemId), eq(customerOrder.organizationId, organizationId), eq(customerOrder.checkoutState, "PAID"))).limit(1);
     if (!item) throw new Error("Order item is unavailable");
-    const [created] = await tx.insert(supportCase).values({
-      id: randomUUID(), organizationId, orderId: item.orderId, orderItemId: input.orderItemId,
+    stage = "case_insert";
+    const caseId = randomUUID();
+    const inserted = await tx.insert(supportCase).values({
+      id: caseId, organizationId, orderId: item.orderId, orderItemId: input.orderItemId,
       openedByUserId: actor.userId, summary, idempotencyKey: input.idempotencyKey, requestHash,
-    }).onConflictDoNothing({ target: [supportCase.organizationId, supportCase.openedByUserId, supportCase.idempotencyKey] }).returning();
-    if (!created) {
-      const [prior] = await tx.select().from(supportCase).where(and(eq(supportCase.organizationId, organizationId),
-        eq(supportCase.openedByUserId, actor.userId), eq(supportCase.idempotencyKey, input.idempotencyKey))).limit(1);
-      if (!prior || prior.requestHash !== requestHash) throw new Error("Support action idempotency conflict");
-      return { caseId: prior.id };
-    }
-    await tx.insert(supportCaseEvent).values({ id: randomUUID(), caseId: created.id, actorUserId: actor.userId,
+    });
+    if (inserted.rowCount !== 1) throw new Error("Support request could not be recorded");
+    stage = "opening_event_insert";
+    await tx.insert(supportCaseEvent).values({ id: randomUUID(), caseId, actorUserId: actor.userId,
       actorKind: "CUSTOMER", kind: "OPENED", audience: "INTERNAL", body: summary, toState: "OPEN",
       idempotencyKey: input.idempotencyKey, requestHash });
-    await audit(tx, created, actor.userId, "SUPPORT_CASE_OPENED", "OPEN");
-    return { caseId: created.id };
-  });
+    stage = "audit_insert";
+    await audit(tx, { id: caseId, organizationId }, actor.userId, "SUPPORT_CASE_OPENED", "OPEN");
+    return { caseId };
+  }); } catch (error) {
+    logSafeFailure("customer_support_open_failed", error, requestId, { actorId: actor.userId, organizationId, reasonCode: stage });
+    throw error;
+  }
 }
 
 export async function listCustomerSupportCases(headers: Headers, organizationId: string, requestedPage?: unknown) {

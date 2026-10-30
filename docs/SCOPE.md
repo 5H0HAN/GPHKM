@@ -8,8 +8,9 @@ V1 establishes a secure catalog-to-publication loop for customer organizations a
 
 ### Customer experience
 
+- A public, unauthenticated one-page product site with a single customer sign-in/create-account entry; it does not expose the catalog or staff sign-in.
 - Customer app and sign-in use a dedicated customer subdomain.
-- Verified sign-in, profile and security settings, revocable sessions, and Google account recovery. GPHKM does not provide its own customer recovery flow in v1.
+- Customer sign-in with Google or verified email/password; profile and security settings, password change/reset for credential accounts, and revocable sessions. Staff authentication stays separate and password recovery is not exposed on the staff surface.
 - Verified signup creates an organization and first Owner; users may join multiple organizations by verified-email invitation. Owner-managed settings, members, co-Owner transfers, and funding; invitations expire after seven days and default to Member, and the last Owner must transfer ownership before leaving.
 - Optional Owner-managed billing profile with legal name, billing email, and billing address; no invoice generation, tax ID, or phone collection in v1.
 - Authenticated catalog with a 15-day organization browsing trial, top-of-page days/hours/minutes countdown, and the approved paid-access rule. The initial access term is six calendar months; the audited global policy can select six months, one year, or unrestricted access.

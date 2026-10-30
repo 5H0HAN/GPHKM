@@ -33,7 +33,7 @@ function requestDigest(input: CheckoutInput): string {
   })).digest("hex");
 }
 
-function listingSnapshot(row: typeof listing.$inferSelect, useWriting: boolean) {
+function listingSnapshot(row: typeof listing.$inferSelect) {
   const retailPrice = Number(row.retailPriceCents);
   const writingPrice = row.writingPriceCents === null ? null : Number(row.writingPriceCents);
   const writingFirst = row.writingFirstDraftCents === null ? null : Number(row.writingFirstDraftCents);
@@ -64,8 +64,6 @@ function listingSnapshot(row: typeof listing.$inferSelect, useWriting: boolean) 
     writingFirstDraftCents: writingFirst,
     writingFinalDraftCents: writingFinal,
     buyerRequirements: row.buyerRequirements,
-    placementDisclosureVersion: PLACEMENT_DISCLOSURE_VERSION,
-    writingRefundDisclosureVersion: useWriting ? WRITING_REFUND_DISCLOSURE_VERSION : null,
   };
 }
 
@@ -101,8 +99,13 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
     if (!trialActive && !paidAccess) throw new Error("Marketplace access required");
 
     const listingIds = input.items.map((item) => item.listingId);
-    const rows = await tx.select().from(listing).where(inArray(listing.id, listingIds))
-      .for("share");
+    // Row locks on a customer SELECT are filtered by the staff-only listing
+    // UPDATE policy. Use transaction advisory locks shared with staff catalog
+    // edits, then read through the normal customer SELECT policy.
+    for (const id of [...listingIds].sort()) {
+      await tx.execute(sql`select pg_advisory_xact_lock_shared(hashtextextended('gphkm:catalog-listing:' || ${id}, 0))`);
+    }
+    const rows = await tx.select().from(listing).where(inArray(listing.id, listingIds));
     if (rows.length !== input.items.length || rows.some((row) => row.status !== "LIVE")) throw new Error("One or more listings are unavailable");
     const byId = new Map(rows.map((row) => [row.id, row]));
     const orderId = randomUUID();
@@ -126,8 +129,8 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
       throw new Error("Order total is outside the allowed range");
     }
 
-    // Serialize wallet spends and hold changes for this organization before checking sufficiency.
-    await tx.execute(sql`select organization_id from public.wallet_account where organization_id = ${organizationId} for update`);
+    // The wallet-risk advisory lock acquired above also serializes spends and
+    // holds. The runtime role intentionally cannot row-lock wallet_account.
     const [afterLock] = await tx.select().from(customerOrder).where(and(
       eq(customerOrder.organizationId, organizationId),
       eq(customerOrder.actorUserId, actor.userId),
@@ -165,7 +168,7 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
       orderId,
       listingId: row.id,
       listingRevision: row.revision,
-      customerListingSnapshot: listingSnapshot(row, useWriting),
+      customerListingSnapshot: listingSnapshot(row),
       placementPriceMinor: placement.toString(),
       writingSelected: useWriting,
       writingPriceMinor: writing.toString(),

@@ -53,8 +53,9 @@ export async function listCustomerListings(
       sql`public.gphkm_customer_can_read_listing_url(${listing.id}, ${organizationId}, ${actor.userId})`))
       .where(and(...conditions)).orderBy(asc(listing.retailPriceCents), asc(listing.id)).limit(100).offset((currentPage - 1) * 100);
     const ids = rows.map((row) => row.id);
+    const metricIds = sql`array[${sql.join(ids.map((id) => sql`${id}`), sql`, `)}]::text[]`;
     const metricResult = ids.length ? await tx.execute(sql`select * from public.gphkm_latest_customer_listing_metrics(
-      ${ids}::text[], ${actor.userId}, ${organizationId})`) : { rows: [] };
+      ${metricIds}, ${actor.userId}, ${organizationId})`) : { rows: [] };
     const metrics = metricResult.rows as Array<{
       listing_id: string; provider: string; metric_scope: string; value: string | number | null;
       observed_on: Date | null; source: string; attribution_text: string;

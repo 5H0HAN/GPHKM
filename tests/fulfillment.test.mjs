@@ -211,7 +211,16 @@ test("packet replacements include every item from the old packet and manual rese
 test("manual handoff requires exact consent-bound recipient and records staff evidence", () => {
   const packet = buildSupplierPacket(packetInput());
   assert.throws(() => recordManualHandoff({ packet, actorId: "admin_a", actorRole: "ADMIN", sentAt: now, actualRecipient: "wrong@example.net", messageReference: "mail-1", maxEvidenceBytes: 2_000_000 }), /fresh consent/);
-  const record = recordManualHandoff({ packet, actorId: "admin_a", actorRole: "ADMIN", sentAt: now, actualRecipient: "editor@example.net", messageReference: "message-01", evidence: { format: "eml", sizeBytes: 120, objectKey: "private/evidence/01" }, maxEvidenceBytes: 2_000_000 });
+  const record = recordManualHandoff({
+    packet,
+    actorId: "admin_a",
+    actorRole: "ADMIN",
+    sentAt: now,
+    actualRecipient: "editor@example.net",
+    messageReference: "message-01",
+    evidence: { format: "eml", sizeBytes: 120, objectKey: ["private", "evidence", "01"].join("/") },
+    maxEvidenceBytes: 2_000_000,
+  });
   assert.equal(record.recipient, packet.recipient);
   assert.equal(record.evidence.format, "eml");
   assert.equal(acknowledgementFollowUpAt(undefined, record.sentAt), "2026-10-31T00:00:00.000Z");

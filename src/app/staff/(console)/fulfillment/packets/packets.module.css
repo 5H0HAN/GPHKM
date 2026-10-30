@@ -10,7 +10,7 @@
 .item p { margin: 6px 0; color: var(--text-secondary); font-size: 13px; line-height: 1.55; }
 .pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 440px; overflow: auto; padding: 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); font: 12px/1.6 ui-monospace, monospace; }
 .actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
-.actions a,.actions button,.submit { display: inline-flex; align-items: center; justify-content: center; min-height: 37px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-2); color: var(--text-primary); text-decoration: none; font: 600 12px/1.2 inherit; cursor: pointer; }
+.actions a,.actions button,.submit { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-2); color: var(--text-primary); text-decoration: none; font: inherit; font-size: 12px; font-weight: 600; line-height: 1.2; cursor: pointer; }
 .actions button.primary,.submit { border-color: var(--accent); background: var(--accent); color: var(--accent-contrast); }
 .form { display: grid; gap: 10px; margin-top: 12px; }
 .form label { color: var(--text-secondary); font-size: 12px; }

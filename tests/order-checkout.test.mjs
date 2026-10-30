@@ -53,14 +53,14 @@ test("customer order projection exposes only customer-facing fields", () => {
   assert.equal("websiteUrl" in result.items[0].listing, false);
 });
 
-test("order checkout snapshots versioned commercial disclosures and binds them to idempotency", () => {
+test("order checkout binds commercial disclosure versions to idempotency without mixing them into listing snapshots", () => {
   const service = readFileSync(new URL("../src/server/orders/checkout.ts", import.meta.url), "utf8");
   assert.match(service, /PLACEMENT_DISCLOSURE_VERSION/);
   assert.match(service, /WRITING_REFUND_DISCLOSURE_VERSION/);
-  assert.match(service, /placementDisclosureVersion: PLACEMENT_DISCLOSURE_VERSION/);
-  assert.match(service, /writingRefundDisclosureVersion: useWriting \? WRITING_REFUND_DISCLOSURE_VERSION : null/);
   assert.match(service, /requestDigest[\s\S]*placementDisclosureVersion: PLACEMENT_DISCLOSURE_VERSION/);
   assert.match(service, /requestDigest[\s\S]*writingRefundDisclosureVersion: item\.useWriting === true \? WRITING_REFUND_DISCLOSURE_VERSION : null/);
+  const snapshot = service.split("function listingSnapshot")[1].split("export async function createWalletFundedOrder")[0];
+  assert.doesNotMatch(snapshot, /placementDisclosureVersion|writingRefundDisclosureVersion/);
 });
 
 const orderWithStatuses = (...statuses) => ({
@@ -127,12 +127,12 @@ test("customer milestone history is an explicit public allowlist", () => {
 test("customer Orders view renders each item's projected dates and publication links with safe new-tab attributes", () => {
   const page = readFileSync(new URL("../src/app/customer/orders/page.tsx", import.meta.url), "utf8");
   assert.match(page, /const lastUpdatedAt = item\.lastUpdatedAt \?\? order\.createdAt/);
-  assert.match(page, /Last updated:<\/b> <time dateTime=\{lastUpdatedAt\}/);
-  assert.match(page, /Next update:<\/b> \{item\.nextUpdateAt \? <time dateTime=\{item\.nextUpdateAt\}/);
-  assert.match(page, /: "To be scheduled"/);
+  assert.match(page, /<span>Last updated<\/span><time dateTime=\{lastUpdatedAt\}/);
+  assert.match(page, /<span>Next update<\/span>\{item\.nextUpdateAt \? <time dateTime=\{item\.nextUpdateAt\}/);
+  assert.match(page, /pendingDate}>To be scheduled<\/span>/);
   assert.match(page, /item\.publicationUrls\.map\(\(url, index\) =>/);
-  assert.match(page, /Google indexing:<\/b> \{item\.googleIndexingStatus === "UNKNOWN"/);
-  assert.match(page, /<a href=\{url\} target="_blank" rel="noopener noreferrer">View live publication/);
+  assert.match(page, /Google indexing: \{item\.googleIndexingStatus === "UNKNOWN"/);
+  assert.match(page, /<a href=\{url\} target="_blank" rel="noopener noreferrer">Open live publication/);
 });
 
 
@@ -166,8 +166,8 @@ test("order count and rows share organization and Member scope with a stable bou
   assert.match(page, /getMyOrdersPage\(await headers\(\), organizationId, params.page\)/);
   assert.match(page, /organizationId=\$\{encodeURIComponent\(organizationId\)\}&page=\$\{target\}/);
   assert.match(page, /Page \{page\} of \{totalPages\}/);
-  assert.match(page, /page > 1 && <Link href=\{pageHref\(page - 1\)\}/);
-  assert.match(page, /page < totalPages && <Link href=\{pageHref\(page \+ 1\)\}/);
+  assert.match(page, /\{page > 1 \? <Link href=\{pageHref\(page - 1\)\}>← Newer orders<\/Link> : <span \/>\}/);
+  assert.match(page, /\{page < totalPages \? <Link href=\{pageHref\(page \+ 1\)\}>Older orders →<\/Link> : <span \/>\}/);
 });
 
 test("Support resolves older items independently of the first order page with tenant and Member authorization", () => {
