@@ -1,0 +1,512 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-30T17:59:52Z",
+  "title": "Design System: GPHKM",
+  "extensions": {
+    "colorMeta": {
+      "ink-canvas": {
+        "role": "neutral",
+        "displayName": "Blue Ink Canvas",
+        "canonical": "#17202a",
+        "tonalRamp": [
+          "#050c15",
+          "#19222d",
+          "#323c47",
+          "#4c5662",
+          "#68737f",
+          "#85909d",
+          "#a4afbd",
+          "#e4f0fe"
+        ]
+      },
+      "ink-surface": {
+        "role": "neutral",
+        "displayName": "Ink Work Surface",
+        "canonical": "#1d2731",
+        "tonalRamp": [
+          "#040c15",
+          "#19232d",
+          "#313c46",
+          "#4b5762",
+          "#67737f",
+          "#84919d",
+          "#a3b0bd",
+          "#e3f0fe"
+        ]
+      },
+      "ink-surface-raised": {
+        "role": "neutral",
+        "displayName": "Raised Ink Surface",
+        "canonical": "#242f39",
+        "tonalRamp": [
+          "#040c15",
+          "#18232c",
+          "#313c46",
+          "#4b5762",
+          "#67737f",
+          "#84919d",
+          "#a2b0bc",
+          "#e2f1fe"
+        ]
+      },
+      "paper-canvas": {
+        "role": "neutral",
+        "displayName": "Warm Paper Canvas",
+        "canonical": "#f1eadb",
+        "tonalRamp": [
+          "#0f0a03",
+          "#262116",
+          "#3f3a2e",
+          "#5b5548",
+          "#777164",
+          "#958f81",
+          "#b4ad9f",
+          "#f5eedf"
+        ]
+      },
+      "paper-surface": {
+        "role": "neutral",
+        "displayName": "Paper Work Surface",
+        "canonical": "#f8f4eb",
+        "tonalRamp": [
+          "#0d0b06",
+          "#24211b",
+          "#3d3a33",
+          "#58554d",
+          "#757169",
+          "#928f87",
+          "#b1aea5",
+          "#f2eee5"
+        ]
+      },
+      "paper-surface-raised": {
+        "role": "neutral",
+        "displayName": "Raised Paper Surface",
+        "canonical": "#e9e2d4",
+        "tonalRamp": [
+          "#0f0a03",
+          "#262116",
+          "#3f3a2f",
+          "#5a5549",
+          "#777164",
+          "#958e82",
+          "#b4ada0",
+          "#f5eee0"
+        ]
+      },
+      "coral": {
+        "role": "primary",
+        "displayName": "Proof Coral",
+        "canonical": "#ef7255",
+        "tonalRamp": [
+          "#1d0200",
+          "#430900",
+          "#6d1500",
+          "#9a2200",
+          "#bd4428",
+          "#df6447",
+          "#ff866a",
+          "#ffe9e3"
+        ]
+      },
+      "coral-hover": {
+        "role": "primary",
+        "displayName": "Coral Hover",
+        "canonical": "#ff8b6e",
+        "tonalRamp": [
+          "#1c0200",
+          "#420a00",
+          "#6c1700",
+          "#952b0d",
+          "#b74a2f",
+          "#d9694e",
+          "#fc896c",
+          "#ffe9e3"
+        ]
+      },
+      "coral-ink": {
+        "role": "neutral",
+        "displayName": "Ink on Coral",
+        "canonical": "#1a2026",
+        "tonalRamp": [
+          "#070c11",
+          "#1c2228",
+          "#353b42",
+          "#4f565d",
+          "#6b727a",
+          "#899098",
+          "#a7afb7",
+          "#e7f0f8"
+        ]
+      },
+      "coral-light": {
+        "role": "primary",
+        "displayName": "Paper-Theme Coral",
+        "canonical": "#c24830",
+        "tonalRamp": [
+          "#1d0200",
+          "#440700",
+          "#6e1200",
+          "#9b2105",
+          "#bd432b",
+          "#e0634a",
+          "#ff866d",
+          "#ffe9e4"
+        ]
+      },
+      "coral-light-hover": {
+        "role": "primary",
+        "displayName": "Paper-Theme Coral Hover",
+        "canonical": "#a63e2d",
+        "tonalRamp": [
+          "#1e0100",
+          "#450500",
+          "#700c00",
+          "#932c1c",
+          "#b54c3a",
+          "#d76a57",
+          "#fa8a75",
+          "#ffe9e4"
+        ]
+      },
+      "coral-paper": {
+        "role": "neutral",
+        "displayName": "Paper on Coral",
+        "canonical": "#fffaf1",
+        "tonalRamp": [
+          "#0e0b06",
+          "#25211b",
+          "#3e3a33",
+          "#59554d",
+          "#757169",
+          "#938f86",
+          "#b2ada5",
+          "#f3eee5"
+        ]
+      },
+      "sage": {
+        "role": "tertiary",
+        "displayName": "Completion Sage",
+        "canonical": "#7fae9a",
+        "tonalRamp": [
+          "#000f08",
+          "#00291c",
+          "#164434",
+          "#33604e",
+          "#4f7d6a",
+          "#6d9b87",
+          "#8bbaa6",
+          "#cafce6"
+        ]
+      },
+      "success-ink": {
+        "role": "tertiary",
+        "displayName": "Positive Status Text",
+        "canonical": "#9bd0b6",
+        "tonalRamp": [
+          "#000f07",
+          "#00291a",
+          "#0f4531",
+          "#2e614b",
+          "#4b7e67",
+          "#699c84",
+          "#87bca2",
+          "#c7fde2"
+        ]
+      },
+      "success-soft-ink": {
+        "role": "neutral",
+        "displayName": "Positive Status Surface",
+        "canonical": "#203c36",
+        "tonalRamp": [
+          "#000f0b",
+          "#0b2722",
+          "#25413b",
+          "#3f5c55",
+          "#5b7972",
+          "#78978f",
+          "#96b6ae",
+          "#d6f7ef"
+        ]
+      },
+      "ink-rule": {
+        "role": "neutral",
+        "displayName": "Ink Rule",
+        "canonical": "#3b4650",
+        "tonalRamp": [
+          "#040c14",
+          "#19232c",
+          "#313c46",
+          "#4b5761",
+          "#67737e",
+          "#84919c",
+          "#a3b0bc",
+          "#e3f0fd"
+        ]
+      },
+      "paper-rule": {
+        "role": "neutral",
+        "displayName": "Paper Rule",
+        "canonical": "#d2c9b9",
+        "tonalRamp": [
+          "#100a02",
+          "#272114",
+          "#41392c",
+          "#5c5446",
+          "#797062",
+          "#978e7f",
+          "#b6ad9d",
+          "#f7eddd"
+        ]
+      },
+      "ink-text": {
+        "role": "neutral",
+        "displayName": "Warm Paper Text",
+        "canonical": "#f1eadb",
+        "tonalRamp": [
+          "#0f0a03",
+          "#262116",
+          "#3f3a2e",
+          "#5b5548",
+          "#777164",
+          "#958f81",
+          "#b4ad9f",
+          "#f5eedf"
+        ]
+      },
+      "paper-text": {
+        "role": "neutral",
+        "displayName": "Ink Text",
+        "canonical": "#222b31",
+        "tonalRamp": [
+          "#050c11",
+          "#1a2329",
+          "#333c42",
+          "#4d575e",
+          "#69737a",
+          "#869198",
+          "#a5b0b7",
+          "#e5f0f9"
+        ]
+      },
+      "secondary-ink-text": {
+        "role": "neutral",
+        "displayName": "Secondary Warm Text",
+        "canonical": "#d0c9bb",
+        "tonalRamp": [
+          "#0f0a03",
+          "#262116",
+          "#403a2e",
+          "#5b5548",
+          "#777164",
+          "#958e81",
+          "#b4ada0",
+          "#f5eedf"
+        ]
+      },
+      "secondary-paper-text": {
+        "role": "neutral",
+        "displayName": "Secondary Ink Text",
+        "canonical": "#404a4e",
+        "tonalRamp": [
+          "#050d10",
+          "#1a2327",
+          "#333c40",
+          "#4d575b",
+          "#697478",
+          "#869196",
+          "#a5b0b5",
+          "#e5f1f6"
+        ]
+      },
+      "muted-ink-text": {
+        "role": "neutral",
+        "displayName": "Muted Warm Text",
+        "canonical": "#a9a69d",
+        "tonalRamp": [
+          "#0d0b05",
+          "#24211a",
+          "#3d3a33",
+          "#58554d",
+          "#747169",
+          "#928f86",
+          "#b1aea5",
+          "#f2eee5"
+        ]
+      },
+      "muted-paper-text": {
+        "role": "neutral",
+        "displayName": "Muted Ink Text",
+        "canonical": "#596365",
+        "tonalRamp": [
+          "#050d0e",
+          "#1b2325",
+          "#333c3e",
+          "#4e5759",
+          "#697476",
+          "#879194",
+          "#a5b0b2",
+          "#e5f1f3"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Public hero heading."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Public workflow section headings."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Customer and staff page titles."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Explanatory and operational copy."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Section labels and navigation grouping."
+      }
+    },
+    "shadows": [
+      {
+        "name": "sticky-checkout-separation",
+        "value": "0 -8px 28px color-mix(in srgb, var(--canvas) 90%, transparent)",
+        "purpose": "Separates the sticky marketplace checkout from scrolling catalog content."
+      }
+    ],
+    "motion": [
+      {
+        "name": "interactive-state",
+        "value": "160ms ease",
+        "purpose": "Global button and link state transitions."
+      },
+      {
+        "name": "page-theme-transition",
+        "value": "180ms ease",
+        "purpose": "Background and foreground theme changes."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "Reduces transitions and animations when prefers-reduced-motion is enabled."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-navigation",
+        "value": "980px"
+      },
+      {
+        "name": "staff-single-column",
+        "value": "1120px"
+      },
+      {
+        "name": "public-tablet",
+        "value": "820px"
+      },
+      {
+        "name": "small-text-scale",
+        "value": "640px"
+      },
+      {
+        "name": "mobile-navigation",
+        "value": "440px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "High-priority action used by the public home page and customer flow.",
+      "html": "<a class=\"ds-primary-action\" href=\"#\">Explore placements</a>",
+      "css": ".ds-primary-action { display: inline-flex; min-height: 50px; align-items: center; justify-content: center; gap: 12px; padding: 0 19px; border: 1px solid var(--primary-button); border-radius: 0; background: var(--primary-button); color: var(--accent-contrast); font: 650 15px/1.2 'GPHKM Geist', 'Segoe UI', sans-serif; text-decoration: none; transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease; } .ds-primary-action:hover { border-color: var(--primary-button-hover); background: var(--primary-button-hover); transform: translateY(-1px); } .ds-primary-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }"
+    },
+    {
+      "name": "Secondary action",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A lower-priority form action with a ruled, tonal surface.",
+      "html": "<button class=\"ds-secondary-action\" type=\"button\">Save changes</button>",
+      "css": ".ds-secondary-action { min-height: 44px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-2); color: var(--text-primary); font: 500 14px/1.2 'GPHKM Geist', 'Segoe UI', sans-serif; cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease; } .ds-secondary-action:hover { border-color: var(--accent); background: var(--surface-3); } .ds-secondary-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }"
+    },
+    {
+      "name": "Text field",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "Text entry in customer and staff forms.",
+      "html": "<label class=\"ds-field-label\">Destination URL<input class=\"ds-field-input\" type=\"url\" placeholder=\"https://example.com\"></label>",
+      "css": ".ds-field-label { display: grid; gap: 6px; color: var(--text-secondary); font: 500 14px/1.4 'GPHKM Geist', 'Segoe UI', sans-serif; } .ds-field-input { width: 100%; min-height: 44px; padding: 0 11px; border: 1px solid var(--border-strong); border-radius: 0; background: var(--canvas); color: var(--text-primary); font: 400 15px/1.4 'GPHKM Geist', 'Segoe UI', sans-serif; } .ds-field-input:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; } .ds-field-input:disabled { color: var(--disabled); }"
+    },
+    {
+      "name": "Active workspace navigation item",
+      "kind": "nav",
+      "refersTo": "navigation-active",
+      "description": "Current customer or staff route within the grouped workspace navigation.",
+      "html": "<a class=\"ds-nav-item\" href=\"#\" aria-current=\"page\"><span class=\"ds-nav-mark\" aria-hidden=\"true\"></span>Marketplace</a>",
+      "css": ".ds-nav-item { display: flex; min-height: 44px; align-items: center; gap: 11px; padding: 0 11px; border: 1px solid var(--border); box-shadow: inset 3px 0 var(--accent); background: var(--surface-2); color: var(--text-primary); font: 500 14px/1.3 'GPHKM Geist', 'Segoe UI', sans-serif; text-decoration: none; } .ds-nav-item:hover { color: var(--accent-text); } .ds-nav-item:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; } .ds-nav-mark { width: 8px; height: 8px; border: 1px solid var(--accent); background: var(--accent); }"
+    },
+    {
+      "name": "Marketplace listing card",
+      "kind": "card",
+      "refersTo": "listing-card",
+      "description": "One website offer with clear price, terms, and approved attributed metrics.",
+      "html": "<article class=\"ds-listing-card\"><header><label><input type=\"checkbox\"> Add to order</label><strong>$150.00</strong></header><h3>Example publication</h3><p>Placement details and requirements appear in this proof-sheet card.</p><footer>DoFollow · English · US</footer></article>",
+      "css": ".ds-listing-card { padding: 22px; border: 1px solid var(--border); border-radius: 0; background: var(--surface-1); color: var(--text-primary); font: 400 15px/1.55 'GPHKM Geist', 'Segoe UI', sans-serif; transition: border-color 150ms ease, background-color 150ms ease; } .ds-listing-card:hover { border-color: var(--border-strong); } .ds-listing-card:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 70%, var(--border)); } .ds-listing-card header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 13px; border-bottom: 1px solid var(--border); } .ds-listing-card h3 { margin: 16px 0 8px; font-size: 21px; font-weight: 650; letter-spacing: -.025em; } .ds-listing-card p, .ds-listing-card footer { color: var(--text-secondary); font-size: 14px; } .ds-listing-card input { width: 18px; height: 18px; accent-color: var(--accent); }"
+    },
+    {
+      "name": "Status badge",
+      "kind": "chip",
+      "refersTo": "status-approved",
+      "description": "Short status text paired with a tonal status color.",
+      "html": "<span class=\"ds-status\">Approved</span>",
+      "css": ".ds-status { display: inline-flex; min-height: 28px; align-items: center; padding: 0 8px; border: 1px solid var(--success); border-radius: 0; background: var(--success-soft); color: var(--success); font: 600 12px/1.2 'GPHKM Geist', 'Segoe UI', sans-serif; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Editorial Production Flatplan",
+    "overview": "GPHKM is a placement production desk. Its editorial language comes from magazine flatplans, proof sheets, folio rules, and restrained correction marks. The dark workspace uses an ink ground, warm paper-toned type, coral action marks, and sage completion signals. The user-selectable light theme reverses the ink and paper roles while retaining the same hierarchy and contrast intent.\n\nThe interface favors direct labels, readable sans-serif type, ruled sections, and a clear path from choosing a placement to tracking its progress. Customer and staff workspaces share the visual language, while their information and permissions remain separate. The selected world avoids ornamental paper texture and fabricated editorial endorsement. English is the v1 language; customer and staff surfaces target responsive WCAG 2.2 AA.",
+    "keyCharacteristics": [
+      "Ink-and-paper tonal contrast with coral actions and sage completion.",
+      "Folio rules and editorial titles paired with practical sans-serif controls.",
+      "Customer and staff surfaces share form while keeping supplier and finance details private.",
+      "Mobile layouts collapse into readable single-column work and compact navigation."
+    ],
+    "rules": [
+      {
+        "name": "The Correction Mark Rule",
+        "body": "Coral identifies a useful action, active selection, or review state. Do not use it as decoration without a task meaning.",
+        "section": "colors"
+      },
+      {
+        "name": "The One-Face Rule",
+        "body": "Use the self-hosted Geist family for display, body, and labels; no separate display or mono typeface is part of the current system.",
+        "section": "typography"
+      },
+      {
+        "name": "The Rule-Over-Shadow Rule",
+        "body": "Use a border or tonal surface for ordinary structure; reserve the checkout shadow for its sticky overlap.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do preserve the default dark theme and the user-selectable light theme with their separate, tested contrast roles.",
+      "Do use self-hosted Geist and the existing color variables instead of adding a second font or parallel palette.",
+      "Do keep labels literal and customer-facing copy neutral; preserve supplier confidentiality.",
+      "Do use visible keyboard focus, semantic status text, and responsive controls sized for touch.",
+      "Do use rules and tonal surfaces before adding depth effects."
+    ],
+    "donts": [
+      "Don't expose supplier identity, source classification, internal costs, or margin in customer-facing surfaces.",
+      "Don't imply guaranteed search ranking, indexing, or SEO outcomes.",
+      "Don't add decorative textures, fabricated testimonials, or editorial endorsement.",
+      "Don't use color alone to communicate selection, progress, or status."
+    ]
+  }
+}

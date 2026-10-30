@@ -162,23 +162,9 @@ export async function assignFulfillmentItem(headers: Headers, itemId: string, as
   if (!id(itemId) || (assignedAdminId !== null && !id(assignedAdminId))) throw new Error("Invalid assignment");
   return staffTx(headers, async (tx, actor) => {
     if (!mayAssignFulfillment(actor.role)) throw new Error("Forbidden");
-    const [row] = await tx.select().from(orderItemFulfillment)
-      .where(eq(orderItemFulfillment.orderItemId, itemId)).for("update").limit(1);
-    if (!row) throw new Error("Item unavailable");
-    if (assignedAdminId) {
-      const [assignee] = await tx.select({ userId: staffAccount.userId }).from(staffAccount)
-        .where(and(eq(staffAccount.userId, assignedAdminId), eq(staffAccount.role, "ADMIN"), eq(staffAccount.active, true))).limit(1);
-      if (!assignee) throw new Error("Choose an active Admin");
-    }
-    await tx.update(orderItemFulfillment).set({ assignedAdminId, updatedAt: new Date() })
-      .where(eq(orderItemFulfillment.orderItemId, itemId));
-    await appendAuditEvent(tx, {
-      actorUserId: actor.userId,
-      action: "FULFILLMENT_ASSIGNMENT_CHANGED",
-      targetType: "CUSTOMER_ORDER_ITEM",
-      targetId: itemId,
-      metadata: { result: assignedAdminId ? "ASSIGNED" : "UNASSIGNED", reasonCode: "ADMIN_ASSIGNMENT" },
-    });
+    const result = await tx.execute(sql`select public.gphkm_assign_fulfillment_item(${itemId}, ${assignedAdminId}) as order_item_id`);
+    const assigned = (result as unknown as { rows?: Array<{ order_item_id: string }> }).rows?.[0]?.order_item_id;
+    if (assigned !== itemId) throw new Error("Assignment requires reconciliation");
     return { itemId, assignedAdminId };
   });
 }

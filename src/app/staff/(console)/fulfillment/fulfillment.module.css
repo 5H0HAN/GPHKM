@@ -16,6 +16,8 @@
 .titleLine { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .titleLine h2 { margin: 0; font-size: 16px; font-weight: 550; letter-spacing: -.02em; }
 .status { padding: 4px 7px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-secondary); font-size: 11px; }
+.assignmentState, .assignmentNeeded { padding: 4px 7px; border: 1px solid var(--border); color: var(--text-secondary); font-size: 11px; }
+.assignmentNeeded { border-color: color-mix(in srgb, var(--overdue) 60%, var(--border)); background: color-mix(in srgb, var(--overdue) 9%, transparent); color: var(--overdue); font-weight: 600; }
 .meta, .update { margin: 7px 0 0; color: var(--text-muted); font-size: 12px; }
 .overdue { margin: 7px 0 0; color: var(--overdue); font-size: 12px; font-weight: 650; }
 .controls { display: grid; align-content: start; gap: 10px; }
@@ -40,6 +42,9 @@
 .panel h3 { margin: 20px 0 8px; font-size: 13px; font-weight: 550; }
 .content { max-height: 430px; overflow: auto; margin: 0; padding: 13px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); color: var(--text-primary); font: 12px/1.6 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .form { display: grid; gap: 12px; }
+.form + .form { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); }
+.form h3 { margin:0; font-size:14px; font-weight:650; }
+.form .helpText { margin:-5px 0 2px; color:var(--text-muted); font-size:12px; line-height:1.5; }
 .form button, .evidenceForm button { width: fit-content; }
 .help { margin-bottom: 0; color: var(--text-muted) !important; font-size: 11px !important; }
 .error, .success { margin: 0 0 14px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-secondary); font-size: 12px; }

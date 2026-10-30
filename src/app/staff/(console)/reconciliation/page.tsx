@@ -3,7 +3,8 @@ import { getStripeWalletReconciliation } from "@/server/wallet/topups";
 import styles from "../reconciliation.module.css";
 import { listUnknownCustomerEmails } from "@/server/notifications/reconciliation";
 import { reconcileCustomerEmailAction } from "./notification-actions";
-import { recordFinanceFindingActionAction, recordStripePayoutBankReviewAction, refreshStripePayoutFactsAction, refreshStripeProviderFactsAction, resolveMissingStripeCheckoutSessionAction, resolveStripeReconciliationAction, runFinanceReconciliationAction } from "./finance-actions";
+import { recordFinanceFindingActionAction, recordStripePayoutBankReviewAction, refreshStripePayoutFactsAction, refreshStripeProviderFactsAction, resolveMissingStripeCheckoutSessionAction, resolveStripeReconciliationAction } from "./finance-actions";
+import { RunReconciliationControl } from "./run-reconciliation-control";
 import { getLatestFinanceReconciliation, listStripeProviderSnapshots } from "@/server/wallet/finance-reconciliation";
 import { listStripePayoutReconciliation } from "@/server/wallet/payout-reconciliation";
 import { listAmbiguousStripeCheckoutAttempts, listOpenStripeAttempts } from "@/server/wallet/topups";
@@ -43,7 +44,7 @@ export default async function ReconciliationPage({ searchParams }: { searchParam
     {query.checkoutSessionResolved && <p role="status" className={styles.empty}>Checkout attempt {query.checkoutSessionResolved} was closed after Finance recorded provider evidence. No wallet balance or ledger entry was changed.</p>}
     <section className={styles.financeSection}>
       <div className={styles.sectionHead}><div><h2>Wallet and order consistency</h2><p>Checks wallet projections, settled top-ups and grants, order debits, item refunds, active holds, and Stripe events that need provider review. Each run is retained as an immutable snapshot.</p></div>
-        <form action={runFinanceReconciliationAction}><button type="submit">Run reconciliation</button></form></div>
+        <RunReconciliationControl /></div>
       {!financeSnapshot ? <div className={styles.empty}><strong>No reconciliation run yet</strong><p>Start a read-only scan. It will not change financial records.</p></div> : <>
         <p className={styles.runMeta}>Latest run: {new Date(financeSnapshot.createdAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })} UTC · {financeSnapshot.findingCount} finding{financeSnapshot.findingCount === 1 ? "" : "s"}</p>
         {financeSnapshot.findings.length === 0 ? <div className={styles.empty}><strong>No inconsistencies found in the checks performed</strong><p>Current Stripe snapshots include charge, refund, and dispute balance transactions. This scan does not independently reconcile Stripe payouts to bank settlement records.</p></div> : (

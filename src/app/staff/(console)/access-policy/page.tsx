@@ -21,7 +21,7 @@ export default async function AccessPolicyPage({ searchParams }: { searchParams:
     {query.error && <p className={styles.error} role="alert">The policy was not changed. Check the values, reason, and latest policy version.</p>}
     <section className={styles.panel} aria-labelledby="current-policy">
       <h2 id="current-policy">Current policy</h2>
-      <dl><div><dt>Minimum settled top-up</dt><dd>${formatUsdMinorUnits(BigInt(policy.minimumMinor))} USD</dd></div>
+      <dl><div><dt>Minimum settled top-up</dt><dd>{"$"}{formatUsdMinorUnits(BigInt(policy.minimumMinor))} USD</dd></div>
         <div><dt>Access duration</dt><dd>{durationLabels[policy.duration as keyof typeof durationLabels]}</dd></div>
         <div><dt>Policy version</dt><dd>{policy.version}</dd></div>
         <div><dt>Last updated</dt><dd>{new Date(policy.updatedAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })} UTC</dd></div></dl>

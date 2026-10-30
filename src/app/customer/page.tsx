@@ -97,7 +97,7 @@ export default async function CustomerHome({ searchParams }: { searchParams: Pro
             <p className={styles.panelText}>Refresh the page or open your orders to try again.</p>
             <Link className={styles.panelAction} href={organization ? `/customer/orders?organizationId=${encodeURIComponent(organization.id)}` : "/customer/orders"}>Open orders</Link>
           </div> : recentItems.length ? <ul className={styles.list}>
-            {recentItems.map((item, index) => <li className={styles.listItem} key={`${item.orderId}-${index}`}>
+            {recentItems.map((item) => <li className={styles.listItem} key={`${item.orderId}-${item.title}-${item.updatedAt}`}>
               <span className={styles.activityTitle}><span className={styles.activityDot} aria-hidden="true" /><span><strong>{item.title}</strong><small>{label(item.status)} · Order {item.orderId.slice(0, 8)}</small></span></span>
               <span className={styles.activityDate}><time dateTime={item.updatedAt}>{date(item.updatedAt)}</time>{item.nextUpdateAt && <small>Next update {date(item.nextUpdateAt)}</small>}</span>
             </li>)}

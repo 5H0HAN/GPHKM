@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { listMetricRedistributionCandidates, listMetricRefreshCandidates } from "@/server/catalog/metrics";
-import { isOpenPageRankConfigured } from "@/server/metrics/open-page-rank";
+import { isMetricDomainRefreshable, isOpenPageRankConfigured } from "@/server/metrics/open-page-rank";
 import { refreshOpenPageRankAction, setMetricRedistributionApprovalAction } from "./actions";
 import styles from "../catalog/catalog.module.css";
 
@@ -16,24 +16,30 @@ export default async function MetricsPage({ searchParams }: { searchParams: Prom
     <header className={styles.header}><div><p className={styles.eyebrow}>INTERNAL DATA</p><h1>Domain metrics</h1><p className={styles.lede}>Refresh Open PageRank for selected catalog listings. Super Admin may record an internal redistribution attestation with attribution and rights-review evidence.</p></div></header>
     <p role="note">An internal attestation does not establish provider licensing or legal rights. L-05 remains a hard customer-display gate until external licensing, attribution, redistribution, API access, and cost review is complete. Do not enable customer display before that review.</p>
     {query.refreshed && <p className={styles.success}>Refreshed {query.refreshed} listing observations.</p>}
-    {query.error && <p className={styles.error}>Refresh failed or reached the daily limit. No customer-visible metric approval was changed.</p>}
+    {query.error === "no-selection" && <p role="alert" className={styles.error}>Select at least one listing before refreshing metrics. No provider request was sent.</p>}
+    {query.error === "daily-limit" && <p role="alert" className={styles.error}>You have reached the limit of five metric refresh batches in 24 hours. Try again after the limit window resets.</p>}
+    {query.error === "non-public-domain" && <p role="alert" className={styles.error}>One or more selected listings use a reserved demo hostname (.example, .test, or similar). Replace it with the real public website URL before refreshing.</p>}
+    {query.error === "refresh-failed" && <p role="alert" className={styles.error}>The metric refresh did not complete. No observations were saved. Demo .example listings are placeholders and cannot be queried; use a real public site URL. For other listings, check the Open PageRank server key and provider availability.</p>}
     {!providerConfigured && <p role="status" className={styles.error}>Metric refresh is unavailable because the Open PageRank server key is missing or invalid. Configure OPEN_PAGE_RANK_API_KEY in the server environment; the key is never shown here.</p>}
     {query.approvalSaved && <p className={styles.success}>The internal metric attestation was recorded in the append-only audit history.</p>}
     {query.approvalError && <p className={styles.error}>The review could not be saved. Confirm the observation is still current and complete all required review fields.</p>}
     <section className={styles.formPanel}>
       <h2>Open PageRank refresh</h2>
-      <p>Choose up to 100 listings per batch. Each staff account may run up to five batches in a rolling 24-hour period. Provider requests use the fixed Open PageRank endpoint.</p>
+      <p>Choose up to 100 public listings per batch. Demo hostnames cannot be queried. Each staff account may run up to five batches in a rolling 24-hour period.</p>
       {items.length === 0 ? <p>No listings are available to refresh.</p> : <form action={refreshOpenPageRankAction}>
         <input type="hidden" name="page" value={refreshData.page} />
         <div className={styles.tableWrap}><table><thead><tr><th>Select</th><th>Listing</th><th>Domain</th><th>State</th><th>Latest OPR</th><th>Observed</th></tr></thead><tbody>
-          {items.map((item) => <tr key={item.id}><td><input type="checkbox" name="listingId" value={item.id} aria-label={`Refresh ${item.title}`} /></td><td>{item.title}</td><td><code>{new URL(item.websiteUrl).hostname}</code></td><td>{item.status}</td><td>{item.metric?.status === "AVAILABLE" ? `${item.metric.value} (${item.metric.metricScope.toLowerCase().replaceAll("_", " ")})` : item.metric?.status ?? "Not refreshed"}</td><td>{item.metric?.observedOn?.toISOString().slice(0, 10) ?? "—"}</td></tr>)}
+        {items.map((item) => {
+          const refreshable = isMetricDomainRefreshable(new URL(item.websiteUrl).hostname);
+          return <tr key={item.id}><td><input type="checkbox" name="listingId" value={item.id} aria-label={`Refresh ${item.title}`} disabled={!refreshable} /></td><td>{item.title}</td><td><code>{new URL(item.websiteUrl).hostname}</code></td><td>{item.status}{!refreshable && " · Demo only"}</td><td>{item.metric?.status === "AVAILABLE" ? `${item.metric.value} (${item.metric.metricScope.toLowerCase().replaceAll("_", " ")})` : item.metric?.status ?? "Not refreshed"}</td><td>{item.metric?.observedOn?.toISOString().slice(0, 10) ?? "—"}</td></tr>;
+        })}
         </tbody></table></div>
         {refreshData.totalPages > 1 && <nav aria-label="Metric refresh pages">
           {refreshData.page > 1 && <Link href={`/staff/metrics?page=${refreshData.page - 1}`}>Previous</Link>}{" "}
           <span>Page {refreshData.page} of {refreshData.totalPages} · {refreshData.total} listings</span>{" "}
           {refreshData.page < refreshData.totalPages && <Link href={`/staff/metrics?page=${refreshData.page + 1}`}>Next</Link>}
         </nav>}
-        <button className={styles.button} type="submit" disabled={!providerConfigured}>Refresh selected metrics</button>
+        <button className={styles.button} type="submit" disabled={!providerConfigured || !items.some((item) => isMetricDomainRefreshable(new URL(item.websiteUrl).hostname))}>Refresh selected metrics</button>
       </form>}
     </section>
     {refreshData.canApprove && <section className={styles.formPanel}>

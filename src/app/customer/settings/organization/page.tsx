@@ -20,7 +20,11 @@ export default async function OrganizationSettingsPage({ searchParams }: { searc
   try { data = await getOrganizationSettings(await headers(), organizationId); }
   catch { return <p className={styles.error}>Organization settings are unavailable. Refresh and check your membership.</p>; }
   const ownerCount = data.members.filter((member) => member.role === "OWNER").length;
-  const closureRequests = data.role === "OWNER" ? await listOrganizationClosureRequests(await headers(), organizationId).catch(() => []) : [];
+  let closureRequests: Awaited<ReturnType<typeof listOrganizationClosureRequests>> | null = [];
+  if (data.role === "OWNER") {
+    try { closureRequests = await listOrganizationClosureRequests(await headers(), organizationId); }
+    catch { closureRequests = null; }
+  }
   return <>
     <div className={styles.headingRow}><div><h1 className={styles.title}>Organization settings</h1><p className={styles.subtitle}>{data.organization.name} · Your role: {data.role === "OWNER" ? "Owner" : "Member"}</p></div><Link className={styles.panelAction} href={`/customer/settings?organizationId=${encodeURIComponent(organizationId)}`}>Personal settings</Link></div>
     {query.updated && <p role="status" className={settings.notice}>Organization settings were updated.</p>}
@@ -55,11 +59,12 @@ export default async function OrganizationSettingsPage({ searchParams }: { searc
       </form><p className={styles.panelText}>Invitations grant Member access, are bound to the recipient’s verified email, and expire after seven days. Invite secrets are not displayed here.</p></article>
       <article className={styles.panel}><h2 className={styles.panelTitle}>Invitation history</h2>{!data.invitations.length ? <p className={styles.panelText}>No invitations have been created for this organization.</p> : <ul className={settings.members}>{data.invitations.map((invite) => <li className={settings.member} key={invite.id}><div><strong>{invite.email}</strong><p>{invite.displayStatus.toLowerCase()} · Member · Email: {invite.deliveryStatus === "SENT" ? "accepted by provider" : invite.deliveryStatus?.toLowerCase() ?? "not queued"}</p><time dateTime={invite.expiresAt.toISOString()}>Expires {invite.expiresAt.toLocaleString()}</time></div>{invite.canRevoke && <form action={revokeInvitationAction}><input type="hidden" name="organizationId" value={organizationId} /><input type="hidden" name="invitationId" value={invite.id} /><label className={settings.confirmation}><input type="checkbox" name="confirmed" required />Invalidate this invitation.</label><button type="submit">Revoke invitation</button></form>}</li>)}</ul>}</article>
       <article className={styles.panel}><h2 className={styles.panelTitle}>Organization closure</h2><p className={styles.panelText}>Request closure through Support. Staff can complete it only after the wallet balance is zero and active orders, payment disputes, and support cases are resolved. Closure disables organization access; financial and audit records remain retained under policy.</p>
-        {closureRequests.map((request) => <div className={settings.member} key={request.id}><div><strong>Request {request.id.slice(0, 8)} · {request.state.toLowerCase().replaceAll("_", " ")}</strong><p>Updated {request.updatedAt.toLocaleString()}</p>
+        {closureRequests === null && <p role="alert" className={settings.notice}>Closure request history is unavailable. Refresh before opening another request.</p>}
+        {closureRequests?.map((request) => <div className={settings.member} key={request.id}><div><strong>Request {request.id.slice(0, 8)} · {request.state.toLowerCase().replaceAll("_", " ")}</strong><p>Updated {request.updatedAt.toLocaleString()}</p>
           {request.history.map((event) => <p className={styles.panelText} key={event.id}>{event.actorKind === "CUSTOMER" ? "You" : "GPHKM Support"} · {event.body}</p>)}
           {request.canReply && <form action={replyOrganizationClosureAction} className={settings.form}><input type="hidden" name="organizationId" value={organizationId} /><input type="hidden" name="requestId" value={request.id} /><input type="hidden" name="idempotencyKey" value={randomUUID()} /><label>Reply to Support<textarea name="body" maxLength={2000} rows={3} required /></label><button type="submit">Send reply</button></form>}
         </div></div>)}
-        {!closureRequests.some((request) => request.state !== "CLOSED") && <form action={requestOrganizationClosureAction} className={settings.form}>
+        {closureRequests && !closureRequests.some((request) => request.state !== "CLOSED") && <form action={requestOrganizationClosureAction} className={settings.form}>
           <input type="hidden" name="organizationId" value={organizationId} /><input type="hidden" name="idempotencyKey" value={randomUUID()} />
           <label>Why are you requesting organization closure?<textarea name="summary" minLength={5} maxLength={2000} rows={4} required /></label>
           <label className={settings.confirmation}><input type="checkbox" name="confirmed" required />I understand active orders and a nonzero wallet balance must be resolved before closure.</label>

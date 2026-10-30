@@ -13,7 +13,9 @@ Follow the build sequence in [Implementation Guide](IMPLEMENTATION_GUIDE.md), th
 
 ## 2. Required checks when implementation begins
 
-The GitHub Actions workflow uses commit-pinned actions, scans full repository history for secrets, runs a high-severity npm advisory gate, lint, TypeScript checking, the Node test suite, and a production build on pushes and pull requests. It generates distinct temporary credentials for all database roles, starts an isolated PostgreSQL container, applies all migrations, and runs `npm run db:check-rls:local` with the restricted runtime role. It then creates random local-only customer and Super Admin fixtures and runs `npm run db:check-session-guard:local` against the live HTTP app to verify customer workspace access, customer-to-staff page and API denial, and stale-session rejection on every direct revocation endpoint. The ephemeral database is removed even after a failed step. CI keeps both real-money flags false. The RLS smoke command rolls back its synthetic fixture data; the session probe deletes the temporary customer session it creates. Moderate/low advisories remain visible in the audit output for review and should not be force-fixed when npm's proposed change breaks supported dependency ranges.
+The GitHub Actions workflow uses commit-pinned actions, scans full repository history for secrets, runs a high-severity npm advisory gate, lint, TypeScript checking, the Node test suite, and a production build on pushes and pull requests. It generates distinct temporary credentials for all database roles, starts an isolated PostgreSQL container, applies all migrations, and runs `npm run db:check-rls:local` with the restricted runtime role plus the disposable-database `npm run db:check-content-race:local` concurrency regression. It then creates random local-only customer and Super Admin fixtures and runs `npm run db:check-session-guard:local` against the live HTTP app to verify customer workspace access, customer-to-staff page and API denial, and stale-session rejection on every direct revocation endpoint. The ephemeral database is removed even after a failed step. CI keeps both real-money flags false. The RLS smoke command rolls back its synthetic fixture data; the session probe deletes the temporary customer session it creates. Moderate/low advisories remain visible in the audit output for review and should not be force-fixed when npm's proposed change breaks supported dependency ranges.
+
+Before release, also run `npm run db:check-content-race:local` against a local PostgreSQL migration role. It creates and drops a separate disposable database, applies all migrations, and uses separate runtime connections to race a consent insert against supplier handoff in both commit orders. The RLS smoke includes assignment authority/audit, runtime column privileges, and Stripe failed-refund grant recovery checks. These local database checks use synthetic data only; they do not call Stripe or verify production provider behavior.
 
 CI should include as appropriate to the selected stack:
 
@@ -31,6 +33,8 @@ CI should include as appropriate to the selected stack:
 ## 3. Code review and change control
 
 Require review for auth, permissions, RLS, wallet/payment, migrations, imports, exports, publication evidence, and deployment secrets. PRs should state user impact, data/money changes, tests, rollout/rollback, and monitoring. Keep an ADR for long-lived product or architecture decisions.
+
+For customer, staff, or public UI work, follow the [Frontend UX workflow](FRONTEND_UX_WORKFLOW.md). Keep the approved product and design docs authoritative, inspect the rendered route at desktop and mobile widths, and attach screenshots for the changed surfaces to the review. UI work must preserve server-side authorization and the customer/staff data boundary.
 
 ## 4. Environments and release
 

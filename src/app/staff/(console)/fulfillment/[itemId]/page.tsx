@@ -79,15 +79,17 @@ export default async function FulfillmentItemPage({ params, searchParams }: { pa
           <details className={styles.help}><summary>Content review guidance</summary><p>Hold the item when content may violate the platform policy or its listing terms. Record the matching reason below, set a next-update date, and use the item&apos;s Support thread to explain any correction needed. The customer can submit an eligible content change or request cancellation; follow the normal item refund rules if it cannot be corrected. Sensitive topics require review against the listing terms and are not automatically prohibited.</p></details>
           {!["COMPLETED", "CANCELED_REFUNDED"].includes(result.fulfillment.state) && <form action={updateFulfillmentFollowUpAction} className={styles.form}>
             <input type="hidden" name="itemId" value={itemId} />
-            <label>Next update date<input name="nextUpdateAt" type="date" required defaultValue={result.fulfillment.nextUpdateAt?.toISOString().slice(0, 10)} /></label>
+            <h3>Set a reminder</h3><p className={styles.helpText}>Change the follow-up date without changing the customer&apos;s current milestone.</p>
+            <label>Reminder date<input name="nextUpdateAt" type="date" required defaultValue={result.fulfillment.nextUpdateAt?.toISOString().slice(0, 10)} /></label>
             <label>Follow-up reason<select name="reasonCode" defaultValue="PUBLICATION_UPDATE"><option value="PUBLICATION_UPDATE">Progress follow-up</option></select></label>
-            <button type="submit">Save next update date</button>
+            <button type="submit">Save reminder</button>
           </form>}
           {choices.length ? <form action={updateFulfillmentAction} className={styles.form}>
             <input type="hidden" name="itemId" value={itemId} />
+            <h3>Update the customer</h3><p className={styles.helpText}>Choose the milestone they will see and when they should next hear from us.</p>
             <label>Next workflow step<select name="to" defaultValue={choices[0]?.value}>{choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</select></label>
             <label>Update reason<select name="reasonCode" defaultValue="PUBLICATION_UPDATE"><option value="PUBLICATION_UPDATE">Progress update</option><option value="CUSTOMER_ACTION_NEEDED">Customer action needed</option><option value="CONTENT_REVIEW">Content review</option><option value="CONTENT_APPROVED">Content approved</option><option value="FULFILLMENT_STARTED">Placement work started</option><option value="PAUSED_FOR_REVIEW">Paused for review</option><option value="RESUMED_WORK">Work resumed</option>{contentReviewReasonOptions.map((reason) => <option value={reason.value} key={reason.value}>{reason.label}</option>)}</select></label>
-            <label>Next update date<input name="nextUpdateAt" type="date" required /></label>
+            <label>Next customer update date<input name="nextUpdateAt" type="date" required /></label>
             <button type="submit">Save customer update</button>
           </form> : <p>This item has no further workflow step available.</p>}
         </section>

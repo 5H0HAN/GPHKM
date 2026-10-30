@@ -1,10 +1,12 @@
 "use server";
 
 import { headers } from "next/headers";
+import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { recordFinanceFindingAction, refreshStripeProviderFacts, resolveMissingStripeCheckoutSession, resolveStripeReconciliation, runFinanceReconciliation } from "@/server/wallet/finance-reconciliation";
 import { recordStripePayoutBankReview, refreshStripePayoutFacts } from "@/server/wallet/payout-reconciliation";
+import { logSafeFailure } from "@/server/observability/safe-log";
 
 function field(form: FormData, key: string) {
   const value = form.get(key);
@@ -12,10 +14,26 @@ function field(form: FormData, key: string) {
   return value;
 }
 
-export async function runFinanceReconciliationAction() {
-  const runId = await runFinanceReconciliation(await headers());
+export type ReconciliationRunState = { status: "idle" } | { status: "success"; runId: string } | { status: "error"; reason: "session" | "permission" | "failure"; message: string };
+
+export async function runFinanceReconciliationAction(_previous: ReconciliationRunState, _form: FormData): Promise<ReconciliationRunState> {
+  void _previous;
+  void _form;
+  let runId: string;
+  try {
+    runId = await runFinanceReconciliation(await headers());
+  } catch (error) {
+    if (error instanceof Error && error.message === "Unauthorized") {
+      return { status: "error", reason: "session", message: "Your staff session could not be verified. Sign in again, then retry the reconciliation." };
+    }
+    if (error instanceof Error && error.message === "Forbidden") {
+      return { status: "error", reason: "permission", message: "Your staff role is not authorized to run this reconciliation." };
+    }
+    logSafeFailure("finance_reconciliation_run_failed", error, randomUUID());
+    return { status: "error", reason: "failure", message: "Reconciliation could not run. Refresh this page and try again." };
+  }
   revalidatePath("/staff/reconciliation");
-  redirect(`/staff/reconciliation?financeRun=${encodeURIComponent(runId)}`);
+  return { status: "success", runId };
 }
 
 export async function recordFinanceFindingActionAction(form: FormData) {

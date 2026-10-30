@@ -1,41 +1,37 @@
-.header { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; margin-bottom:34px; }
-.eyebrow,.sectionEyebrow { margin:0 0 9px; color:var(--text-muted); font-size:11px; font-weight:560; }
-.header h1 { margin:0; font-size:clamp(32px,4vw,46px); font-weight:590; letter-spacing:-.055em; line-height:1.06; text-wrap:balance; }
-.lede { max-width:620px; margin:12px 0 0; color:var(--text-secondary); font-size:15px; line-height:1.6; }
-.dashboard { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(300px,.85fr); gap:18px; align-items:start; }
-.workPanel,.alertSection { min-width:0; border:1px solid var(--border); border-radius:9px; background:var(--surface-1); }
-.workPanel { padding:20px 22px 6px; }
-.sectionHeader,.alertHeader { display:flex; align-items:center; justify-content:space-between; gap:14px; }
-.sectionHeader { padding-bottom:16px; border-bottom:1px solid var(--border); }
-.sectionEyebrow { margin:0 0 5px; font-size:10px; }
-.sectionHeader h2,.alertHeader h2 { margin:0; font-size:18px; font-weight:580; letter-spacing:-.025em; }
-.sectionHeader > span { color:var(--text-muted); font-size:11px; }
-.areaList { display:grid; }
-.card { display:grid; grid-template-columns:10px minmax(0,1fr) auto; align-items:center; gap:14px; padding:17px 2px; border-bottom:1px solid var(--border); }
+.header { display:flex; align-items:flex-end; justify-content:space-between; gap:24px; margin-bottom:36px; padding-bottom:26px; border-bottom:1px solid var(--border-strong); }
+.header h1 { max-width:800px; margin:0; font-family:"GPHKM Geist","Segoe UI",sans-serif; font-size:clamp(42px,6vw,68px); font-weight:620; letter-spacing:-.055em; line-height:1; text-wrap:balance; }
+.lede { max-width:720px; margin:17px 0 0; color:var(--text-secondary); font-size:17px; line-height:1.6; }
+.dashboard { display:grid; grid-template-columns:minmax(0,1fr); gap:28px; align-items:start; }
+.workPanel,.alertSection { min-width:0; }
+.sectionHeader,.alertHeader { display:flex; align-items:center; justify-content:space-between; gap:16px; padding-bottom:16px; border-bottom:1px solid var(--border-strong); }
+.sectionHeader h2,.alertHeader h2 { margin:0; font-family:"GPHKM Geist","Segoe UI",sans-serif; font-size:29px; font-weight:580; letter-spacing:-.035em; }
+.sectionHeader > span { color:var(--text-muted); font-size:13px; }
+.areaList { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); column-gap:28px; }
+.card { display:grid; grid-template-columns:32px minmax(0,1fr); align-items:start; gap:12px; padding:18px 0; border-bottom:1px solid var(--border); }
 .card:last-child { border-bottom:0; }
-.cardMark { width:7px; height:7px; border:1px solid var(--border-strong); border-radius:2px; }
+.cardMark { display:grid; width:30px; height:30px; place-items:center; border:1px solid var(--border-strong); color:var(--accent-text); }
+.cardMark::before { width:8px; height:8px; border:1px solid currentColor; content:""; }
 .areaCopy { min-width:0; }
-.cardLabel { color:var(--text-muted); font-size:10px; }
-.card h3 { margin:4px 0 4px; font-size:14px; font-weight:570; letter-spacing:-.015em; }
-.card p { max-width:58ch; margin:0; color:var(--text-secondary); font-size:12px; line-height:1.5; }
-.cardAction { display:inline-flex; align-items:center; gap:8px; min-height:38px; padding:0 10px; border:1px solid var(--border); border-radius:6px; color:var(--text-primary); font-size:11px; text-decoration:none; white-space:nowrap; transition:background-color 150ms ease,border-color 150ms ease; }
-.cardAction span { color:var(--accent-text); font-size:13px; }
-.cardAction:hover { border-color:var(--border-strong); background:var(--surface-2); }
-.alertSection { padding:20px; }
-.alertHeader { align-items:flex-end; padding-bottom:16px; border-bottom:1px solid var(--border); }
-.alertHeader > span { display:grid; min-width:30px; height:30px; place-items:center; border:1px solid var(--border); border-radius:50%; color:var(--text-primary); font-size:12px; font-variant-numeric:tabular-nums; }
+.cardLabel { color:var(--accent-text); font-size:12px; font-weight:650; letter-spacing:.045em; }
+.card h3 { margin:5px 0 5px; font-size:18px; font-weight:650; letter-spacing:-.02em; }
+.card p { max-width:62ch; margin:0; color:var(--text-secondary); font-size:14px; line-height:1.55; }
+.cardAction { grid-column:2; display:inline-flex; align-items:center; gap:9px; width:fit-content; max-width:100%; min-height:38px; margin-top:6px; padding:0 11px; border:1px solid var(--border-strong); color:var(--text-primary); font-size:12px; font-weight:600; text-decoration:none; white-space:normal; transition:background-color 160ms ease,border-color 160ms ease,color 160ms ease; }
+.cardAction span { color:var(--accent-text); font-size:16px; }
+.cardAction:hover { border-color:var(--accent); background:var(--surface-2); color:var(--accent-text); }
+.alertSection { order:-1; padding:18px 20px; border:1px solid var(--border); background:var(--surface-1); }
+.alertHeader { align-items:center; padding-bottom:14px; }
+.alertHeader > span { display:grid; min-width:34px; height:34px; place-items:center; border:1px solid var(--border-strong); color:var(--text-primary); font-size:14px; font-variant-numeric:tabular-nums; }
 .alertList { display:grid; margin:0; padding:0; list-style:none; }
-.alert { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:12px; align-items:start; padding:16px 0; border-bottom:1px solid var(--border); }
-.alert strong { font-size:12px; font-weight:600; }
-.alert p { margin:5px 0 0; color:var(--text-secondary); font-size:11px; line-height:1.5; }
-.alertCount { display:grid; min-width:31px; height:28px; place-items:center; padding:0 6px; border:1px solid var(--warning); border-radius:5px; background:var(--warning-soft); color:var(--warning); font-size:12px; font-variant-numeric:tabular-nums; }
-.alert .cardAction { grid-column:1/-1; width:fit-content; }
-.alertEmpty { margin:18px 0; color:var(--text-secondary); font-size:12px; line-height:1.6; }
-.alertFootnote { margin:14px 0 0; color:var(--text-muted); font-size:10px; line-height:1.5; }
-.notice { display:flex; gap:9px; align-items:flex-start; margin-top:17px; padding-top:14px; border-top:1px solid var(--border); }
-.noticeDot { width:7px; height:7px; flex:0 0 auto; margin-top:4px; border-radius:50%; background:var(--accent); }
-.notice p { margin:0; color:var(--text-muted); font-size:10px; line-height:1.5; }
+.alert { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px 14px; align-items:start; padding:17px 0; border-bottom:1px solid var(--border); }
+.alert strong { font-size:14px; font-weight:650; }
+.alert p { margin:5px 0 0; color:var(--text-secondary); font-size:13px; line-height:1.5; }
+.alertCount { display:grid; min-width:34px; height:30px; place-items:center; padding:0 7px; border:1px solid var(--warning); background:var(--warning-soft); color:var(--warning); font-size:13px; font-variant-numeric:tabular-nums; }
+.alert .cardAction { grid-column:1/-1; width:fit-content; min-height:38px; }
+.alertEmpty { margin:18px 0; color:var(--text-secondary); font-size:14px; line-height:1.6; }
+.alertFootnote { margin:15px 0 0; color:var(--text-muted); font-size:12px; line-height:1.5; }
+.notice { display:flex; gap:10px; align-items:flex-start; margin-top:17px; padding-top:14px; border-top:1px solid var(--border); }
+.noticeDot { width:8px; height:8px; flex:0 0 auto; margin-top:6px; border-radius:50%; background:var(--sage); }
+.notice p { margin:0; color:var(--text-muted); font-size:12px; line-height:1.55; }
 
-@media(max-width:1100px) { .dashboard { grid-template-columns:1fr; } .alertSection { display:grid; grid-template-columns:minmax(0,1fr); } }
-@media(max-width:700px) { .header { flex-direction:column; } .card { grid-template-columns:8px minmax(0,1fr); gap:10px; } .cardAction { grid-column:2; width:fit-content; } }
-@media(max-width:440px) { .workPanel,.alertSection { padding:16px; } .card { padding:14px 0; } }
+@media(max-width:700px) { .header { margin-bottom:28px; } .header h1 { font-size:clamp(40px,11vw,58px); } .lede { font-size:16px; } .areaList { grid-template-columns:1fr; } .card { grid-template-columns:34px minmax(0,1fr); gap:12px; } .sectionHeader h2,.alertHeader h2 { font-size:26px; } }
+@media(max-width:440px) { .alertSection { padding:17px; } .card { gap:10px; padding:17px 0; } .cardMark { width:30px; height:30px; } .card h3 { font-size:17px; } }
