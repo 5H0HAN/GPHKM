@@ -1960,8 +1960,8 @@ try {
   // synthetic refresh token stays internally consistent even if the Node
   // runner and database container clocks differ slightly in CI.
   const staleTimestamp = await migration.query<{ stale_at: string; refresh_started_at: string }>(
-    `select to_char(clock_timestamp() - interval '30 minutes', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as stale_at,
-            to_char(clock_timestamp() - interval '31 minutes', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as refresh_started_at`,
+    `select to_char((clock_timestamp() - interval '30 minutes') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as stale_at,
+            to_char((clock_timestamp() - interval '31 minutes') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as refresh_started_at`,
   );
   const staleAt = staleTimestamp.rows[0]!.stale_at;
   const staleSnapshotId = await storeFinanceSnapshot(staleRefundAttempt, "failed", {
