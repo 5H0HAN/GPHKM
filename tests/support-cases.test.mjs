@@ -61,6 +61,25 @@ test("Support migration protects history and scopes customer, assignment, and Fi
   assert.doesNotMatch(sql, /INSERT INTO (public\.)?wallet_ledger_entry|UPDATE (public\.)?wallet_account/);
 });
 
+test("customer case opening serializes the scoped idempotency key before a plain RLS insert", () => {
+  const source = readFileSync(new URL("../src/server/support/cases.ts", import.meta.url), "utf8");
+  const open = source.split("export async function openCustomerSupportCase")[1].split("export async function listCustomerSupportCases")[0];
+  assert.match(open, /pg_advisory_xact_lock\(hashtextextended\([\s\S]*gphkm:support-open:/);
+  assert.match(open, /eq\(supportCase\.idempotencyKey, input\.idempotencyKey\)/);
+  assert.match(open, /await tx\.insert\(supportCase\)[\s\S]*?\);/);
+  assert.doesNotMatch(open, /onConflictDoNothing|\.returning\(\)/);
+});
+
+test("content consent serializes with handoff inside a privileged database trigger", () => {
+  const source = readFileSync(new URL("../src/server/orders/content-changes.ts", import.meta.url), "utf8");
+  const consent = source.split("export async function consentToContentChange")[1].split("export async function listContentChangesForCustomer")[0];
+  assert.doesNotMatch(consent, /\.for\("update"\)/);
+  const migration = readFileSync(new URL("../src/db/migrations/0134_content_consent_serialization.sql", import.meta.url), "utf8");
+  assert.match(migration, /SECURITY DEFINER/);
+  assert.match(migration, /FROM public\.order_item_fulfillment f[\s\S]*FOR UPDATE/);
+  assert.match(migration, /gphkm_change_request_before_handoff\(request_item\)/);
+});
+
 test("customer and staff Support case queues paginate inside their existing scopes", () => {
   const source = readFileSync(new URL("../src/server/support/cases.ts", import.meta.url), "utf8");
   const customerPage = readFileSync(new URL("../src/app/customer/support/page.tsx", import.meta.url), "utf8");

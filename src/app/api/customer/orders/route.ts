@@ -5,6 +5,34 @@ import { logSafeFailure } from "@/server/observability/safe-log";
 
 const MAX_BODY_BYTES = 2_000_000;
 
+function checkoutConflict(message: string): { code: string; error: string } {
+  if (message.includes("listings changed")) return {
+    code: "LISTING_CHANGED",
+    error: "A selected listing's price or terms changed. The catalog has been refreshed; review the updated total and details, then submit again. Your order details are still here.",
+  };
+  if (message.includes("listings are unavailable")) return {
+    code: "LISTING_UNAVAILABLE",
+    error: "A selected listing is no longer available. Remove it from the order before continuing. Your entered details are still here.",
+  };
+  if (message.includes("Insufficient available wallet balance")) return {
+    code: "INSUFFICIENT_WALLET_FUNDS",
+    error: "Available wallet funds are less than this order total. Add funds or resolve any pending wallet hold, then try again.",
+  };
+  if (message.includes("Writing is not available")) return {
+    code: "WRITING_UNAVAILABLE",
+    error: "GPHKM Writing is no longer available for one selected listing. Turn off the writing add-on or remove that listing.",
+  };
+  if (message.includes("idempotency")) return {
+    code: "CHECKOUT_ATTEMPT_CONFLICT",
+    error: "This checkout attempt conflicts with an earlier attempt. Check Orders before trying again.",
+  };
+  if (message.toLowerCase().includes("reconciliation")) return {
+    code: "CHECKOUT_RECONCILIATION_REQUIRED",
+    error: "We could not confirm the checkout result yet. Check Orders or contact Support before trying again.",
+  };
+  return { code: "CHECKOUT_CONFLICT", error: "Checkout could not be completed with the current order and wallet state. Review Orders and your available balance, then try again." };
+}
+
 async function readBoundedJson(request: Request): Promise<unknown> {
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) throw new Error("Invalid request");
   const lengthHeader = request.headers.get("content-length");
@@ -59,11 +87,12 @@ export async function POST(request: Request) {
     const requestId = status === 500 ? randomUUID() : null;
     const headers = { "Cache-Control": "no-store", ...(requestId ? { "X-Request-ID": requestId } : {}) };
     if (requestId) logSafeFailure("customer_order_checkout_failed", error, requestId, { organizationId: requestedOrganizationId });
-    const userMessage = status === 409 ? "Your order needs a review. Refresh the catalog or check your available wallet balance."
+    const conflict = status === 409 ? checkoutConflict(message) : null;
+    const userMessage = conflict?.error ?? (status === 409 ? "Your order needs a review."
       : status === 403 ? "Marketplace access is required to place an order."
         : status === 401 ? "Sign in again to continue."
           : status === 500 ? `Order checkout could not be completed. Contact support with reference ${requestId}.`
-            : "Order details could not be accepted. Review them and try again.";
-    return NextResponse.json({ error: userMessage }, { status, headers });
+            : "Order details could not be accepted. Review them and try again.");
+    return NextResponse.json({ error: userMessage, ...(conflict ? { code: conflict.code } : {}) }, { status, headers });
   }
 }

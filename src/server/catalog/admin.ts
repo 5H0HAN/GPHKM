@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { listing, listingRevision, listingSourcing, listingUrl, supplier, supplierContact } from "@/db/catalog-schema";
 import { requireStaffAccess } from "@/server/auth/staff";
@@ -65,6 +65,7 @@ export async function createDraftListing(headers: Headers, input: NewListingInpu
 export async function transitionListing(headers: Headers, id: string, next: ListingStatus) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Listing unavailable");
   return staffTransaction(headers, "catalog.manage", async (tx, userId) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('gphkm:catalog-listing:' || ${id}, 0))`);
     const [row] = await tx.select().from(listing).where(eq(listing.id, id)).for("update").limit(1);
     if (!row || !canTransitionListing(row.status, next, "ADMIN")) throw new Error("Invalid listing transition");
     const [source] = await tx.select().from(listingSourcing).where(eq(listingSourcing.listingId, id)).limit(1);
@@ -146,6 +147,7 @@ export async function updateListing(headers: Headers, input: {
   if (termErrors.length || relationshipErrors.length) throw new Error("Invalid listing fields");
 
   return staffTransaction(headers, "catalog.manage", async (tx, userId) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('gphkm:catalog-listing:' || ${input.id}, 0))`);
     const [current] = await tx.select().from(listing).where(eq(listing.id, input.id)).for("update").limit(1);
     if (!current || current.revision !== input.expectedRevision || current.status === "ARCHIVED") {
       throw new Error("Listing changed or is unavailable; reload before editing");
@@ -247,18 +249,39 @@ export async function listStaffSuppliers(headers: Headers) {
   });
 }
 
-export async function listStaffSuppliersPage(headers: Headers, requestedPage: unknown = 1) {
+export async function listStaffSuppliersPage(
+  headers: Headers,
+  requested: { page?: unknown; query?: unknown; status?: unknown } = {},
+) {
   return staffTransaction(headers, "supplier.manage", async (tx, userId) => {
-    const [count] = await tx.select({ total: sql<number>`count(*)::int` }).from(supplier);
-    const pagination = staffCatalogPagination(requestedPage, count?.total ?? 0);
+    const query = typeof requested.query === "string" ? requested.query.trim().slice(0, 120) : "";
+    const status = requested.status === "ACTIVE" || requested.status === "INACTIVE" ? requested.status : "";
+    const where = and(
+      status ? eq(supplier.status, status) : undefined,
+      query ? (() => {
+        const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+        return or(
+          ilike(supplier.name, pattern),
+          ilike(supplierContact.name, pattern),
+          ilike(supplierContact.email, pattern),
+          ilike(supplier.status, pattern),
+        );
+      })() : undefined,
+    );
+    const [count] = await tx.select({ total: sql<number>`count(distinct ${supplier.id})::int` })
+      .from(supplier)
+      .leftJoin(supplierContact, and(eq(supplierContact.supplierId, supplier.id), eq(supplierContact.isPrimary, true)))
+      .where(where);
+    const pagination = staffCatalogPagination(requested.page ?? 1, count?.total ?? 0);
     const rows = await tx.select({
       id: supplier.id, name: supplier.name, status: supplier.status, contactName: supplierContact.name,
       email: supplierContact.email, updatedAt: supplier.updatedAt,
     }).from(supplier).leftJoin(supplierContact, and(eq(supplierContact.supplierId, supplier.id), eq(supplierContact.isPrimary, true)))
+      .where(where)
       .orderBy(desc(supplier.updatedAt), desc(supplier.id)).limit(pagination.limit).offset(pagination.offset);
     await appendAuditEvent(tx, { actorUserId: userId, action: "SUPPLIER_CONTACTS_VIEWED", targetType: "supplier_directory", targetId: "directory",
-      metadata: { itemCount: rows.filter((row) => row.email !== null).length, page: pagination.page, totalCount: pagination.total, result: "ALLOWED" } });
-    return { ...pagination, items: rows };
+      metadata: { itemCount: rows.filter((row) => row.email !== null).length, page: pagination.page, totalCount: pagination.total, hasSearch: Boolean(query), statusFilter: status || null, result: "ALLOWED" } });
+    return { ...pagination, items: rows, query, status };
   });
 }
 
@@ -273,10 +296,10 @@ const normalizeSupplierContact = (input: { name: string; email: string; roleLabe
 };
 
 export async function getStaffSupplierProfile(headers: Headers, id: string, requestedPages: { contacts?: unknown; inventory?: unknown } = {}) {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("Supplier unavailable");
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
   return staffTransaction(headers, "supplier.manage", async (tx, userId) => {
     const [record] = await tx.select().from(supplier).where(eq(supplier.id, id)).limit(1);
-    if (!record) throw new Error("Supplier unavailable");
+    if (!record) return null;
     const [contactCount] = await tx.select({ total: sql<number>`count(*)::int` }).from(supplierContact)
       .where(eq(supplierContact.supplierId, id));
     const contactPagination = staffCatalogPagination(requestedPages.contacts, contactCount?.total ?? 0);

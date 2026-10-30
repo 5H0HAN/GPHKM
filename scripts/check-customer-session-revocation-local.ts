@@ -55,11 +55,10 @@ try {
   sessionId = sessionResult.session.id;
   userId = sessionResult.user.id;
 
-  stage = "customer sign-in session projection";
+  stage = "customer sign-in redirect to the workspace";
   const customerSignInPage = await fetch(`${customerOrigin}/sign-in`, { headers: { cookie } });
-  const customerSignInHtml = await customerSignInPage.text();
-  if (customerSignInPage.status !== 200 || !customerSignInHtml.includes(`Signed in as ${email.trim().toLowerCase()}.`)) {
-    throw new Error("Customer sign-in page did not render the current server-validated session");
+  if (customerSignInPage.status !== 200 || new URL(customerSignInPage.url).pathname !== "/customer") {
+    throw new Error("An authenticated customer did not reach the customer workspace from sign-in");
   }
 
   stage = "customer identity isolation on staff sign-in";

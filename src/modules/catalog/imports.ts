@@ -357,12 +357,16 @@ export function stageImportRows(options: {
   rows: unknown[][];
   mapping: ImportMapping;
   existingListings: Array<{ id: string; websiteUrl: string }>;
+  headerRowNumber?: number;
 }): ImportCandidate[] {
   if (!options || typeof options !== "object" || !Array.isArray(options.rows) || !Array.isArray(options.existingListings)) {
     throw new Error("IMPORT_INPUT_INVALID");
   }
   checkGrid(options.rows);
-  const [headers, ...dataRows] = options.rows;
+  const headerRowNumber = options.headerRowNumber ?? 1;
+  if (!Number.isInteger(headerRowNumber) || headerRowNumber < 1 || headerRowNumber > 100) throw new Error("IMPORT_HEADER_ROW_INVALID");
+  const headers = options.rows[headerRowNumber - 1];
+  const dataRows = options.rows.slice(headerRowNumber);
   if (!headers || dataRows.length > IMPORT_LIMITS.rowsPerSheet) throw new Error("IMPORT_HEADER_AND_ROWS_REQUIRED");
   const mapping = buildImportMapping(headers, options.mapping);
   const rowDomain = new Map<string, number>();
@@ -374,7 +378,7 @@ export function stageImportRows(options: {
     current.push(listing.id);
     existingByDomain.set(normalized, current);
   }
-  return dataRows.map((row, index) => ({ row, rowNumber: index + 2 }))
+  return dataRows.map((row, index) => ({ row, rowNumber: index + headerRowNumber + 1 }))
     .filter(({ row }) => row.some((value) => value !== null && value !== undefined && String(value).trim() !== ""))
     .map(({ row, rowNumber }) => {
     const errors: ImportError[] = [];
@@ -390,7 +394,8 @@ export function stageImportRows(options: {
       const text = typeof value === "string" ? value.trim() : value;
       switch (field) {
         case "websiteUrl": {
-          const normalized = normalizeWebsiteUrl(text);
+          const bareDomain = typeof text === "string" && /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(text);
+          const normalized = normalizeWebsiteUrl(bareDomain ? `https://${text}/` : text);
           if (!normalized) errors.push({ field, code: "INVALID_HTTPS_ORIGIN" });
           else values.websiteUrl = normalized;
           break;

@@ -1,10 +1,10 @@
-.page { min-height: 100svh; display: grid; place-items: center; padding: 32px 20px; background: var(--canvas); color: var(--text-primary); }
+.page { min-height: 100svh; display: grid; place-items: center; padding: 40px 20px; background: var(--canvas); color: var(--text-primary); }
 .skipLink { position: absolute; z-index: 2; top: 8px; left: 8px; transform: translateY(-160%); padding: 9px 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-1); color: var(--text-primary); text-decoration: none; }
 .skipLink:focus-visible { transform: translateY(0); outline: 2px solid var(--focus); outline-offset: 2px; }
-.brand { position: absolute; top: 28px; left: clamp(20px, 4vw, 56px); color: var(--text-primary); font-weight: 700; font-size: 18px; letter-spacing: -.5px; text-decoration: none; }
+.brand { position: absolute; top: 28px; left: clamp(20px, 4vw, 56px); color: var(--text-primary); font-weight: 700; font-size: 20px; letter-spacing: -.6px; text-decoration: none; }
 .brand span { margin-left: 8px; color: var(--text-muted); font: 600 10px/1 ui-monospace, monospace; letter-spacing: .12em; }
-.panel { width: min(100%, 420px); padding: 32px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1); }
+.panel { width: min(100%, 440px); padding: 34px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-1); box-shadow: 0 22px 64px rgb(0 0 0 / 13%); }
 .eyebrow { margin: 0 0 18px; color: var(--text-muted); font: 600 11px/1.4 ui-monospace, monospace; letter-spacing: .12em; }
 .form :global(h1) { font-size: 24px; }
 .note { margin: 22px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
-@media (max-width: 480px) { .panel { padding: 24px 20px; } }
+@media (max-width: 480px) { .brand { top: 20px; } .panel { padding: 25px 21px; } }

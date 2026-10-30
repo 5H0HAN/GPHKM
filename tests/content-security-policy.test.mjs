@@ -19,6 +19,8 @@ test("production customer CSP allows nonce-bound Next and Stripe scripts without
 test("staff CSP excludes Stripe origins and invalid nonce input is rejected", () => {
   const policy = buildContentSecurityPolicy(nonce, { development: true, customerSurface: false });
   assert.match(policy, /unsafe-eval/);
+  assert.match(policy, /style-src 'self' 'unsafe-inline'/);
+  assert.doesNotMatch(policy, /style-src 'self' 'nonce-/);
   assert.doesNotMatch(policy, /stripe\.com|stripe\.network/);
   assert.throws(() => buildContentSecurityPolicy("bad nonce", { development: false, customerSurface: true }), /Invalid CSP nonce/);
 });

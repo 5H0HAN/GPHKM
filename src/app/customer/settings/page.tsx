@@ -13,6 +13,8 @@ import settings from "./settings.module.css";
 import { readAppearancePreference } from "@/server/identity/appearance";
 import { listCustomerLegalAcceptanceHistory } from "@/server/legal/consent";
 import { firstQueryValue } from "@/modules/query-params";
+import { getAuthForSurface } from "@/server/auth";
+import { PasswordChangeForm } from "./password-change-form";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +28,10 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     getCustomerNotificationEmailPreference(requestHeaders), getCustomerNewsletterPreference(requestHeaders),
     listCustomerLegalAcceptanceHistory(requestHeaders),
   ]);
+  const authAccounts = await getAuthForSurface("customer").api.listUserAccounts({ headers: requestHeaders }).catch(() => []);
+  const hasPasswordAccount = authAccounts.some((account) => account.providerId === "credential");
+  const hasGoogleAccount = authAccounts.some((account) => account.providerId === "google");
+  const signInMethods = [hasGoogleAccount ? "Google" : null, hasPasswordAccount ? "Email and password" : null].filter(Boolean).join(", ") || "Unavailable";
   let sessions: Awaited<ReturnType<typeof listCustomerSessions>> | null = null;
   try { sessions = await listCustomerSessions(await headers()); } catch { /* Require a fresh authenticated session to review device sessions. */ }
   const query = await searchParams;
@@ -54,11 +60,18 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           <h2 className={styles.panelTitle}>Profile</h2>
           <ul className={styles.list}>
             <li className={styles.listItem}><span>Verified email</span><span>{workspace.customer.email}</span></li>
-            <li className={styles.listItem}><span>Sign-in method</span><span>Google</span></li>
+            <li className={styles.listItem}><span>Sign-in method</span><span>{signInMethods}</span></li>
           </ul>
           <ProfileNameForm initialName={workspace.customer.name} />
-          <p className={styles.panelText}>GPHKM cannot change the Google account used to sign in or recover access to it. Manage your Google Account or use Google account recovery.</p>
-          <div className={settings.links}><a href="https://myaccount.google.com/" rel="noopener noreferrer">Manage Google Account</a><a href="https://accounts.google.com/signin/recovery" rel="noopener noreferrer">Google account recovery</a></div>
+          {hasPasswordAccount && <>
+            <h3 className={styles.panelTitle}>Password</h3>
+            <p className={styles.panelText}>Use your current password to choose a new one. Other active sessions will be signed out.</p>
+            <PasswordChangeForm />
+          </>}
+          {hasGoogleAccount && <>
+            <p className={styles.panelText}>Your Google password and account recovery are managed by Google.</p>
+            <div className={settings.links}><a href="https://myaccount.google.com/" rel="noopener noreferrer">Manage Google Account</a><a href="https://accounts.google.com/signin/recovery" rel="noopener noreferrer">Google account recovery</a></div>
+          </>}
           <div className={settings.links}><Link href="/sign-in">Manage sign-in</Link><Link href={`/customer/support${suffix}`}>Support</Link></div>
         </article>
         <article className={`${styles.panel} ${styles.span5}`}>
