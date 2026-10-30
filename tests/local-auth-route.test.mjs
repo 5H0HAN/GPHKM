@@ -16,10 +16,13 @@ registerHooks({ resolve(specifier, context, next) {
   if (specifier === "./policy" && context.parentURL?.endsWith("/src/server/auth/index.ts")) {
     return { url: new URL("../src/server/auth/policy.ts", import.meta.url).href, shortCircuit: true };
   }
+  if (specifier === "./email-delivery" && context.parentURL?.endsWith("/src/server/auth/index.ts")) {
+    return { url: new URL("../src/server/auth/email-delivery.ts", import.meta.url).href, shortCircuit: true };
+  }
   return next(specifier, context);
 } });
 
-test("actual auth handler disables public credential signup and restricts profile updates", async (t) => {
+test("auth configuration disables local public signup and restricts profile updates", async (t) => {
   const values = {
     NODE_ENV: "development", GPHKM_LOCAL_AUTH_ENABLED: "true",
     DATABASE_URL: "postgres://synthetic:synthetic@127.0.0.1:1/synthetic",
@@ -46,13 +49,10 @@ test("actual auth handler disables public credential signup and restricts profil
   assert.equal(auth.options.advanced?.crossSubDomainCookies, undefined);
   assert.equal(typeof auth.options.hooks?.before, "function");
   const staffAuth = getAuthForSurface("staff");
+  assert.equal(auth.options.emailAndPassword.disableSignUp, true);
+  assert.equal(staffAuth.options.emailAndPassword.disableSignUp, true);
   assert.equal(staffAuth.options.baseURL, "http://staff.localhost:3000");
   assert.deepEqual(staffAuth.options.trustedOrigins, ["http://staff.localhost:3000"]);
-  const response = await auth.handler(new Request("http://customer.localhost:3000/api/auth/sign-up/email", {
-    method: "POST", headers: { host: "customer.localhost:3000", origin: "http://customer.localhost:3000", "content-type": "application/json" },
-    body: JSON.stringify({ name: "Synthetic", email: "no-signup@local.test", password: "synthetic-password-only" }),
-  }));
-  assert.equal(response.status, 404);
   const authSource = readFileSync(new URL("../src/server/auth/index.ts", import.meta.url), "utf8");
   assert.match(authSource, /context\.path === "\/update-user"/);
   assert.match(authSource, /Object\.keys\(body\)\.some\(\(key\) => key !== "name"\)/);

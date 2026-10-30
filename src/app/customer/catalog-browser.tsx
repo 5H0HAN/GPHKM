@@ -20,6 +20,24 @@ const emptyDraft = (): ItemDraft => ({ targetUrl: "", anchorText: "", instructio
 const dollars = (cents: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
 const linkTypeLabel: Record<CustomerListing["linkType"], string> = { DOFOLLOW: "DoFollow", NOFOLLOW: "NoFollow", SPONSORED: "Sponsored", UGC: "UGC" };
 const validityLabel: Record<CustomerListing["linkValidity"], string> = { PERMANENT: "Lifetime intent", FIVE_YEARS: "5 years", ONE_YEAR: "1 year", SIX_MONTHS: "6 months", THREE_MONTHS: "3 months" };
+const metricProviders: { provider: CustomerListing["metrics"][number]["provider"]; label: string; shortLabel: string }[] = [
+  { provider: "OPEN_PAGE_RANK", label: "Open PageRank", shortLabel: "OPR" },
+  { provider: "AHREFS_DR", label: "Ahrefs Domain Rating", shortLabel: "Ahrefs DR" },
+  { provider: "MOZ_DA", label: "Moz Domain Authority", shortLabel: "Moz DA" },
+];
+
+function formatMetric(value: number) {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 }).format(value);
+}
+
+function formatMetricDate(value: string | null) {
+  if (!value) return null;
+  return new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(value));
+}
+
+function metricScopeLabel(scope: CustomerListing["metrics"][number]["metricScope"]) {
+  return scope === "HOST" ? "Host" : scope === "REGISTERED_DOMAIN" ? "Registered domain" : "Domain";
+}
 
 export function CatalogBrowser({ organizationId, listings }: { organizationId: string; listings: CustomerListing[] }) {
   const router = useRouter();
@@ -122,7 +140,8 @@ export function CatalogBrowser({ organizationId, listings }: { organizationId: s
           },
         }),
       });
-      const result = await response.json().catch(() => null) as { error?: string } | null;
+      const result = await response.json().catch(() => null) as { error?: string; code?: string } | null;
+      if (result?.code === "LISTING_CHANGED" || result?.code === "LISTING_UNAVAILABLE") router.refresh();
       if (!response.ok) throw new Error(result?.error ?? "Order could not be completed.");
       idempotencyKey.current = "";
       router.push(`/customer/orders?organizationId=${encodeURIComponent(organizationId)}&placed=1`);
@@ -144,23 +163,53 @@ export function CatalogBrowser({ organizationId, listings }: { organizationId: s
               <div className="catalogCardTop">
                 <label className="catalogSelect">
                   <input type="checkbox" checked={Boolean(item)} onChange={(event) => toggle(listing.id, event.currentTarget.checked)} aria-label={`Add ${listing.title} to order`} />
-                  <span>Select</span>
+                  <span>{item ? "Selected" : "Add to order"}</span>
                 </label>
-                <div className="catalogPrice">{dollars(listing.retailPriceCents)}<span> per placement</span></div>
+                <div className="catalogPrice"><strong>{dollars(listing.retailPriceCents)}</strong><span>per placement</span></div>
               </div>
-              <h2>{listing.title}</h2>
+              <div className="catalogIdentity">
+                <span className="catalogDomainMark" aria-hidden="true">{listing.websiteUrl ? new URL(listing.websiteUrl).hostname.slice(0, 1).toUpperCase() : "G"}</span>
+                <div className="catalogIdentityText">
+                  <h2>{listing.title}</h2>
+                  {listing.websiteUrl ? <a className="catalogSite" href={listing.websiteUrl} target="_blank" rel="noreferrer">{new URL(listing.websiteUrl).hostname}<span aria-hidden="true">↗</span></a> : <span className="catalogHiddenSite">Website address unlocks with marketplace access</span>}
+                </div>
+              </div>
               <p className="catalogDescription">{listing.description}</p>
-              {listing.websiteUrl ? <p className="catalogSite"><a href={listing.websiteUrl} target="_blank" rel="noreferrer">{new URL(listing.websiteUrl).hostname}</a></p> : <p className="catalogHiddenSite">Website address hidden until wallet access is loaded</p>}
-              <dl className="catalogTerms">
-                <div><dt>Categories</dt><dd>{listing.categories.join(", ")}</dd></div>
-                <div><dt>Language and region</dt><dd>{listing.primaryLanguage} · {listing.countryCode}</dd></div>
-                <div><dt>Link and placement term</dt><dd>{linkTypeLabel[listing.linkType]} · {validityLabel[listing.linkValidity]}</dd></div>
-                <div><dt>Placement availability</dt><dd>The stated term describes the publisher&apos;s intent and is not a guarantee that the link will remain available. After we verify a completed placement, GPHKM does not offer a replacement or refund if it later disappears.</dd></div>
-                <div><dt>Turnaround</dt><dd>About {listing.turnaroundDays} days</dd></div>
-                <div><dt>Placement permissions</dt><dd>Sports and gaming: {listing.allowsSportsAndGaming ? "Allowed" : "Not allowed"}; pharmacy: {listing.allowsPharmacy ? "Allowed" : "Not allowed"}; crypto: {listing.allowsCrypto ? "Allowed" : "Not allowed"}; foreign-language content: {listing.allowsForeignLanguage ? "Allowed" : "Not allowed"}; sponsored marking: {listing.sponsoredContentMarking ? "Required" : "Not required"}</dd></div>
-                {listing.metrics.map((metric) => <div key={`${metric.provider}-${metric.metricScope}-${metric.observedOn}`}><dt>{metric.provider.replaceAll("_", " ")} ({metric.metricScope === "HOST" ? "site host" : "registered domain"})</dt><dd>{metric.value ?? "—"} · {metric.attributionText}</dd></div>)}
-              </dl>
-              {listing.buyerRequirements && <details className="catalogRequirements"><summary>Read placement requirements</summary><p>{listing.buyerRequirements}</p></details>}
+              <ul className="catalogCategories" aria-label="Website categories">{listing.categories.map((category) => <li key={category}>{category}</li>)}</ul>
+              <div className="catalogQuickFacts" aria-label="Placement overview">
+                <div><span>Language &amp; region</span><strong>{listing.primaryLanguage} · {listing.countryCode}</strong></div>
+                <div><span>Link type</span><strong>{linkTypeLabel[listing.linkType]}</strong></div>
+                <div><span>Placement term</span><strong>{validityLabel[listing.linkValidity]}</strong></div>
+                <div><span>Turnaround</span><strong>About {listing.turnaroundDays} days</strong></div>
+              </div>
+              <section className="catalogMetrics" aria-label="Approved domain metrics">
+                <div className="catalogMetricsHeader"><h3>Domain metrics</h3><span>Approved, source-attributed</span></div>
+                <div className="catalogMetricGrid">
+                  {metricProviders.map(({ provider, label, shortLabel }) => {
+                    const providerMetrics = listing.metrics.filter((metric) => metric.provider === provider);
+                    return <div className="catalogMetric" key={provider}>
+                      <span className="catalogMetricLabel" title={label}>{shortLabel}</span>
+                      {providerMetrics.length ? providerMetrics.map((metric) => <div className="catalogMetricReading" key={`${metric.metricScope}-${metric.observedOn}`}>
+                        <strong>{metric.value === null ? "—" : formatMetric(metric.value)}</strong>
+                        <small>{metricScopeLabel(metric.metricScope)}{formatMetricDate(metric.observedOn) ? ` · ${formatMetricDate(metric.observedOn)}` : ""}</small>
+                        {metric.attributionText && <span>{metric.attributionText}</span>}
+                      </div>) : <div className="catalogMetricUnavailable"><strong>—</strong><small>Not available</small></div>}
+                    </div>;
+                  })}
+                </div>
+              </section>
+              <details className="catalogMore">
+                <summary>Placement details &amp; requirements</summary>
+                <dl className="catalogTerms">
+                  <div><dt>Sports and gaming</dt><dd>{listing.allowsSportsAndGaming ? "Allowed" : "Not allowed"}</dd></div>
+                  <div><dt>Pharmacy</dt><dd>{listing.allowsPharmacy ? "Allowed" : "Not allowed"}</dd></div>
+                  <div><dt>Crypto</dt><dd>{listing.allowsCrypto ? "Allowed" : "Not allowed"}</dd></div>
+                  <div><dt>Foreign-language content</dt><dd>{listing.allowsForeignLanguage ? "Allowed" : "Not allowed"}</dd></div>
+                  <div><dt>Sponsored marking</dt><dd>{listing.sponsoredContentMarking ? "Required" : "Not required"}</dd></div>
+                  <div className="catalogTermsWide"><dt>Placement availability</dt><dd>The stated term describes the publisher&apos;s intent and is not a guarantee that the link will remain available. After verified completion, GPHKM does not offer a replacement or refund if it later disappears.</dd></div>
+                </dl>
+                {listing.buyerRequirements && <div className="catalogRequirements"><h4>Buyer requirements</h4><p>{listing.buyerRequirements}</p></div>}
+              </details>
               {item && (
                 <div className="catalogItemDetails">
                   <label>Destination URL<input type="url" required maxLength={2048} value={item.targetUrl} onChange={(event) => change(listing.id, "targetUrl", event.currentTarget.value)} placeholder="https://your-site.com/page" /></label>
@@ -188,11 +237,11 @@ export function CatalogBrowser({ organizationId, listings }: { organizationId: s
             <summary>Copy shared details across selected placements</summary>
             <p>Copy text to each selected item, then review and edit its details separately.</p>
             <div className="catalogSharedGrid">
-              <label>Shared destination URL<input type="url" maxLength={2048} value={sharedDetails.targetUrl} onChange={(event) => setSharedDetails((current) => ({ ...current, targetUrl: event.currentTarget.value }))} /></label>
-              <label>Shared anchor text<input maxLength={200} value={sharedDetails.anchorText} onChange={(event) => setSharedDetails((current) => ({ ...current, anchorText: event.currentTarget.value }))} /></label>
-              <label>Shared publication instructions<textarea maxLength={4000} rows={3} value={sharedDetails.instructions} onChange={(event) => setSharedDetails((current) => ({ ...current, instructions: event.currentTarget.value }))} /></label>
-              <label>Shared article<textarea maxLength={20000} rows={3} value={sharedDetails.articleText} onChange={(event) => setSharedDetails((current) => ({ ...current, articleText: event.currentTarget.value }))} /></label>
-              <label>Shared writing brief<textarea maxLength={4000} rows={3} value={sharedDetails.writingBrief} onChange={(event) => setSharedDetails((current) => ({ ...current, writingBrief: event.currentTarget.value }))} /></label>
+              <label>Shared destination URL<input type="url" maxLength={2048} value={sharedDetails.targetUrl} onChange={(event) => { const value = event.currentTarget.value; setSharedDetails((current) => ({ ...current, targetUrl: value })); }} /></label>
+              <label>Shared anchor text<input maxLength={200} value={sharedDetails.anchorText} onChange={(event) => { const value = event.currentTarget.value; setSharedDetails((current) => ({ ...current, anchorText: value })); }} /></label>
+              <label>Shared publication instructions<textarea maxLength={4000} rows={3} value={sharedDetails.instructions} onChange={(event) => { const value = event.currentTarget.value; setSharedDetails((current) => ({ ...current, instructions: value })); }} /></label>
+              <label>Shared article<textarea maxLength={20000} rows={3} value={sharedDetails.articleText} onChange={(event) => { const value = event.currentTarget.value; setSharedDetails((current) => ({ ...current, articleText: value })); }} /></label>
+              <label>Shared writing brief<textarea maxLength={4000} rows={3} value={sharedDetails.writingBrief} onChange={(event) => { const value = event.currentTarget.value; setSharedDetails((current) => ({ ...current, writingBrief: value })); }} /></label>
             </div>
             <button type="button" className="catalogCopyButton" onClick={copySharedDetails}>Copy into selected items</button>
           </details>

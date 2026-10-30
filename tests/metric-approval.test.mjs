@@ -50,7 +50,7 @@ test("host-specific Open PageRank scope survives persistence, customer projectio
   assert.match(migration, /latest\.metric_scope/);
   assert.match(service, /metricScope: providerRow\.scope/);
   assert.match(customer, /metric_scope: string/);
-  assert.match(page, /metric\.metricScope === "HOST" \? "site host" : "registered domain"/);
+  assert.match(page, /scope === "HOST" \? "Host" : scope === "REGISTERED_DOMAIN" \? "Registered domain" : "Domain"/);
   assert.match(targetMigration, /metric_target/);
   assert.match(targetMigration, /requested_target = lower\(rtrim\(regexp_replace\(u\.website_url/);
   assert.match(service, /observation\.requestedTarget !== normalizeMetricDomain\(new URL\(url\.websiteUrl\)\.hostname\)/);

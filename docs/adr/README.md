@@ -19,7 +19,7 @@ ADRs capture material choices and their consequences. Product behavior details r
 - [ADR-0015: Isolate webhook and staff MFA database capabilities](ADR-0015-isolated-provider-and-mfa-database-roles.md)
 - [ADR-0016: Enforce identity transitions in PostgreSQL](ADR-0016-database-enforced-identity-transitions.md)
 - [ADR-0017: Record supplier payments as transfer events](ADR-0017-supplier-transfer-events.md)
-- [ADR-0018: Rely on Google account recovery for customers](ADR-0018-google-account-recovery.md)
+- [ADR-0018: Customer email/password authentication and reset](ADR-0018-customer-email-password-auth.md)
 - [ADR-0019: Keep billing profiles minimal and Owner-only](ADR-0019-owner-billing-profile.md)
 - [ADR-0020: Evidence resolution for ambiguous Stripe Checkout Session creation](ADR-0020-evidence-resolution-of-ambiguous-stripe-session.md)
 - [ADR-0021: Require versioned acceptable-content acceptance at checkout](ADR-0021-versioned-acceptable-content-acceptance.md)

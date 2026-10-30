@@ -23,7 +23,7 @@
 .assignLine { display: flex; gap: 7px; }
 .assignLine select, .form select, .form input, .evidenceForm input { min-width: 0; min-height: 38px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-1); color: var(--text-primary); font: inherit; }
 .assignLine select { flex: 1; }
-.assignLine button, .form button, .evidenceForm button { min-height: 38px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-2); color: var(--text-primary); font: 550 12px/1.2 inherit; cursor: pointer; }
+.assignLine button, .form button, .evidenceForm button { min-height: 38px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-2); color: var(--text-primary); font: inherit; font-size: 12px; font-weight: 550; line-height: 1.2; cursor: pointer; }
 .assignLine button:hover, .form button:hover, .evidenceForm button:hover, .open:hover { border-color: var(--accent); }
 .open { width: fit-content; padding: 8px 10px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-primary); font-size: 12px; text-decoration: none; }
 .restricted { color: var(--text-muted); font-size: 11px; }

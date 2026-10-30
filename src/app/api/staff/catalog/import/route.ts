@@ -74,11 +74,14 @@ export async function POST(request: Request) {
     }
     let mapping: ImportMapping;
     try { mapping = parseColumnMapping(fields); } catch { return redirectToStaff("/staff/suppliers/imports?error=mapping"); }
+    const headerRowRaw = form.get("headerRowNumber");
+    const headerRowNumber = headerRowRaw === null ? 1 : typeof headerRowRaw === "string" && /^\d{1,3}$/.test(headerRowRaw) ? Number(headerRowRaw) : 0;
+    if (!Number.isInteger(headerRowNumber) || headerRowNumber < 1 || headerRowNumber > 100) return redirectToStaff("/staff/suppliers/imports?error=mapping");
     let result: { batchId: string; rowCount: number };
     if (sourceType === "GOOGLE_SHEETS") {
       const reference = form.get("sheetReference");
       if (typeof reference !== "string") return redirectToStaff("/staff/suppliers/imports?error=source");
-      result = await stageInventoryImport(request.headers, { supplierId, sourceType, sheetReference: reference, mapping });
+      result = await stageInventoryImport(request.headers, { supplierId, sourceType, sheetReference: reference, headerRowNumber, mapping });
     } else {
       const file = form.get("file");
       if (!(file instanceof File) || file.size < 1 || file.size > IMPORT_LIMITS.fileBytes) return redirectToStaff("/staff/suppliers/imports?error=file");
@@ -86,7 +89,7 @@ export async function POST(request: Request) {
       const sheetIndex = typeof sheetIndexRaw === "string" && /^\d{1,2}$/.test(sheetIndexRaw) ? Number(sheetIndexRaw) : 0;
       result = await stageInventoryImport(request.headers, {
         supplierId, sourceType: sourceType as "CSV" | "XLSX",
-        file: { name: file.name, bytes: Buffer.from(await file.arrayBuffer()) }, sheetIndex, mapping,
+        file: { name: file.name, bytes: Buffer.from(await file.arrayBuffer()) }, sheetIndex, headerRowNumber, mapping,
       });
     }
     return redirectToStaff(`/staff/suppliers/imports/${result.batchId}?staged=${result.rowCount}`);

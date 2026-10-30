@@ -9,20 +9,20 @@ import { StaffNav } from "./staff-nav";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { readAppearancePreference } from "@/server/identity/appearance";
 
-const navigation: { label: string; href: string; permission: StaffPermission }[] = [
-  { label: "Overview", href: "/staff", permission: "audit.read" },
-  { label: "Listings", href: "/staff/catalog", permission: "catalog.manage" },
-  { label: "Suppliers & imports", href: "/staff/suppliers", permission: "supplier.manage" },
-  { label: "Domain metrics", href: "/staff/metrics", permission: "metrics.refresh" },
-  { label: "Supplier performance", href: "/staff/suppliers/performance", permission: "supplier-report.export" },
-  { label: "Supplier costs & payments", href: "/staff/suppliers/finance", permission: "costs.read" },
-  { label: "Gross profit", href: "/staff/suppliers/finance/margins", permission: "costs.read" },
-  { label: "Fulfillment", href: "/staff/fulfillment", permission: "fulfillment.manage" },
-  { label: "Support", href: "/staff/support", permission: "audit.read" },
-  { label: "Reconciliation", href: "/staff/reconciliation", permission: "wallet.reconcile" },
-  { label: "Browsing access", href: "/staff/access-policy", permission: "access-policy.manage" },
-  { label: "Audit trail", href: "/staff/audit", permission: "audit.read" },
-  { label: "Staff access", href: "/staff/team", permission: "staff.manage" },
+const navigation: { group: string; label: string; href: string; permission: StaffPermission }[] = [
+  { group: "Work", label: "Overview", href: "/staff", permission: "audit.read" },
+  { group: "Work", label: "Listings", href: "/staff/catalog", permission: "catalog.manage" },
+  { group: "Work", label: "Suppliers & imports", href: "/staff/suppliers", permission: "supplier.manage" },
+  { group: "Operations", label: "Fulfillment", href: "/staff/fulfillment", permission: "fulfillment.manage" },
+  { group: "Operations", label: "Support", href: "/staff/support", permission: "audit.read" },
+  { group: "Operations", label: "Domain metrics", href: "/staff/metrics", permission: "metrics.refresh" },
+  { group: "Operations", label: "Supplier performance", href: "/staff/suppliers/performance", permission: "supplier-report.export" },
+  { group: "Finance", label: "Reconciliation", href: "/staff/reconciliation", permission: "wallet.reconcile" },
+  { group: "Finance", label: "Supplier costs & payments", href: "/staff/suppliers/finance", permission: "costs.read" },
+  { group: "Finance", label: "Gross profit", href: "/staff/suppliers/finance/margins", permission: "costs.read" },
+  { group: "Control", label: "Browsing access", href: "/staff/access-policy", permission: "access-policy.manage" },
+  { group: "Control", label: "Audit trail", href: "/staff/audit", permission: "audit.read" },
+  { group: "Control", label: "Staff access", href: "/staff/team", permission: "staff.manage" },
 ];
 
 export default async function ConsoleLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -32,6 +32,10 @@ export default async function ConsoleLayout({ children }: Readonly<{ children: R
   catch { redirect("/staff/sign-in"); }
   const appearance = await readAppearancePreference(actor.userId);
   const visibleNavigation = navigation.filter((item) => hasStaffPermission(actor.role, item.permission));
+  const navigationGroups = [...new Set(visibleNavigation.map((item) => item.group))].map((group) => ({
+    label: group,
+    items: visibleNavigation.filter((item) => item.group === group),
+  }));
 
   return (
     <div className={styles.frame} data-theme={appearance.toLowerCase()}>
@@ -39,8 +43,7 @@ export default async function ConsoleLayout({ children }: Readonly<{ children: R
       <aside className={styles.sidebar}>
         <Link href="/staff" className={styles.brand}>GPHKM <span>OPS</span></Link>
         <div className={styles.appearance}><ThemeToggle initialTheme={appearance} /></div>
-        <p className={styles.sectionLabel}>WORKSPACE</p>
-        <StaffNav items={visibleNavigation} />
+        <StaffNav groups={navigationGroups} />
         <div className={styles.sidebarBottom}>
           <p>Signed in as</p><strong>{actor.role.replaceAll("_", " ")}</strong>
           <StaffSignOut />

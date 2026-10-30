@@ -95,6 +95,22 @@ test("mapping and staging validate listing fields and duplicate review while rej
   assert.throws(() => imports.prepareSelectedRowsForApply(candidates, [2], "FINANCE"), /FORBIDDEN/);
 });
 
+test("imports can map a later header row and safely normalize bare domains", () => {
+  const rows = [
+    ["Supplier title row"],
+    ["Guest Post Sites List", "Moz DA", "Sample Post Link"],
+    ["example.org", "61", "https://example.org/sample-post/"],
+    ["example.net New", "58", "https://example.net/sample-post/"],
+  ];
+  const candidates = imports.stageImportRows({ rows, mapping: { websiteUrl: 0 }, existingListings: [], headerRowNumber: 2 });
+  assert.equal(candidates[0].rowNumber, 3);
+  assert.equal(candidates[0].values.websiteUrl, "https://example.org/");
+  assert.equal(candidates[0].status, "NEEDS_REVIEW");
+  assert.equal(candidates[1].rowNumber, 4);
+  assert.equal(candidates[1].status, "INVALID");
+  assert.throws(() => imports.stageImportRows({ rows, mapping: { websiteUrl: 0 }, existingListings: [], headerRowNumber: 101 }), /HEADER_ROW_INVALID/);
+});
+
 test("supplier imports preserve the supplier as fulfillment contact", async () => {
   const apply = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
   const migration = await readFile(new URL("../src/db/migrations/0103_require_supplier_fulfillment.sql", import.meta.url), "utf8");

@@ -19,12 +19,16 @@ export async function createSupplierAction(form: FormData) {
 
 export async function updateSupplierProfileAction(form: FormData) {
   const id = form.get("supplierId"), name = form.get("name"), notes = form.get("notes"), status = form.get("status");
-  if ([id, name, notes, status].some((value) => typeof value !== "string")) redirect("/staff/suppliers?error=invalid");
+  if ([id, name, notes, status].some((value) => typeof value !== "string")) return { ok: false as const, reason: "invalid" as const };
   try {
     await updateSupplierProfile(await headers(), { id: id as string, name: name as string, notes: notes as string,
       status: status as "ACTIVE" | "INACTIVE" });
-  } catch { redirect(`/staff/suppliers/${encodeURIComponent(id as string)}?error=profile`); }
-  redirect(`/staff/suppliers/${encodeURIComponent(id as string)}?saved=profile`);
+  } catch (error) {
+    if (error instanceof Error && error.message === "Unauthorized") return { ok: false as const, reason: "session" as const };
+    if (error instanceof Error && error.message === "Forbidden") return { ok: false as const, reason: "permission" as const };
+    return { ok: false as const, reason: "save" as const };
+  }
+  return { ok: true as const };
 }
 
 export async function saveSupplierContactAction(form: FormData) {

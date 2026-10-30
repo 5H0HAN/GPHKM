@@ -1,10 +1,11 @@
 import { headers } from "next/headers";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { getStaffSupplierProfile } from "@/server/catalog/admin";
-import { saveSupplierContactAction, updateSupplierProfileAction } from "../actions";
+import { saveSupplierContactAction } from "../actions";
 import styles from "../../catalog/catalog.module.css";
 import pageStyles from "./supplier-profile.module.css";
+import { SupplierProfileForm } from "./supplier-profile-form";
 
 function metric(value: string | number | null | undefined) {
   return value === null || value === undefined ? "—" : Number(value).toLocaleString("en-US");
@@ -15,12 +16,24 @@ export default async function SupplierProfilePage({ params, searchParams }: {
   searchParams: Promise<{ saved?: string; error?: string; contactsPage?: string | string[]; inventoryPage?: string | string[] }>;
 }) {
   const [{ supplierId }, query] = await Promise.all([params, searchParams]);
-  let profile;
   const firstPage = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
-  try { profile = await getStaffSupplierProfile(await headers(), supplierId, {
-    contacts: firstPage(query.contactsPage), inventory: firstPage(query.inventoryPage),
-  }); }
-  catch { notFound(); }
+  let profile;
+  let accessDenied = false;
+  try {
+    profile = await getStaffSupplierProfile(await headers(), supplierId, {
+      contacts: firstPage(query.contactsPage), inventory: firstPage(query.inventoryPage),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Unauthorized") redirect("/staff/sign-in");
+    if (error instanceof Error && error.message === "Forbidden") accessDenied = true;
+    else throw error;
+  }
+  if (accessDenied) return <section className={styles.formPanel}>
+    <h1>Supplier access required</h1>
+    <p className={styles.lede}>Your current staff session cannot access this supplier record. No supplier details were loaded.</p>
+    <Link className={styles.button} href="/staff/suppliers">Return to suppliers</Link>
+  </section>;
+  if (!profile) notFound();
   const performance = profile.performance;
   const sample = Number(performance.on_time_sample_size ?? 0);
   const onTime = Number(performance.on_time_count ?? 0);
@@ -33,22 +46,17 @@ export default async function SupplierProfilePage({ params, searchParams }: {
     <header className={styles.header}>
       <div><Link className={styles.backLink} href="/staff/suppliers">← Suppliers</Link><p className={styles.eyebrow}>PRIVATE SUPPLIER PROFILE</p>
         <h1>{profile.supplier.name}</h1><p className={styles.lede}>Contact records, associated listings, and operational measures for the trailing 90 days.</p></div>
-      <span className={styles.status}>{profile.supplier.status}</span>
+      <div className={pageStyles.headerActions}>
+        <span className={styles.status}>{profile.supplier.status}</span>
+        <Link className={styles.button} href={`/staff/suppliers/imports?supplierId=${encodeURIComponent(profile.supplier.id)}`}>Import inventory</Link>
+        <Link className={styles.button} href={`/staff/catalog/new?commercialSource=SUPPLIER_SOURCED&supplierId=${encodeURIComponent(profile.supplier.id)}`}>Add listing</Link>
+      </div>
     </header>
     {query.saved && <p className={styles.success}>Changes saved.</p>}
     {query.error && <p className={styles.error}>Could not save these changes. Check the fields and your staff access.</p>}
     <section className={styles.formPanel}>
       <h2>Supplier details</h2>
-      <form action={updateSupplierProfileAction} className={styles.listingForm}>
-        <input type="hidden" name="supplierId" value={profile.supplier.id} />
-        <div className={styles.formGrid}>
-          <label>Supplier name<input name="name" required maxLength={160} defaultValue={profile.supplier.name} /></label>
-          <label>Status<select name="status" defaultValue={profile.supplier.status}><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option></select></label>
-        </div>
-        <p className={styles.hint}>Changing supplier status does not automatically pause or reprice linked listings.</p>
-        <label>Internal notes<textarea name="notes" rows={4} maxLength={4000} defaultValue={profile.supplier.notes ?? ""} /></label>
-        <button className={styles.button} type="submit">Save supplier</button>
-      </form>
+      <SupplierProfileForm id={profile.supplier.id} name={profile.supplier.name} status={profile.supplier.status as "ACTIVE" | "INACTIVE"} notes={profile.supplier.notes} />
     </section>
     <section className={styles.formPanel}>
       <h2>Contacts</h2>
