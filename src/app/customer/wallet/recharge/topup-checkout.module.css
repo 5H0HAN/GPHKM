@@ -1,0 +1,26 @@
+.form { display: grid; gap: 12px; max-width: 520px; margin-top: 12px; }
+.fieldLabel { color: var(--text-secondary); font-size: 12px; }
+.amountInput {
+  width: 100%;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  font: inherit;
+}
+.button {
+  width: fit-content;
+  min-height: 36px;
+  margin-top: 6px;
+  padding: 0 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.button:disabled { cursor: wait; opacity: .65; }
+.error { color: var(--error); font-size: 12px; }

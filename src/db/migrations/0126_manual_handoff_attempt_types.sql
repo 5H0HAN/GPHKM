@@ -1,0 +1,2 @@
+-- Schema state snapshot only. The supplier packet attempt type/shape checks
+-- were introduced together with their guarded state machine in migration 0122.

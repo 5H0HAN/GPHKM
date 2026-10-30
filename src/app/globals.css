@@ -4,14 +4,32 @@
   --canvas: #010102;
   --surface-1: #0f1011;
   --surface-2: #141516;
+  --surface-3: #18191a;
+  --surface-4: #202226;
   --text-primary: #f7f8f8;
   --text-secondary: #d0d6e0;
   --text-muted: #8a8f98;
+  --text-tertiary: #8a8f98;
   --accent: #5e6ad2;
+  --accent-text: #8c97ff;
+  --accent-contrast: #ffffff;
+  --primary-button: #5e6ad2;
+  --primary-button-hover: #4d59c4;
   --border: #34343a;
   --border-strong: #707782;
+  --control-outline: #707782;
+  --divider: #34343a;
   --success: #72d39a;
   --success-soft: #123321;
+  --warning: #ffc766;
+  --warning-soft: #3a290f;
+  --error: #ff9d96;
+  --error-soft: #3e1716;
+  --info: #9cc3ff;
+  --info-soft: #142944;
+  --disabled: #8a8f98;
+  --overdue: var(--error);
+  --warning-border: var(--warning);
   --focus: #828fff;
 }
 
@@ -20,14 +38,32 @@
   --canvas: #f7f8fa;
   --surface-1: #ffffff;
   --surface-2: #f2f4f7;
+  --surface-3: #e8ebf0;
+  --surface-4: #dde2ea;
   --text-primary: #181a20;
   --text-secondary: #3e4653;
   --text-muted: #525b69;
+  --text-tertiary: #666f7d;
   --accent: #4653b3;
+  --accent-text: #4653b3;
+  --accent-contrast: #ffffff;
+  --primary-button: #4c59be;
+  --primary-button-hover: #414fb4;
   --border: #d5dae3;
   --border-strong: #777f91;
+  --control-outline: #777f91;
+  --divider: #d5dae3;
   --success: #17633a;
   --success-soft: #e7f6ec;
+  --warning: #7a4300;
+  --warning-soft: #fff2d6;
+  --error: #a82118;
+  --error-soft: #fde9e7;
+  --info: #2059a8;
+  --info-soft: #eaf2ff;
+  --disabled: #525b69;
+  --overdue: var(--error);
+  --warning-border: var(--warning);
   --focus: #4653b3;
 }
 
@@ -40,6 +76,8 @@ body {
   min-height: 100%;
   margin: 0;
 }
+
+.legalDocument { max-width: 760px; margin: 8vh auto; padding: 24px; line-height: 1.7; }
 
 body {
   background: var(--canvas);
@@ -56,6 +94,24 @@ textarea,
 select {
   font: inherit;
 }
+
+.themeToggle {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.themeToggle:hover { border-color: var(--border); background: var(--surface-2); }
+.themeToggle:disabled { color: var(--disabled); cursor: wait; }
+.themeToggleStatus { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 :focus-visible {
   outline: 2px solid var(--focus);

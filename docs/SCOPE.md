@@ -8,8 +8,10 @@ V1 establishes a secure catalog-to-publication loop for customer organizations a
 
 ### Customer experience
 
-- Verified sign-in, profile and security settings, revocable sessions, and account recovery.
+- Customer app and sign-in use a dedicated customer subdomain.
+- Verified sign-in, profile and security settings, revocable sessions, and Google account recovery. GPHKM does not provide its own customer recovery flow in v1.
 - Verified signup creates an organization and first Owner; users may join multiple organizations by verified-email invitation. Owner-managed settings, members, co-Owner transfers, and funding; invitations expire after seven days and default to Member, and the last Owner must transfer ownership before leaving.
+- Optional Owner-managed billing profile with legal name, billing email, and billing address; no invoice generation, tax ID, or phone collection in v1.
 - Authenticated catalog with a 15-day organization browsing trial, top-of-page days/hours/minutes countdown, and the approved paid-access rule. The initial access term is six calendar months; the audited global policy can select six months, one year, or unrestricted access.
 - Hidden listing URLs by default; public URL flag only bypasses URL concealment while browsing is allowed.
 - Multi-listing cart with up to 25 distinct listings and one placement per listing.
@@ -24,16 +26,17 @@ V1 establishes a secure catalog-to-publication loop for customer organizations a
 
 ### Admin catalog and supplier operations
 
+- Staff/Admin/Super Admin app and sign-in use a separate staff subdomain.
 - Private supplier directory, contacts, source records, listing connections, and internal performance.
 - CSV/XLSX uploads and direct staff-triggered refresh of public/readable Google Sheets into staging.
 - Field mapping, validation, duplicate warnings, correction, review, apply, and audit.
 - Admin-controlled retail price, listing requirements, live state, publication term, and revisions.
 - Separate commercial source (platform or supplier) and fulfillment contact.
-- Staff-triggered batched Ahrefs DR, Moz DA, and Open PageRank refresh; customer display only after rights and attribution review.
+- Staff-triggered batched metric refresh. Open PageRank is the first provider integration; Ahrefs DR and Moz DA remain deferred until keys and provider checks are available. Customer display is gated on rights, attribution, redistribution, and cost review.
 - Per-item internal order queue and supplier-specific packet handoff, with minimum necessary content, exact recipient preview, provider send, manual EML/PDF export, handoff evidence, milestones, publication evidence, and reconciliation.
 - Item-level Admin assignment; minimal Support case workflow; audited item-state transitions, customer content change requests, and correction of incorrect publication verification.
 - Platform-wide acceptable-content rules, listing-specific requirements, and neutral disclosure of publication-site/partner sharing without exposing supplier identities or sourcing classifications.
-- Manual supplier paid/unpaid record with evidence; no payment execution.
+- Append-only manual supplier transfer events with evidence and partial-payment reconciliation; no payment execution.
 - Trailing-90-day supplier measures with sample size, provisional gross-profit reporting, and Super Admin-only JSON report export.
 
 ### Money and security
@@ -42,6 +45,7 @@ V1 establishes a secure catalog-to-publication loop for customer organizations a
 - Stripe funding attempt/webhook verification, idempotency, dispute handling, and reconciliation.
 - Atomic multi-item wallet debit and item-level wallet refund credits.
 - Better Auth with Google sign-in, server-side authorization, focused PostgreSQL RLS, audit, secure secrets, backups, monitoring, and incident procedures.
+- Separate host-only customer and staff sessions with exact trusted origins; subdomain separation is not a substitute for RBAC, MFA, or tenant authorization.
 
 ## 3. Explicitly out of scope for v1
 

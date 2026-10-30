@@ -1,0 +1,2 @@
+-- Drizzle snapshot baseline for the raw SQL changes in 0036-0040.
+-- No database changes are required in this migration.

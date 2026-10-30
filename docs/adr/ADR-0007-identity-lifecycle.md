@@ -19,7 +19,7 @@ GPHKM has organization-owned wallets and orders, multiple customer roles, and se
 - Verified customer signup creates an organization and first Owner. A user may join multiple organizations and switches an active organization context. Joining another organization requires an invitation accepted by the same verified email; invitations expire after seven days, default to Member, and can be revoked.
 - Owners may promote an active Member to co-Owner. The last Owner cannot leave or be removed until ownership transfers.
 - Organization closure is Support-managed in v1. Do not complete closure while active orders/disputes remain or the wallet balance is nonzero, except for a legally required exception. No voluntary cash-out is provided. An approved closure revokes access while required order, financial, and audit records are retained and personal data is minimized as law allows.
-- Public staff signup is disabled. Bootstrap the first Super Admin through a one-time controlled setup. Super Admin invites staff. Each ordinary staff account holds exactly one of Admin or Finance; Super Admin is the only all-access role. Require staff MFA and revoke sessions upon deactivation.
+- Public staff signup is disabled. Bootstrap the first Super Admin through a one-time controlled setup. Super Admin invites staff as Admin or Finance; invitations expire after seven days. Each ordinary staff account holds exactly one of Admin or Finance; Super Admin is the only all-access role. Require staff MFA and revoke sessions upon deactivation.
 
 ## Consequences
 

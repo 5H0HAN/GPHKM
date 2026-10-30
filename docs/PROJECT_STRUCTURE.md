@@ -22,7 +22,7 @@ This is a planning outline, not a request to create these files now. Create only
     │   ├── OPEN_DECISIONS.md
     │   └── adr/
     ├── src/
-    │   ├── app/                 # Customer and staff routes in one Next.js app
+    │   ├── app/                 # Customer and staff entry points, routed by host
     │   ├── modules/             # Server-only domain modules
     │   ├── auth/                # Better Auth and GPHKM authority checks
     │   ├── db/                  # Schema/migrations after Slice 0
@@ -32,8 +32,9 @@ This is a planning outline, not a request to create these files now. Create only
 
 ## Structure rules
 
-- One Next.js application, one PostgreSQL database, and one authoritative server layer.
-- Customer and staff routes share the application but use separate layouts, authority checks, and allowlisted projections.
+- One Next.js codebase, one PostgreSQL database, and one authoritative server layer by default; customer and staff/Admin use separate subdomains and login pages.
+- Hostname routing may share a deployment or use two deployments of the same codebase; decide and validate this in O-06. Both surfaces use separate layouts, authority checks, and allowlisted projections.
+- Use host-only sessions and exact trusted origins. Do not share parent-domain cookies; server-side authorization remains mandatory.
 - Keep business modules in the application. Do not create one package or service per domain.
 - Add a worker only when durable background execution is needed; use database-backed jobs/outbox first.
 - Keep runtime database identities restricted; migrations use a separate elevated identity.

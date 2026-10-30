@@ -9,11 +9,11 @@ GPHKM has two separate authority domains:
 - Customer membership grants access to one organization.
 - Staff role grants access to internal catalog, fulfillment, finance, support, and reporting actions.
 
-A customer role never implies staff access. A staff account's selected organization never grants customer access. Resolve current authority on every sensitive read and command. PostgreSQL RLS enforces tenant isolation as defense in depth; explicit application authorization and response allowlists remain required.
+Customer and staff authority domains are mutually exclusive per auth principal: any staff-account record prevents customer organization membership, and any customer organization membership prevents staff provisioning. A customer role never implies staff access. A staff account's selected organization never grants customer access. Resolve current authority on every sensitive read and command. PostgreSQL RLS enforces tenant isolation as defense in depth; explicit application authorization and response allowlists remain required.
 
 Verified customer signup creates an organization and its first Owner. A user may hold memberships in multiple organizations and must select an active organization context. Joining another organization requires an email invitation accepted by the same verified email. Invitations expire after seven days and default to Member. Owners may promote Members to co-Owners; the last Owner cannot leave or be removed before transferring ownership.
 
-Organization closure is Support-managed in v1 and is not completed while active orders/disputes remain or the wallet balance is nonzero, except for a legally required exception. Closure does not create a voluntary cash-out.
+Organization closure is Owner-requested and Admin/Super Admin-managed through Support. Finance cannot manage closure. Database finalization requires zero wallet balance and no active/unpaid orders, open Stripe reconciliation cases, unresolved payment attempts, or unresolved Support cases. V1 has no legal override path pending L-09 review. Closure does not create a voluntary cash-out.
 
 ## 2. Customer roles
 
@@ -32,6 +32,7 @@ Organization closure is Support-managed in v1 and is not completed while active 
 | Fund the organization wallet | Yes | No |
 | Place an order using available organization funds | Yes | Yes |
 | Manage organization profile, billing, membership, and invitations | Yes | No |
+| View or update organization billing profile (legal name, billing email, billing address) | Yes | No |
 | View supplier/source identity, internal costs, or staff notes | No | No |
 | Grant staff access | No | No |
 
@@ -46,11 +47,14 @@ The v1 staff model uses three bundles: Admin, Finance, and Super Admin. Each ord
 | Manage catalog, pricing, listing visibility, and revisions | Yes | No | Yes |
 | Manage supplier inventory, contacts, and staged imports | Yes | No | Yes |
 | Trigger metric refresh and review results | Yes | No | Yes |
+| Record or revoke an audited customer-redistribution attestation for a current metric observation | No | No | Yes |
 | View supplier costs and gross-profit reports | No by default | Yes | Yes |
 | Handle routine fulfillment, supplier contact, and customer updates | Yes | No | Yes |
 | Generate minimum-data handoff for assigned fulfillment | Yes, audited | No | Yes, audited |
-| Record manual supplier paid/unpaid status with evidence | No | Yes | Yes |
+| Record actual supplier transfer event with evidence | No | Yes | Yes |
+| Download supplier transfer receipt evidence | No | Yes, audited | Yes, audited |
 | View wallet/provider reconciliation and dispute evidence | No | Yes | Yes |
+| Refresh Stripe payout facts and record an append-only bank-statement comparison | No | Yes | Yes |
 | Approve policy-based pre-handoff item cancellation/refund | Yes, assigned item only | No | Yes |
 | Approve post-handoff exception refund or policy override | No | Yes, after Support case/evidence review | Yes, after Support case/evidence review |
 | Change global minimum/duration access policy | No | No | Yes, audited |
@@ -60,6 +64,8 @@ The v1 staff model uses three bundles: Admin, Finance, and Super Admin. Each ord
 | Assign/reassign order-item fulfillment staff | Yes | No | Yes |
 
 Super Admin has broad product access, but cannot bypass RLS, ledger invariants, required evidence, idempotency, approval rules, or audit. Super Admin actions are audited like all other privileged actions.
+
+Database permission checks inherit Super Admin authority for Admin and Finance operations. This does not bypass active-account, staff-session, evidence, ledger, or append-only audit controls. A payout-to-bank match records Finance's statement reference and observed amount/date; the bank itself is not connected or independently verified.
 
 ## 4. Export and handoff boundary
 
@@ -75,7 +81,7 @@ See the detailed packet lifecycle and reconciliation contract in [Supplier Email
 
 ## 5. Separation and audit
 
-- Finance or Super Admin may record a manually completed supplier payment. Require evidence/reference, amount, date, reason, actor, and timestamp.
+- Finance or Super Admin may record an actual supplier transfer event. Require a private PDF/EML receipt, evidence/reference, positive amount, transfer date, reason, actor, timestamp, scoped idempotency, and audit. Partial transfers are allowed; state is derived against confirmed actual cost.
 - Do not allow any staff role to edit a wallet balance or posted ledger entry directly.
 - High-risk refunds, manual corrections, and access-policy changes require reason codes and durable audit; add maker/checker approval where the financial policy requires it.
 - Staff permission changes are audited; Super Admin cannot approve their own elevation.
@@ -89,6 +95,7 @@ See the detailed packet lifecycle and reconciliation contract in [Supplier Email
 | Supplier identity and contacts | No | Yes for catalog/assigned fulfillment | No by default | Yes |
 | Source rates and direct costs | No | No by default | Yes | Yes |
 | Customer brief/article | Owner: all org orders; Member: own orders | Assigned fulfillment only | No by default | Only for authorized support/security need |
+| Content-change requests and consent | Ordering Member only; Owner cannot consent for another Member | Assigned Admin review | No by default | Authorized access, audited |
 | Supplier packet content/recipient | No | Assigned fulfillment only | No | Authorized access, audited |
 | Handoff transport/reconciliation metadata | No | Assigned fulfillment only | Reconciliation metadata only | Yes, audited |
 | Support case and messages | Owner: all org cases; Member: cases they opened or tied to own orders | Assigned Admin for case/order | Finance-review fields only as needed | Yes, audited |
@@ -96,6 +103,7 @@ See the detailed packet lifecycle and reconciliation contract in [Supplier Email
 | Internal supplier performance | No | Operational measures | Financial measures as assigned | Yes |
 | Internal JSON export | No | No | No | Yes |
 | Payment payload/credentials | No | No | Restricted evidence only | Restricted, audited |
+| Organization billing profile | Owner only | No | No | No by default |
 
 Use field-level allowlists. Access to a row or screen does not grant every field in the underlying record.
 

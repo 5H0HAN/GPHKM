@@ -5,9 +5,9 @@
 
 ## 1. Design direction
 
-Use one Next.js application with customer and staff routes, server-only domain modules, and PostgreSQL. Use Better Auth with Google sign-in for identity and sessions. PostgreSQL is the system of record for organization data, access grants, wallet ledger, orders, audit, and workflow state.
+Use one Next.js codebase and PostgreSQL, with distinct customer and staff/admin entry points on separate subdomains. The two subdomains have separate login pages and host-only browser sessions. Keep server-only domain modules and Better Auth with Google sign-in for identity; subdomain separation is not an authorization boundary. PostgreSQL is the system of record for organization data, access grants, wallet ledger, orders, audit, and workflow state.
 
-The app server owns authorization and business commands. PostgreSQL constraints and focused row-level security provide a second tenant boundary. Customer and staff projections are explicit and separate. Keep customer and staff areas logically distinct in the same application; do not start with separate web apps, a separate API service, or microservices.
+The app server owns authorization and business commands. PostgreSQL constraints and focused row-level security provide a second tenant boundary. Customer and staff projections are explicit and separate. Keep one codebase and shared domain modules by default; whether both hostnames use one deployment or separate deployments remains open. Do not start with a separate API service or microservices.
 
 Add one lightweight worker using database-backed jobs/outbox only when reliable retries or scheduled execution are needed for Stripe events, Sheets imports, metric refreshes, or notifications. Do not add Redis or multiple worker lanes initially. The app may process simple synchronous work until durable background execution is justified.
 
@@ -15,9 +15,11 @@ Drizzle/Drizzle Kit and local Docker PostgreSQL are accepted for initial develop
 
 ## 2. Logical shape
 
-    Customer and staff routes
-             |
-    Next.js server modules
+    customer.<domain>       staff.<domain>
+              \             /
+           Next.js app entry points
+                    |
+            server domain modules
        |           |
     Better Auth   PostgreSQL
        |           |
@@ -28,6 +30,8 @@ Drizzle/Drizzle Kit and local Docker PostgreSQL are accepted for initial develop
          Sheets, metric APIs, notifications
 
 Stripe is the only enabled payment provider for v1. Keep a small provider boundary so PayPal can be added after the Stripe flow is proven; do not build future provider adapters or a generalized capability framework now.
+
+Use exact approved origins for each environment. Keep Better Auth cross-subdomain cookies disabled so the browser holds host-only sessions; do not use a parent-domain cookie to make login appear shared. Customer and staff sign-in must be routed to their own hostname, while server-side organization membership, staff role, MFA, assignment, and permission checks remain mandatory on every protected request. Hostnames, OAuth callback URLs, and whether the deployment is shared are tracked in O-06.
 
 ## 3. Server-side modules
 
@@ -52,7 +56,7 @@ Modules may have clear command/query boundaries without becoming separate packag
 
 ## 5. Imports and external metrics
 
-CSV/XLSX uploads and direct reads of public/readable Google Sheets enter a staging workflow. Staff-triggered refreshes never auto-publish or change retail price/live state. Do not fetch arbitrary user-provided URLs. Use fixed provider endpoints for Ahrefs, Moz, and Open PageRank from the server; display each metric only after current license, attribution, and cost review.
+CSV/XLSX uploads and direct reads of public/readable Google Sheets enter a staging workflow. Staff-triggered refreshes never auto-publish or change retail price/live state. Do not fetch arbitrary user-provided URLs. Open PageRank is the first implemented metric boundary, using its fixed server-side endpoint. Ahrefs and Moz integrations wait until keys and provider checks are available. Display each metric only after current license, attribution, redistribution, and cost review.
 
 ## 6. Reliability and operations
 

@@ -1,0 +1,57 @@
+.header { display: flex; justify-content: space-between; align-items: flex-start; gap: 22px; margin-bottom: 28px; }
+.eyebrow { margin: 0 0 12px; color: var(--text-muted); font: 600 10px/1.4 ui-monospace, monospace; letter-spacing: .12em; }
+.header h1 { margin: 0; font-size: clamp(27px, 4vw, 36px); line-height: 1.1; font-weight: 600; letter-spacing: -.04em; }
+.lede { max-width: 660px; margin: 11px 0 0; color: var(--text-secondary); font-size: 14px; line-height: 1.6; }
+.count { padding: 7px 10px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+.headerCounts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.overdueCount { padding: 7px 10px; border: 1px solid color-mix(in srgb, var(--overdue) 55%, var(--border)); border-radius: 5px; color: var(--overdue); font-size: 12px; white-space: nowrap; }
+.queue { display: grid; border-top: 1px solid var(--border); }
+.viewFilter { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.viewFilter a[aria-current="page"] { border-color: var(--accent); }
+.viewFilter a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 14px; margin-top: 20px; color: var(--text-secondary); font-size: 12px; }
+.pagination a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(225px, 280px); gap: 22px; padding: 20px 0; border-bottom: 1px solid var(--border); }
+.rowMain { min-width: 0; }
+.titleLine { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.titleLine h2 { margin: 0; font-size: 16px; font-weight: 550; letter-spacing: -.02em; }
+.status { padding: 4px 7px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-secondary); font-size: 11px; }
+.meta, .update { margin: 7px 0 0; color: var(--text-muted); font-size: 12px; }
+.overdue { margin: 7px 0 0; color: var(--overdue); font-size: 12px; font-weight: 650; }
+.controls { display: grid; align-content: start; gap: 10px; }
+.assignForm label, .form label, .evidenceForm label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+.assignLine { display: flex; gap: 7px; }
+.assignLine select, .form select, .form input, .evidenceForm input { min-width: 0; min-height: 38px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-1); color: var(--text-primary); font: inherit; }
+.assignLine select { flex: 1; }
+.assignLine button, .form button, .evidenceForm button { min-height: 38px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-2); color: var(--text-primary); font: 550 12px/1.2 inherit; cursor: pointer; }
+.assignLine button:hover, .form button:hover, .evidenceForm button:hover, .open:hover { border-color: var(--accent); }
+.open { width: fit-content; padding: 8px 10px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-primary); font-size: 12px; text-decoration: none; }
+.restricted { color: var(--text-muted); font-size: 11px; }
+.empty, .panel { padding: 18px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-1); }
+.empty h2, .panel h2 { margin: 0 0 12px; font-size: 16px; font-weight: 550; }
+.empty p, .panel p { color: var(--text-secondary); font-size: 13px; line-height: 1.55; }
+.detailGrid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(260px, .7fr); align-items: start; gap: 14px; margin-bottom: 14px; }
+.sideColumn { display: grid; gap: 14px; }
+.facts { display: grid; gap: 0; margin: 0; }
+.facts div { display: grid; grid-template-columns: 150px minmax(0,1fr); gap: 12px; padding: 9px 0; border-top: 1px solid var(--border); }
+.facts dt { color: var(--text-muted); font-size: 12px; }
+.facts dd { min-width: 0; margin: 0; color: var(--text-primary); font-size: 12px; overflow-wrap: anywhere; }
+.break { overflow-wrap: anywhere; }
+.panel h3 { margin: 20px 0 8px; font-size: 13px; font-weight: 550; }
+.content { max-height: 430px; overflow: auto; margin: 0; padding: 13px; border: 1px solid var(--border); border-radius: 5px; background: var(--canvas); color: var(--text-primary); font: 12px/1.6 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.form { display: grid; gap: 12px; }
+.form button, .evidenceForm button { width: fit-content; }
+.help { margin-bottom: 0; color: var(--text-muted) !important; font-size: 11px !important; }
+.error, .success { margin: 0 0 14px; padding: 11px 13px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-secondary); font-size: 12px; }
+.error { color: var(--error); background: var(--error-soft); border-color: var(--error); }
+.success { color: var(--success); background: var(--success-soft); border-color: var(--success); }
+.evidenceForm { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.evidenceForm label { flex: 1 1 320px; }
+.evidence { display: grid; gap: 9px; padding-left: 18px; font-size: 12px; }
+.evidence li { padding-left: 3px; }
+.evidence a { color: var(--text-primary); overflow-wrap: anywhere; }
+.evidence time { display: block; margin-top: 3px; color: var(--text-muted); font-size: 11px; }
+.panel:has(.evidenceForm) { margin-top: 14px; }
+.header a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 800px) { .detailGrid { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .header { flex-direction: column; } .row { grid-template-columns: 1fr; gap: 14px; } .facts div { grid-template-columns: 105px minmax(0,1fr); } }

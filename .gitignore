@@ -16,6 +16,7 @@
 # next.js
 /.next/
 /out/
+/.private-storage/
 
 # production
 /build
@@ -30,7 +31,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# Keep local and deployment secrets out of Git; only the placeholder template is tracked.
 .env*
 !.env.example
 

@@ -1,0 +1,1 @@
+GRANT USAGE ON SEQUENCE public.listing_metric_approval_event_event_sequence_seq TO gphkm_runtime;

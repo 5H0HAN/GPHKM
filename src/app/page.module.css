@@ -15,7 +15,7 @@
   place-items: center;
   border: 1px solid var(--border-strong);
   border-radius: 11px;
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 18px;
   font-weight: 650;
 }
@@ -43,30 +43,32 @@
   line-height: 1.65;
 }
 
-.status {
-  display: flex;
+.signIn {
+  display: inline-flex;
   width: fit-content;
   align-items: center;
-  gap: 10px;
-  margin-top: 36px;
-  padding: 11px 14px;
-  border: 1px solid var(--border);
+  gap: 8px;
+  margin-top: 28px;
+  padding: 11px 15px;
+  border: 1px solid var(--border-strong);
   border-radius: 9px;
-  background: var(--surface-1);
   color: var(--text-primary);
   font-size: 14px;
+  text-decoration: none;
 }
 
-.statusDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--success);
-  box-shadow: 0 0 0 3px var(--success-soft);
+.signIn:hover {
+  background: var(--surface-1);
 }
 
-.note {
-  margin-top: 12px;
+.signIn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.accessNote {
+  margin: 14px 0 0;
   color: var(--text-muted);
   font-size: 13px;
+  line-height: 1.5;
 }

@@ -17,6 +17,14 @@ Implementation is starting from the approved single-application architecture. Th
 5. Keep Coolify + Neon as the preferred production direction, not a production-ready decision. Before selecting production connection pooling, demonstrate RLS isolation and transaction behavior with the exact Neon connection mode, restricted runtime role, Better Auth schema, and retry/concurrency paths. Use a direct migration connection.
 6. Use the project’s documented dark-first theme and a persistent per-user Dark/Light setting. The initial default is dark. Keep preference storage isolated from organization-wide settings.
 
+## Neon connection assessment (2026-10-29)
+
+The current application sets `app.user_id` and `app.organization_id` with PostgreSQL `set_config(..., true)` on the active Drizzle transaction before protected reads and writes. That is transaction-local context, which is the required shape for a Neon pooled endpoint using PgBouncer transaction mode. The app currently uses `pg.Pool` with a maximum of five connections per process ([database client](../../src/db/index.ts)); size the aggregate across app instances and the separate worker, webhook, and MFA-proof roles.
+
+Conditional deployment recommendation: use Neon's pooled TLS URL for runtime `DATABASE_URL` only after running the restricted-role RLS smoke and transaction/concurrency checks against that exact Neon endpoint. Keep `MIGRATION_DATABASE_URL` direct/unpooled for Drizzle migrations. Do not use session-level `SET`, session advisory locks, temp tables, `LISTEN`, or any other connection-persistent state on the pooled runtime path. Neon documents transaction-mode pooling and recommends a direct connection for session-dependent work in [Connection pooling](https://neon.com/docs/connect/connection-pooling) and [Connecting Neon to your stack](https://neon.com/docs/get-started/connect-neon).
+
+This is a code/provider compatibility assessment, not a production validation. Neon account/region/plan selection, pool capacity, TLS connectivity from the Coolify VPS, Better Auth migration rehearsal, backup configuration, restore drill, and final RLS/race checks against Neon remain open under O-01. Do not close O-01 based on local Docker checks alone.
+
 ## Consequences
 
 - Local development and schema review can proceed without production provider accounts.

@@ -1,0 +1,3 @@
+-- Snapshot baseline only: the table and its RLS/constraints were created in
+-- 0039_stripe_finance_snapshots.sql. This entry keeps Drizzle's schema snapshot
+-- aligned without attempting to create the applied table a second time.

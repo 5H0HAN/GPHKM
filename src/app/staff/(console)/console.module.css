@@ -1,0 +1,19 @@
+.frame { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100svh; background: var(--canvas); color: var(--text-primary); }
+.skipLink { position: absolute; z-index: 10; top: 8px; left: 8px; transform: translateY(-160%); padding: 9px 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-1); color: var(--text-primary); text-decoration: none; }
+.skipLink:focus-visible { transform: translateY(0); outline: 2px solid var(--accent); outline-offset: 2px; }
+.sidebar { display: flex; flex-direction: column; min-height: 100svh; padding: 23px 14px 18px; border-right: 1px solid var(--border); background: var(--surface-1); }
+.brand { padding: 0 10px; color: var(--text-primary); text-decoration: none; font-size: 16px; font-weight: 700; letter-spacing: -.4px; }
+.brand span { margin-left: 8px; color: var(--text-muted); font: 600 10px/1 ui-monospace, monospace; letter-spacing: .12em; }
+.appearance { margin: 12px 4px 0; }
+.sectionLabel { margin: 42px 10px 10px; color: var(--text-muted); font: 600 10px/1.4 ui-monospace, monospace; letter-spacing: .1em; }
+.sidebar nav { display: grid; gap: 3px; }
+.navLink { display: block; padding: 9px 10px; border-radius: 5px; color: var(--text-secondary); text-decoration: none; font-size: 13px; }
+.navLink:hover, .navLink:focus-visible, .navLink[aria-current="page"] { background: var(--surface-2); color: var(--text-primary); }
+.sidebarBottom { display: grid; gap: 5px; margin-top: auto; padding: 16px 10px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.sidebarBottom p { margin: 0; color: var(--text-muted); }
+.sidebarBottom strong { font-size: 11px; letter-spacing: .08em; }
+.signOut { width: fit-content; margin-top: 11px; padding: 0; border: 0; color: var(--text-secondary); background: transparent; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.signOut:disabled { color: var(--disabled); cursor: wait; }
+.signOutError { color: var(--error); font-size: 11px; line-height: 1.45; }
+.main { min-width: 0; padding: clamp(26px, 5vw, 64px); }
+@media (max-width: 760px) { .frame { grid-template-columns: 1fr; } .sidebar { min-height: auto; padding: 16px 16px 12px; border-right: 0; border-bottom: 1px solid var(--border); } .sectionLabel { margin: 16px 0 8px; } .sidebar nav { display: flex; gap: 4px; overflow-x: auto; } .navLink { white-space: nowrap; } .sidebarBottom { display: grid; gap: 2px; margin-top: 12px; padding: 10px 10px 0; border-top: 1px solid var(--border); } .main { padding: 28px 18px; } }

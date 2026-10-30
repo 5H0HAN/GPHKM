@@ -1,0 +1,59 @@
+.header { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; margin-bottom:30px; }
+.header h1 { margin:0; font-size:clamp(27px,4vw,36px); font-weight:600; letter-spacing:-.04em; }
+.eyebrow { margin:0 0 11px; color:var(--text-muted); font:600 10px/1.4 ui-monospace,monospace; letter-spacing:.12em; }
+.lede { max-width:640px; margin:10px 0 0; color:var(--text-secondary); font-size:14px; line-height:1.6; }
+.button { display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:0 14px; border:1px solid var(--border-strong); border-radius:5px; color:var(--text-primary); background:var(--surface-2); font:600 12px/1.2 inherit; text-decoration:none; cursor:pointer; }
+.button:hover { border-color:var(--accent); }
+.button:focus-visible { border-color:var(--accent); outline:2px solid var(--focus); outline-offset:2px; }
+.backLink { color:var(--text-secondary); font-size:13px; text-underline-offset:3px; }
+.tableWrap { overflow:auto; border:1px solid var(--border); border-radius:7px; background:var(--surface-1); }
+.tableWrap table { width:100%; border-collapse:collapse; text-align:left; font-size:12px; }
+.tableWrap th,.tableWrap td { padding:13px 15px; border-bottom:1px solid var(--border); vertical-align:top; }
+.tableWrap th { color:var(--text-muted); font-weight:550; }
+.tableWrap th a { color:inherit; text-underline-offset:3px; text-decoration-color:transparent; }
+.tableWrap th a:hover { color:var(--text-primary); text-decoration-color:var(--accent); }
+.tableWrap td { color:var(--text-secondary); }
+.tableWrap td:first-child { min-width:220px; color:var(--text-primary); }
+.tableWrap td:first-child a { display:block; margin-top:5px; color:var(--text-muted); font-size:11px; }
+.tableWrap td:first-child .missingUrl { display:block; margin-top:5px; color:var(--text-muted); font-size:11px; }
+.tableWrap td:first-child .editLink { width:max-content; margin-top:9px; color:var(--text-secondary); text-underline-offset:3px; }
+.tableWrap td:first-child .editLink:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.tableWrap tr:last-child td { border-bottom:0; }
+.status { display:inline-block; padding:4px 7px; border:1px solid var(--border); border-radius:4px; color:var(--text-secondary); font-size:10px; }
+.rowActions { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
+.rowActions button { padding:4px 6px; border:1px solid var(--border); border-radius:4px; color:var(--text-secondary); background:var(--surface-2); font-size:10px; cursor:pointer; }
+.rowActions button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.empty,.formPanel { margin-top:14px; padding:18px; border:1px solid var(--border); border-radius:7px; background:var(--surface-1); }
+.empty strong,.formPanel h2 { font-size:14px; font-weight:600; }
+.empty p { margin:6px 0 0; color:var(--text-secondary); font-size:12px; }
+.formPanel h2 { margin:0 0 16px; }
+.supplierForm { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; align-items:end; }
+.listingForm { max-width:900px; display:grid; gap:14px; }
+.listingForm fieldset { display:grid; gap:14px; min-width:0; padding:18px; border:1px solid var(--border); border-radius:7px; background:var(--surface-1); }
+.listingForm legend { padding:0 6px; color:var(--text-primary); font-size:14px; font-weight:600; }
+.listingForm label,.supplierForm label { display:grid; gap:6px; color:var(--text-secondary); font-size:12px; }
+.listingForm input,.listingForm select,.listingForm textarea,.supplierForm input { width:100%; min-height:36px; padding:8px 10px; border:1px solid var(--border-strong); border-radius:4px; color:var(--text-primary); background:var(--canvas); font:inherit; font-size:13px; }
+.listingForm select[multiple] { min-height:150px; }
+.listingForm input:focus-visible,.listingForm select:focus-visible,.listingForm textarea:focus-visible,.supplierForm input:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.formGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.mapGrid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.history { margin-top:32px; }
+.history h2 { margin:0 0 14px; font-size:16px; font-weight:600; }
+.applyPanel { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:18px 0 12px; padding:14px; border:1px solid var(--border); border-radius:7px; background:var(--surface-1); }
+.applyPanel p { margin:0; color:var(--text-secondary); font-size:12px; line-height:1.5; }
+.priceInput { display:grid; gap:4px; width:100px; margin-top:7px; font-size:10px; color:var(--text-muted); }
+.priceInput input { width:100%; min-height:30px; padding:5px 6px; border:1px solid var(--border-strong); border-radius:4px; color:var(--text-primary); background:var(--canvas); }
+.decision { display:block; margin-top:5px; color:var(--text-muted); font-size:10px; }
+.correctForm { display:grid; gap:10px; min-width:400px; max-width:620px; padding:12px 0; }
+.correctGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+.correctGrid label,.decisionForm label,.rejectForm label { display:grid; gap:4px; color:var(--text-muted); font-size:10px; }
+.correctGrid input,.decisionForm input,.decisionForm select,.rejectForm select { min-width:0; min-height:30px; padding:5px 7px; border:1px solid var(--border-strong); border-radius:4px; color:var(--text-primary); background:var(--canvas); font:inherit; font-size:11px; }
+.decisionForm,.rejectForm { display:flex; flex-wrap:wrap; align-items:end; gap:8px; margin-top:9px; }
+.decisionForm button,.rejectForm button { min-height:30px; padding:0 9px; border:1px solid var(--border); border-radius:4px; color:var(--text-secondary); background:var(--surface-2); font-size:10px; cursor:pointer; }
+.pagination { display:flex; justify-content:flex-end; gap:16px; margin-top:12px; color:var(--text-muted); font-size:11px; }
+.pagination a { color:var(--text-secondary); }
+.hint { margin:0; color:var(--text-muted); font-size:11px; line-height:1.5; }
+.success,.error { margin:0 0 15px; padding:10px 12px; border:1px solid var(--border); border-radius:5px; font-size:12px; }
+.success { color:var(--success); background:var(--success-soft); border-color:var(--success); }
+.error { color:var(--error); background:var(--error-soft); border-color:var(--error); }
+@media(max-width:720px) { .supplierForm,.formGrid { grid-template-columns:1fr; } .header { flex-direction:column; } }

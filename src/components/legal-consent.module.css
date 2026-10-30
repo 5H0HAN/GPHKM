@@ -1,0 +1,4 @@
+.checkbox { display: flex; align-items: flex-start; gap: 9px; margin: 18px 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.checkbox input { flex: 0 0 auto; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent); }
+.checkbox a { color: var(--text-primary); text-decoration: underline; text-underline-offset: 3px; }
+.checkbox input:focus-visible, .checkbox a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

@@ -51,12 +51,13 @@ A supplier is an internal contact/inventory record only. Suppliers do not sign i
 ## 6. Approved assumptions
 
 - GPHKM starts in a separate project; GuestPost.cc is read-only.
-- One Next.js application, PostgreSQL, and Better Auth with Google sign-in are the direction.
+- One Next.js codebase and PostgreSQL, with customer and staff/Admin entry points and login pages on separate subdomains. Use Better Auth with Google sign-in, host-only sessions, and exact origin allowlists; the hostname split is not an authorization boundary. Deployment split remains undecided.
 - Stripe is the first USD wallet-funding provider; other providers are later additions.
 - Organizations receive 15-day browsing trial; a qualifying settled $50-or-more top-up grants six calendar months of browsing and hidden-URL access.
 - Customer article is default; optional paid writing is configurable per listing.
 - CSV/XLSX and public/readable Google Sheets are supported through staff-reviewed staging.
 - Customer order and Support input is text-only; manual supplier evidence may be an optional private `.eml` or PDF.
+- Finance/Super Admin supplier transfer records require a private PDF/EML receipt and transaction reference; downloads are audited, and the receipt does not independently prove bank settlement.
 - English and responsive WCAG 2.2 AA are v1 goals; GPHKM remains an internal project name.
 
 ## 7. Non-goals for v1

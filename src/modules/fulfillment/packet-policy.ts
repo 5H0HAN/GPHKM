@@ -1,0 +1,1 @@
+export const MAX_SUPPLIER_PACKET_BYTES = 5 * 1024 * 1024;

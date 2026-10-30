@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Scan repository history for secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Audit dependency advisories
+        run: npm audit --audit-level=high
+      - name: Prepare ephemeral build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          migration_password="$(openssl rand -hex 32)"
+          database_password="$(openssl rand -hex 32)"
+          worker_password="$(openssl rand -hex 32)"
+          webhook_password="$(openssl rand -hex 32)"
+          resend_webhook_password="$(openssl rand -hex 32)"
+          mfa_proof_password="$(openssl rand -hex 32)"
+          auth_secret="$(openssl rand -hex 32)"
+          google_client_id="$(openssl rand -hex 24).apps.googleusercontent.com"
+          google_client_secret="$(openssl rand -hex 32)"
+          ci_domain="$(openssl rand -hex 8).invalid"
+          sed -i \
+            -e "s|^POSTGRES_MIGRATION_PASSWORD=.*|POSTGRES_MIGRATION_PASSWORD=${migration_password}|" \
+            -e "s|^GPHKM_DATABASE_PASSWORD=.*|GPHKM_DATABASE_PASSWORD=${database_password}|" \
+            -e "s|^GPHKM_WORKER_PASSWORD=.*|GPHKM_WORKER_PASSWORD=${worker_password}|" \
+            -e "s|^GPHKM_WEBHOOK_PASSWORD=.*|GPHKM_WEBHOOK_PASSWORD=${webhook_password}|" \
+            -e "s|^GPHKM_RESEND_WEBHOOK_PASSWORD=.*|GPHKM_RESEND_WEBHOOK_PASSWORD=${resend_webhook_password}|" \
+            -e "s|^GPHKM_MFA_PROOF_PASSWORD=.*|GPHKM_MFA_PROOF_PASSWORD=${mfa_proof_password}|" \
+            -e "s|^DATABASE_URL=.*|DATABASE_URL=postgres://gphkm_runtime:${database_password}@127.0.0.1:54329/gphkm|" \
+            -e "s|^MIGRATION_DATABASE_URL=.*|MIGRATION_DATABASE_URL=postgres://gphkm_migration:${migration_password}@127.0.0.1:54329/gphkm|" \
+            -e "s|^WORKER_DATABASE_URL=.*|WORKER_DATABASE_URL=postgres://gphkm_worker:${worker_password}@127.0.0.1:54329/gphkm|" \
+            -e "s|^STRIPE_WEBHOOK_DATABASE_URL=.*|STRIPE_WEBHOOK_DATABASE_URL=postgres://gphkm_webhook:${webhook_password}@127.0.0.1:54329/gphkm|" \
+            -e "s|^RESEND_WEBHOOK_DATABASE_URL=.*|RESEND_WEBHOOK_DATABASE_URL=postgres://gphkm_resend_webhook:${resend_webhook_password}@127.0.0.1:54329/gphkm|" \
+            -e "s|^MFA_PROOF_DATABASE_URL=.*|MFA_PROOF_DATABASE_URL=postgres://gphkm_mfa_proof:${mfa_proof_password}@127.0.0.1:54329/gphkm|" \
+            -e "s|^BETTER_AUTH_SECRET=.*|BETTER_AUTH_SECRET=${auth_secret}|" \
+            -e "s|^GOOGLE_CLIENT_ID=.*|GOOGLE_CLIENT_ID=${google_client_id}|" \
+            -e "s|^GOOGLE_CLIENT_SECRET=.*|GOOGLE_CLIENT_SECRET=${google_client_secret}|" \
+            -e "s|^CUSTOMER_APP_URL=.*|CUSTOMER_APP_URL=https://customer-${ci_domain}|" \
+            -e "s|^STAFF_APP_URL=.*|STAFF_APP_URL=https://staff-${ci_domain}|" \
+            .env
+          docker run --detach --name gphkm-ci-postgres \
+            --publish 127.0.0.1:54329:5432 \
+            --env POSTGRES_DB=gphkm \
+            --env POSTGRES_USER=gphkm_migration \
+            --env POSTGRES_PASSWORD="${migration_password}" \
+            --env GPHKM_DATABASE_PASSWORD="${database_password}" \
+            --env GPHKM_WORKER_PASSWORD="${worker_password}" \
+            --env GPHKM_WEBHOOK_PASSWORD="${webhook_password}" \
+            --env GPHKM_RESEND_WEBHOOK_PASSWORD="${resend_webhook_password}" \
+            --env GPHKM_MFA_PROOF_PASSWORD="${mfa_proof_password}" \
+            --volume "$PWD/infrastructure/docker/postgres/01-runtime-role.sh:/docker-entrypoint-initdb.d/01-runtime-role.sh:ro" \
+            postgres:17-alpine
+          for attempt in $(seq 1 60); do
+            if docker exec gphkm-ci-postgres pg_isready -U gphkm_migration -d gphkm; then break; fi
+            sleep 1
+          done
+          docker exec gphkm-ci-postgres pg_isready -U gphkm_migration -d gphkm
+      - name: Apply migrations and verify PostgreSQL RLS
+        run: |
+          npm run db:migrate
+          npm run db:check-rls:local
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+      - name: Configure isolated local auth fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture_suffix="$(openssl rand -hex 8)"
+          admin_password="$(openssl rand -hex 32)"
+          customer_password="$(openssl rand -hex 32)"
+          sed -i \
+            -e 's|^GPHKM_LOCAL_AUTH_ENABLED=.*|GPHKM_LOCAL_AUTH_ENABLED=true|' \
+            -e 's|^CUSTOMER_APP_URL=.*|CUSTOMER_APP_URL=http://customer.localhost:3000|' \
+            -e 's|^STAFF_APP_URL=.*|STAFF_APP_URL=http://staff.localhost:3000|' \
+            -e 's|^GOOGLE_CLIENT_ID=.*|GOOGLE_CLIENT_ID=|' \
+            -e 's|^GOOGLE_CLIENT_SECRET=.*|GOOGLE_CLIENT_SECRET=|' \
+            -e "s|^BOOTSTRAP_SUPER_ADMIN_EMAIL=.*|BOOTSTRAP_SUPER_ADMIN_EMAIL=admin-${fixture_suffix}@gphkm.test|" \
+            -e "s|^BOOTSTRAP_SUPER_ADMIN_PASSWORD=.*|BOOTSTRAP_SUPER_ADMIN_PASSWORD=${admin_password}|" \
+            -e "s|^BOOTSTRAP_CUSTOMER_EMAIL=.*|BOOTSTRAP_CUSTOMER_EMAIL=customer-${fixture_suffix}@gphkm.test|" \
+            -e "s|^BOOTSTRAP_CUSTOMER_PASSWORD=.*|BOOTSTRAP_CUSTOMER_PASSWORD=${customer_password}|" \
+            .env
+          npm run auth:bootstrap:local
+      - name: Verify stale-session revocation over HTTP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/next dev --hostname 127.0.0.1 > /tmp/gphkm-ci-next-dev.log 2>&1 &
+          next_pid=$!
+          trap 'kill "$next_pid" 2>/dev/null || true; wait "$next_pid" 2>/dev/null || true' EXIT
+          ready=false
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:3000/api/health >/dev/null; then ready=true; break; fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then cat /tmp/gphkm-ci-next-dev.log; exit 1; fi
+          npm run db:check-session-guard:local
+          npm run db:check-staff-mfa:local
+      - name: Remove ephemeral PostgreSQL
+        if: always()
+        run: docker rm --force gphkm-ci-postgres || true

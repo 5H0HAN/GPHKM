@@ -1,12 +1,14 @@
 # Supplier Email Handoff
 
-**Status:** Approved workflow and packet format; email provider and size limits remain open
+**Status:** Approved workflow and packet format; Resend account, sender-domain, webhook, and data-handling launch checks remain open
 **Scope:** Preparing, sending, manually exporting, acknowledging, auditing, and reconciling supplier-specific publication packets
 **Authority:** [Product Specification](PRODUCT_SPEC.md), [RBAC Matrix](RBAC_MATRIX.md), [Security Baseline](SECURITY_BASELINE.md)
 
 ## 1. Goal and v1 boundary
 
-Staff can prepare and send publication instructions from the GPHKM admin area. If GPHKM email sending is unavailable, authorized staff can export the same supplier-specific packet, send it manually, and record the handoff evidence.
+Staff can prepare and send publication instructions from the GPHKM admin area. If GPHKM email sending is unavailable, authorized staff can export the same supplier-specific packet, send it manually, and record the handoff evidence. The shared packet cap is approved at 5 MiB for the serialized email body plus optional PDF; oversized packets are held for staff review and are never auto-split.
+
+The email body plus optional PDF attachment has a **5 MiB total limit**. An oversized packet is held for staff review; GPHKM never splits or sends it silently.
 
 This is an internal workflow. Suppliers do not receive GPHKM accounts and do not have a supplier portal. The system does not negotiate, pay suppliers, or treat a sent email as proof that a supplier accepted or published the work.
 
@@ -46,13 +48,13 @@ Customer order content is text-only in v1. Customers cannot upload article files
 
 Exclude customer name, email, organization identity, billing details, wallet/payment information, GPHKM retail price, source cost, margin, staff notes, internal performance, other suppliers' items, and unapproved drafts.
 
-For GPHKM Writing, send the approved final article. Share the private brief only when genuinely required, separately disclosed, and specifically consented to. Do not fetch target URLs as part of packet generation or sending.
+For GPHKM Writing, send only the persisted customer-approved article. The first complete draft and the final draft after the included revision are saved in the writing workflow; customer approval is required before packet preparation. Share the private brief only when genuinely required, separately disclosed, and specifically consented to. Do not fetch target URLs as part of packet generation or sending.
 
 At checkout, show each listing's required fields and explain that the approved article and link instructions are shared with the publication site/partner fulfilling the placement. Do not expose supplier identity or GPHKM's internal sourcing/resale model. Let customers copy shared details across items, then review and edit each item separately. Record consent per item and disclosure version. Internally bind consent evidence to the exact article/instructions, supplier, and recipient. If any of these change, require fresh consent.
 
 ## 5. Preview, versioning, and recipient review
 
-The staff preview shows the exact recipient address, supplier record, included item references, content/instructions to be sent, and packet version. Staff can edit allowed fulfillment details or hold the packet. The recipient must come from the supplier's internal contact record and be reviewed before every new version/send.
+The staff preview shows the exact recipient address, supplier record, included item references, content/instructions to be sent, and packet version. Staff can edit allowed fulfillment details or hold the packet. The recipient must come from the supplier's internal contact record and be reviewed before every new version/send. If it changes, prepare a new packet version and obtain fresh customer consent for the new recipient; v1 has no recipient override.
 
 A packet version freezes:
 
@@ -61,13 +63,13 @@ A packet version freezes:
 - Exact rendered content and content/consent references.
 - Packet version, creation actor/time, and payload hash.
 
-Edits create a new version; never mutate a sent packet or erase earlier attempts. A correction after dispatch creates a superseding version and a new send attempt. Email already sent cannot be recalled.
+Edits create a new version; never mutate a sent packet or erase earlier attempts. Preparing a replacement transactionally supersedes any prior packet that overlaps its items; include every item from an existing packet when replacing it, so unselected items are not stranded. Superseded versions remain visible as history but server commands reject their send, manual handoff, and export actions. A correction after dispatch creates a superseding version and a new send attempt. Email already sent cannot be recalled. A deliberate manual resend is available after a recorded prior send when staff supplies a reason; it preserves the original handoff/cancellation cutoff and appends a separate attempt/evidence record.
 
 ## 6. Dashboard send and manual export
 
 ### Send from GPHKM
 
-An authorized Admin assigned to fulfillment or Super Admin may send a ready packet from the admin dashboard using the configured server-side transactional email provider. Provider acceptance is the handoff cutoff for ordinary customer cancellation, even if delivery confirmation is pending. A manual handoff occurs only after staff records that the message was sent; packet export alone is not handoff. For platform/internal fulfillment without a supplier email, assigned staff records when fulfillment work starts; that timestamp is the ordinary cancellation cutoff.
+An authorized Admin assigned to fulfillment or Super Admin may send a ready packet from the admin dashboard using the configured server-side transactional email provider. Before calling the provider, GPHKM commits a `SENDING` attempt; ordinary cancellation is temporarily unavailable while that outcome is unresolved, so a customer cancellation cannot race an email already in flight. Provider acceptance is the permanent handoff cutoff, even if delivery confirmation is pending. A definitively rejected send resolves the attempt and restores pre-handoff cancellation eligibility. A manual handoff occurs only after staff records that the message was sent; packet export alone is not handoff. For platform/internal fulfillment without a supplier email, assigned staff records when fulfillment work starts; that timestamp is the ordinary cancellation cutoff.
 
 Use a verified GPHKM sender domain and fixed sender identity. Staff cannot choose arbitrary From, Reply-To, CC, or BCC values in v1. Store provider credentials server-side and never expose them in browser code or logs.
 
@@ -83,9 +85,11 @@ For manual sending, authorized Admin/Super Admin may download either:
 - A ready-to-send EML containing the recipient, subject, full packet body, and the selected optional PDF attachment.
 - A selectable-text PDF packet for attaching or sending through another mail client.
 
-An EML is a ready-to-send email message file; v1 does not attach an EML inside another email. Downloads are sensitive exports: record actor, time, packet version, format, and recipient snapshot. The export is tied to its exact packet version. Export/download alone does not mean the supplier was contacted and does not mark an item handed off.
+An EML is a ready-to-send email message file; v1 does not attach an EML inside another email. Downloads are sensitive exports: record actor, time, packet version, format, and recipient snapshot. The export is tied to its exact packet version. Export/download alone does not mean the supplier was contacted and does not mark an item handed off. Before sending manually, staff must use **Begin manual handoff** in the dashboard. This creates an audited `MANUAL_SEND / SENDING` reservation that blocks cancellation, packet changes, and other send attempts while staff sends the current version. Staff then records the actual send, recipient, time, and message reference, or resolves the reservation as definitely unsent with an audited reason. Only the recorded actual send sets the permanent handoff cutoff and advances fulfillment. A confirmed-unsent resolution removes the temporary hold but never deletes the attempt history.
 
-After manually sending, staff must explicitly record the actual sent recipient, sent time, acting staff member, and message reference. Staff may optionally attach a private `.eml` or PDF as evidence; enforce a size limit and serve evidence as downloads, never active inline content. If the recipient differs from the previewed contact, require an audited override reason and customer re-consent when the change affects who receives content. Record the result as a staff-reported manual handoff, not provider-sent or provider-delivered.
+After manually sending, staff must explicitly record the actual sent recipient, sent time, acting staff member, and message reference against the reservation. Require an ISO 8601 timestamp with an explicit timezone offset so the recorded time is independent of the app server's timezone; reject invalid dates and offsets. The sent time cannot precede the reservation. Staff confirms that the complete supplier packet was sent; a partial send must be escalated and represented through a corrected packet rather than marking every item handed off. Staff may optionally attach a private `.eml` or PDF as evidence; enforce a size limit and serve evidence as downloads, never active inline content. Record the result as a staff-reported manual handoff, not provider-sent or provider-delivered.
+
+A downloaded file can still be sent externally after staff records it as unsent or a cancellation is approved. GPHKM cannot technically revoke a local EML/PDF. If staff discovers such a late send, report it immediately as an operational incident, preserve actual evidence, and ask Super Admin to reconcile the item and support/cancellation decision; never hide the actual send or rely on the old unsent record as proof that no handoff occurred.
 
 Manual exports use the same allowlisted content as automatic email. Staff-uploaded send evidence is private, restricted to the assigned Admin and Super Admin, access-audited, type/size limited, and retained under the approved order evidence policy. Customer order flows do not accept uploaded evidence or attachments.
 
@@ -93,7 +97,11 @@ Manual exports use the same allowlisted content as automatic email. Staff-upload
 
 After supplier handoff, customer cancellation and refund are not allowed by default. Admin staff handling the Support case may investigate a documented break-glass exception and attempt supplier withdrawal where possible. Finance or Super Admin may approve an item-specific wallet refund only after reviewing the support case and evidence; approval is not guaranteed. Supplier rejection, nonresponse, or inability to fulfill after handoff follows the same review path and does not automatically refund the item.
 
-When an exception is approved and a supplier notice is needed, create a separate notice/attempt for the affected item asking the supplier to stop or withdraw work where possible. Keep the original packet and send evidence unchanged. Record the notice result separately; provider acceptance or delivery does not prove the supplier stopped work. If publication is already complete, follow the post-completion policy. A wallet refund under this path does not refund the original card/Stripe top-up.
+Record a supplier rejection, inability to fulfill, or nonresponse as an append-only order-item outcome with the acting staff member, timestamp, supplier, and private evidence reason. Open an item-linked GPHKM Support case in the same transaction and send the customer a neutral update; the customer never sees the supplier or internal reason. These outcomes feed the trailing-90-day rejected measure once per order item and supplier, even if staff records more than one follow-up event. Pre-handoff cancellation still uses the customer cancellation request and Admin rule-based review. Post-handoff wallet credit still requires the existing Support and Finance/Super Admin exception path. Do not treat the outcome event itself as an offer, cancellation, or refund.
+
+Equivalent offers preserve the locked checkout price and snapshot the replacement listing's buyer-facing terms separately from confidential supplier routing. Only an assigned Admin or Super Admin may create an offer from an active listing with a different fulfillment supplier. The ordering customer sees the alternative terms and equivalence note, then explicitly accepts or declines. Acceptance records fresh content-sharing consent bound to the exact content hash, replacement supplier, and primary recipient before fulfillment routing changes. The database blocks packet handoff/work start while a supplier-failure outcome lacks an accepted equivalent or item cancellation/refund resolution. A declined offer does not silently cancel/refund the item; staff continues the Support case and cancellation/refund rules.
+
+For a handed-off item under an item-linked Support case, assigned Admin or Super Admin may prepare a separate withdrawal or correction notice without changing the original packet. The notice snapshot contains only the item reference, supplier contact, and the minimum action/reason needed; its recipient, body hash, attempts, and outcomes are recorded separately and immutably. Staff may send it from GPHKM or export a ready-to-send EML. An export is not a send. Provider acceptance, delivery, or a staff-recorded send does not prove the supplier stopped work or made a correction; staff records the supplier's response separately. Unknown provider outcomes enter reconciliation and block another send until reviewed. An approved post-handoff wallet refund with an unresolved notice appears in the Super Admin supplier-notice reconciliation queue. Refund approval is a separate Finance/Super Admin decision and does not imply supplier action. If publication is already complete, follow the post-completion policy. A wallet refund under this path does not refund the original card/Stripe top-up.
 
 ## 7. Packet, attempt, item, and acknowledgement states
 
@@ -113,9 +121,9 @@ The packet dashboard should distinguish at least:
 - Superseded/canceled.
 - Cancellation notice attempt/result for an item withdrawn after dispatch.
 
-Provider accepted or delivered does not mean the supplier read or accepted the work. Supplier acknowledgement is a separate event, recorded by staff in v1. Publication completion still requires a live URL and staff verification under the Product Specification.
+Provider accepted or delivered does not mean the supplier read or accepted the work. Supplier acknowledgement is a separate append-only event recorded by assigned staff after confirmed delivery or manual handoff. If none is recorded within 72 hours, the packet appears in the staff follow-up queue. This is an internal follow-up target, not a supplier SLA. Publication completion still requires a live URL and staff verification under the Product Specification.
 
-When a packet is accepted for delivery or manually recorded as sent, update only the packet's included order items to the corresponding handoff state. A bounce/failed send places those items in an attention state; unrelated supplier packets and order items continue. The parent order shows a derived partial summary and never hides an item's blocked/failed status.
+Provider acceptance locks ordinary cancellation and records the internal handoff-pending cutoff, but it does not change the customer milestone. A later bounce or provider failure still confirms that the send request was accepted, so it keeps the cancellation cutoff while remaining in delivery follow-up. Keep the item in HANDOFF_PENDING / customer-facing Preparing Your Placement until provider-confirmed delivery or a staff-recorded manual send. Only then move the included items into IN_FULFILLMENT / Publication in Progress. A delivery issue remains in staff follow-up; unrelated supplier packets and order items continue. The parent order shows a derived partial summary and never hides an item's blocked/failed status.
 
 ## 8. Audit and evidence
 
@@ -124,6 +132,8 @@ Append an audit event for packet preparation/versioning, preview, send attempt, 
 Record actor, timestamp, order and packet references, packet version/hash, exact included item IDs, recipient snapshot, provider/message ID or manual evidence reference, consent references, and outcome. Do not copy private article text into generic audit logs. Store the restricted packet snapshot needed to prove exactly what was sent/exported; protect it as order content.
 
 Webhook events are signature-verified, durably stored, deduplicated, and correlated to a packet attempt. Process duplicate and out-of-order events safely. Provider IDs and message IDs are evidence references, not authorization tokens.
+
+Each dashboard send includes the opaque GPHKM packet-attempt ID as a Resend email tag. After signature verification, correlate using both that tag and Resend's email ID so a delivery event can advance the correct attempt even if it arrives before the send API response. Persist the email ID on every provider event. A malformed or mismatching tag or an email ID already attached to another attempt is stored unmatched for reconciliation. A replayed event ID with different content is rejected without changing the existing event or attempt. Provider event and late HTTP response handling is monotonic: a response that arrives after delivery evidence cannot downgrade the attempt state.
 
 ## 9. Handoff reconciliation and exception queue
 
@@ -139,6 +149,8 @@ Keep handoff reconciliation distinct from wallet/provider financial reconciliati
 - Duplicate or superseding sends needing staff review.
 - Approved cancellation after dispatch with no resolved supplier notice outcome.
 
+If a send remains SENDING for more than 10 minutes after process interruption, show it for staff review as an ambiguous outcome. This is a conservative operational recovery heuristic, not a supplier SLA. Staff first review provider records and explicitly mark the attempt UNKNOWN with an audit note; the ordinary unknown-outcome reconciliation then resolves it. Never auto-resend or auto-mark a stuck send as failed.
+
 Reconciliation compares GPHKM packet versions/attempts and order-item events with provider event/message records. For manual handoff, it compares the export with staff attestation and evidence/reference. Do not silently edit packet or item status to clear a mismatch. Resolve with an authorized, reasoned, audited action. Add automated polling or scheduled jobs only if provider capabilities and volume require them; a staff exception queue is sufficient initially.
 
 ## 10. Security and retention
@@ -146,12 +158,11 @@ Reconciliation compares GPHKM packet versions/attempts and order-item events wit
 - Require active staff session, Admin fulfillment permission or Super Admin, current item assignment, and current item consent at send time.
 - Escape untrusted article/instruction text in rendered HTML; reject header injection and invalid recipients; do not evaluate HTML, macros, or remote content.
 - Do not include supplier contacts, article content, or customer data in application logs, analytics, or general JSON reports.
-- Restrict packet snapshots and manual evidence to currently assigned fulfillment Admins and Super Admin; audit access. Keep manual evidence in private object storage; exact provider and maximum size remain open for Slice 0/provider setup.
+- Restrict packet snapshots and manual evidence to currently assigned fulfillment Admins and Super Admin; audit access. Local development stores optional manual `.eml`/PDF evidence in a private configured directory and serves it only as an authenticated attachment after hash verification. Production must move to the private object-storage provider selected under O-02. The packet cap includes the serialized email body and optional outbound PDF; manual evidence has a separate 5 MiB upload cap.
 - Keep packet records, provider events, and final sent content under the order evidence retention policy. Minimize/delete private briefs and drafts when fulfillment/dispute needs end. Retain financial/audit evidence per legal requirements.
 - Show in the preview that email cannot be recalled and the recipient may retain or forward it.
 
-## 11. Decisions still open
+## 11. Launch checks still open
 
 - Resend is the preferred v1 transactional email provider, pending account, sender-domain, webhook-signature, deliverability, and data-handling checks. Its idempotency window is finite; GPHKM must keep its own durable send-attempt identity and handle unknown outcomes beyond the provider window ([idempotency](https://resend.com/changelog/idempotency-keys), [webhook verification](https://www.resend.com/changelog/managing-webhooks-via-api), [email message IDs/events](https://resend.com/changelog/message-id-for-sent-emails)).
-- Set the maximum packet and optional PDF attachment size and decide how oversized packets are held or split before implementation.
-- Set provider-specific size limits and operational thresholds for delayed/unknown sends before production.
+- Confirm Resend account, sender-domain, webhook signature/configuration, and data-handling approval before enabling real supplier email sends. The approved packet-size limit is 5 MiB; oversized packets are held for staff review and never split automatically.
