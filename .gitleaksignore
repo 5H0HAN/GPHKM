@@ -1,0 +1,3 @@
+# False positive: test fixture objectKey points to a dummy private evidence path.
+# This exception is pinned to the historical commit, file, rule, and line.
+14ff027764e1e70792c942adbb9e9044852bd7a1:tests/fulfillment.test.mjs:generic-api-key:214
