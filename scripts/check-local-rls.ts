@@ -1956,7 +1956,13 @@ try {
     );
     return snapshot.rows[0]!.snapshot_id;
   };
-  const staleAt = new Date(Date.now() - 30 * 60_000).toISOString();
+  // Generate stale refresh timestamps from PostgreSQL's own clock so the
+  // synthetic refresh token stays internally consistent even if the Node
+  // runner and database container clocks differ slightly in CI.
+  const staleTimestamp = await migration.query<{ stale_at: Date }>(
+    "select clock_timestamp() - interval '30 minutes' as stale_at",
+  );
+  const staleAt = staleTimestamp.rows[0]!.stale_at.toISOString();
   const staleSnapshotId = await storeFinanceSnapshot(staleRefundAttempt, "failed", {
     refreshedAt: staleAt,
     refreshStartedAt: staleAt,
