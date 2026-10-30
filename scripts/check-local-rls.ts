@@ -1912,6 +1912,7 @@ try {
     overrides: { complete?: boolean; refreshedAt?: string; refreshStartedAt?: string; pendingRefundCount?: number; openDisputeCount?: number; disputes?: unknown[] } = {},
   ) => {
     let refreshId: string;
+    let refreshedAt = overrides.refreshedAt;
     if (overrides.refreshStartedAt) {
       refreshId = randomUUID();
       await migration.query("RESET ROLE");
@@ -1926,6 +1927,12 @@ try {
       );
       refreshId = refresh.rows[0]!.refresh_id;
     }
+    if (!refreshedAt) {
+      const timestamp = await migration.query<{ refreshed_at: string }>(
+        `select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as refreshed_at`,
+      );
+      refreshedAt = timestamp.rows[0]!.refreshed_at;
+    }
     const paymentIntent = `pi_${attemptId.replaceAll("-", "")}`;
     const facts: Record<string, unknown> = {
       detailComplete: true,
@@ -1939,7 +1946,7 @@ try {
       chargeId: `ch_${attemptId.replaceAll("-", "")}`,
       chargeBalanceTransaction: { amountMinor: "5000", feeMinor: "100", netMinor: "4900", currency: "usd" },
       providerMode: "test",
-      refreshedAt: overrides.refreshedAt ?? new Date().toISOString(),
+      refreshedAt,
       pendingRefundCount: overrides.pendingRefundCount ?? 0,
       openDisputeCount: overrides.openDisputeCount ?? 0,
       refunds: refundStatus === "failed" || refundStatus === "canceled"
