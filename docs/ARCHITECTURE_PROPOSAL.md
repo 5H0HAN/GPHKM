@@ -5,7 +5,7 @@
 
 ## 1. Design direction
 
-Use one Next.js codebase and PostgreSQL, with distinct customer and staff/admin entry points on separate subdomains. The two subdomains have separate login pages and host-only browser sessions. Keep server-only domain modules and Better Auth with Google sign-in for identity; subdomain separation is not an authorization boundary. PostgreSQL is the system of record for organization data, access grants, wallet ledger, orders, audit, and workflow state.
+Use one Next.js codebase and PostgreSQL, with distinct customer and staff/admin entry points on separate subdomains. The two subdomains have separate login pages and host-only browser sessions. Use Better Auth with Google or verified email/password for customers; staff sign-in/provisioning remains separately controlled. Subdomain separation is not an authorization boundary. PostgreSQL is the system of record for organization data, access grants, wallet ledger, orders, audit, and workflow state.
 
 The app server owns authorization and business commands. PostgreSQL constraints and focused row-level security provide a second tenant boundary. Customer and staff projections are explicit and separate. Keep one codebase and shared domain modules by default; whether both hostnames use one deployment or separate deployments remains open. Do not start with a separate API service or microservices.
 

@@ -2,6 +2,7 @@
 
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { requireStaffAccess } from "@/server/auth/staff";
 import { LISTING_CATEGORY_NAMES, LISTING_LANGUAGES, LISTING_LINK_TYPES, LISTING_LINK_VALIDITIES } from "@/modules/catalog/taxonomy";
 import type { ListingTerms } from "@/modules/catalog/domain";
 import { createDraftListing, transitionListing, updateListing } from "@/server/catalog/admin";
@@ -52,13 +53,22 @@ function listingTerms(form: FormData): ListingTerms | null {
 }
 
 export async function createListingAction(form: FormData) {
+  const requestHeaders = await headers();
+  try {
+    await requireStaffAccess(requestHeaders, "catalog.manage");
+  } catch (error) {
+    if (error instanceof Error && error.message === "Unauthorized") redirect("/staff/sign-in");
+    if (error instanceof Error && error.message === "Forbidden") redirect("/staff");
+    throw error;
+  }
+
   const terms = listingTerms(form);
   if (!terms) redirect("/staff/catalog/new?error=invalid-options");
   const source = value(form, "commercialSource");
   const supplierId = value(form, "supplierId") || null;
   let created: { id: string };
   try {
-    created = await createDraftListing(await headers(), { terms, commercialSource: source as "PLATFORM_OWNED" | "SUPPLIER_SOURCED", supplierId: source === "SUPPLIER_SOURCED" ? supplierId : null, fulfillmentSupplierId: value(form, "fulfillmentSupplierId") || null, urlVisibleWithoutRecharge: value(form, "urlVisibleWithoutRecharge") === "yes" });
+    created = await createDraftListing(requestHeaders, { terms, commercialSource: source as "PLATFORM_OWNED" | "SUPPLIER_SOURCED", supplierId: source === "SUPPLIER_SOURCED" ? supplierId : null, fulfillmentSupplierId: value(form, "fulfillmentSupplierId") || null, urlVisibleWithoutRecharge: value(form, "urlVisibleWithoutRecharge") === "yes" });
   } catch {
     redirect("/staff/catalog/new?error=invalid-or-not-authorized");
   }

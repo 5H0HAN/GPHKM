@@ -31,7 +31,9 @@ export async function recordStaffMfaProof(request: Request, response: Response):
   const authenticated = await getAuthForSurface("staff").api.getSession({ headers });
   if (!authenticated) throw new Error("MFA verification session unavailable");
 
-  if (!authenticated.user.twoFactorEnabled) throw new Error("MFA verification session unavailable");
+  if (!("twoFactorEnabled" in authenticated.user) || !authenticated.user.twoFactorEnabled) {
+    throw new Error("MFA verification session unavailable");
+  }
   const mfaDb = getMfaProofDb();
   await mfaDb.execute(sql`select public.gphkm_record_staff_mfa_proof(
     ${authenticated.user.id}, ${authenticated.session.id}, ${method})`);

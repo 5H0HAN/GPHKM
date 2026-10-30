@@ -52,7 +52,7 @@ export default async function FulfillmentPage({ searchParams }: { searchParams: 
                 </div>
               </form>
               {canOpen ? <Link className={styles.open} href={`/staff/fulfillment/${row.orderItemId}`}>Open item</Link> : <span className={styles.restricted}>Assigned to {row.assignedAdminName ?? "another Admin"}</span>}
-              {canOpen && row.state === "READY_FOR_HANDOFF" ? <Link className={styles.open} href={`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(row.orderId)}`}>Prepare supplier packet</Link> : null}
+              {canOpen && row.state === "READY_FOR_HANDOFF" && row.fulfillmentSupplierId ? <Link className={styles.open} href={`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(row.orderId)}`}>Prepare supplier packet</Link> : null}
             </div>
           </article>;
         })}

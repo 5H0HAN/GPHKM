@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
-import { getSupplierPacket } from "@/server/fulfillment/packets";
+import { getSupplierPacket, resendEnvConfigured } from "@/server/fulfillment/packets";
 import { beginManualHandoffAction, markStuckAttemptUnknownAction, recordSupplierAcknowledgementAction, reconcileManualHandoffUnsentAction, reconcilePacketAttemptAction, sendSupplierPacketAction } from "../actions";
 import styles from "../packets.module.css";
 
@@ -15,12 +15,15 @@ export default async function SupplierPacketPage({ params, searchParams }: { par
   const manualPending = attempts.find((attempt) => attempt.type === "MANUAL_SEND" && attempt.state === "SENDING");
   const unresolvedProviderSend = attempts.some((attempt) => attempt.type === "SEND" && ["SENDING", "UNKNOWN"].includes(attempt.state));
   const latest = await searchParams;
+  const preparedPacketIds = [...new Set((latest.preparedIds ?? "").split(",").filter((id) => /^pkt_[A-Za-z0-9_-]{6,80}$/.test(id)))].slice(0, 25);
+  const resendReady = resendEnvConfigured();
   return <main className={styles.page}>
     <header className={styles.head}><div><p className={styles.eyebrow}>IMMUTABLE SUPPLIER PACKET · V{packet.version}</p><h1>{packet.id}</h1><p className={styles.muted}>Order {packet.orderId.slice(0, 8)} · {packet.items.length} placement item{packet.items.length === 1 ? "" : "s"}</p></div><Link className={styles.link} href="/staff/fulfillment/packets/reconciliation">Reconciliation queue</Link></header>
     {latest.error ? <p className={styles.warning}>Action could not be completed. Refresh the packet, check its current state, and try again if it remains eligible.</p> : null}
     {data.holdReason === "PACKET_SIZE_REVIEW" ? <p className={styles.warning} role="status">This packet exceeded the 5 MiB limit during an earlier attempt and is held for staff review. Current exports and sends recalculate the exact packet size; a successful under-limit action clears this hold and records the review.</p> : null}
     {latest.sent || latest.manual ? <p className={styles.warning}>Handoff attempt recorded. Provider acceptance alone keeps the customer milestone at Preparing Your Placement; confirmed delivery or a recorded manual send advances it.</p> : null}
     {latest.acknowledged ? <p className={styles.warning}>Supplier acknowledgement recorded in the packet history.</p> : null}
+    {preparedPacketIds.length > 1 ? <section className={styles.panel}><h2>Packets prepared for this order</h2><p className={styles.muted}>Each supplier and assigned Admin has a separate packet. Open every packet that needs review.</p><ul>{preparedPacketIds.map((id) => <li key={id}><Link className={styles.link} href={`/staff/fulfillment/packets/${encodeURIComponent(id)}?preparedIds=${encodeURIComponent(preparedPacketIds.join(","))}`}>{id === packet.id ? `Current packet · ${id}` : `Open packet · ${id}`}</Link></li>)}</ul></section> : null}
     <section className={styles.panel}><h2>Exact recipient preview</h2><p><strong>{supplierContact?.name ?? "Supplier"}</strong>{supplierContact?.contactName ? ` · ${supplierContact.contactName}` : ""}</p><p className={styles.muted}>{packet.recipient}</p><p className={styles.muted}>Only the packet below is shared. It excludes customer identity, account and billing information, GPHKM price, and source costs.</p>
       <div className={styles.actions}><Link href={`/api/staff/fulfillment/packets/${encodeURIComponent(packet.id)}/eml`}>Export EML</Link><Link href={`/api/staff/fulfillment/packets/${encodeURIComponent(packet.id)}/eml?pdf=1`}>Export EML + PDF</Link><Link href={`/api/staff/fulfillment/packets/${encodeURIComponent(packet.id)}/pdf`}>Download PDF</Link></div>
     </section>
@@ -28,8 +31,8 @@ export default async function SupplierPacketPage({ params, searchParams }: { par
       {item.placementRequirements.map((requirement) => <p key={requirement}>{requirement}</p>)}<p><strong>Target URL:</strong> {item.targetUrl}</p><p><strong>Anchor text:</strong> {item.anchorText}</p>
       {item.instructions ? <><h3>Instructions</h3><p className={styles.pre}>{item.instructions}</p></> : null}<h3>Approved article</h3><pre className={styles.pre}>{item.article}</pre>
     </section>)}
-    <section className={styles.panel}><h2>Send through GPHKM</h2><p className={styles.muted}>Sending is disabled until Resend account, sender domain, webhook, and data-handling checks pass. The send action is deliberate and recorded.</p>
-      {!manualPending && !unresolvedProviderSend ? <form action={sendSupplierPacketAction} className={styles.form}><input type="hidden" name="packetId" value={packet.id} /><label>Resend reason (required after any prior send)<input name="resendReason" maxLength={1000} /></label><label className={styles.checks}><input type="checkbox" name="attachPdf" /> Attach a selectable-text PDF. The 5 MiB cap covers email body plus PDF.</label><button className={styles.submit} type="submit">Send supplier packet</button></form> : <p className={styles.warning}>Another handoff attempt is pending or requires reconciliation. Resolve it before starting another send.</p>}
+    <section className={styles.panel}><h2>Send through GPHKM</h2><p className={styles.muted}>{resendReady ? "Email provider configuration is present. Sending still requires the approved provider setup and a deliberate staff action." : "Sending is unavailable until Resend account, sender domain, webhook, and data-handling checks pass. Export EML or PDF for manual handoff."}</p>
+      {!manualPending && !unresolvedProviderSend ? <form action={sendSupplierPacketAction} className={styles.form}><input type="hidden" name="packetId" value={packet.id} /><label>Resend reason (required after any prior send)<input name="resendReason" maxLength={1000} /></label><label className={styles.checks}><input type="checkbox" name="attachPdf" /> Attach a selectable-text PDF. The 5 MiB cap covers email body plus PDF.</label><button className={styles.submit} type="submit" disabled={!resendReady}>Send supplier packet</button></form> : <p className={styles.warning}>Another handoff attempt is pending or requires reconciliation. Resolve it before starting another send.</p>}
     </section>
     <section className={styles.panel}><h2>Manual mail handoff</h2>{manualPending ? <>
       <p className={styles.warning}>Manual send reserved at {manualPending.createdAt.toLocaleString()}. This reservation temporarily blocks ordinary cancellation and every other send attempt. Download/send only this packet version ({packet.id} v{packet.version}) to the reviewed recipient below. If you cannot confirm the email was sent, keep this reservation open until you reconcile it.</p>

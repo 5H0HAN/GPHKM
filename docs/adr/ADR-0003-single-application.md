@@ -10,7 +10,7 @@ GPHKM needs customer and staff workflows with shared domain rules and a modest i
 
 ## Decision
 
-Use one Next.js application/codebase with distinct customer and staff areas, server-only domain modules, PostgreSQL, and Better Auth with Google sign-in. The areas now have separate customer and staff subdomain entry points under [ADR-0012](ADR-0012-customer-staff-subdomains.md); the hostname split does not require separate codebases or services. Add one lightweight worker using database-backed durable jobs/outbox only when retryable or scheduled work requires it. Do not add Redis, multiple worker lanes, a separate API deployment, or microservices initially.
+Use one Next.js application/codebase with distinct customer and staff areas, server-only domain modules, PostgreSQL, and Better Auth. Customers use Google or verified email/password; the areas have separate subdomain entry points under [ADR-0012](ADR-0012-customer-staff-subdomains.md), and the hostname split does not require separate codebases or services. Add one lightweight worker using database-backed durable jobs/outbox only when retryable or scheduled work requires it. Do not add Redis, multiple worker lanes, a separate API deployment, or microservices initially.
 
 Select ORM, migration tooling, hosting, and deployment in Slice 0 after reviewing RLS, transaction behavior, cost, recoverability, and team familiarity.
 

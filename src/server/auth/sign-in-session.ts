@@ -14,8 +14,9 @@ export async function getSignInSession(surface: AuthSurface): Promise<SignInSess
   if (resolveAuthSurface(requestHeaders, process.env) !== surface) return null;
   const authenticated = await getAuthForSurface(surface).api.getSession({ headers: requestHeaders });
   if (authenticated && (await isStaffIdentity(authenticated.user.id)) !== (surface === "staff")) return null;
+  const twoFactorEnabled = authenticated && "twoFactorEnabled" in authenticated.user && authenticated.user.twoFactorEnabled === true;
   return authenticated ? {
     email: authenticated.user.email,
-    twoFactorEnabled: authenticated.user.twoFactorEnabled === true,
+    twoFactorEnabled: twoFactorEnabled === true,
   } : null;
 }

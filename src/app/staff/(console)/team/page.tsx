@@ -4,6 +4,7 @@ import { listStaffAccounts, listStaffInvitations } from "@/server/identity/staff
 import { activateStaffAction, changeStaffRoleAction, deactivateStaffAction, inviteStaffAction, revokeStaffInvitationAction } from "./actions";
 import { organizationInvitationDeliveryStatus } from "@/modules/identity/organizations";
 import styles from "./team.module.css";
+import { localStaffMfaDisabled } from "@/server/auth/policy";
 
 export const dynamic = "force-dynamic";
 
@@ -27,6 +28,7 @@ export default async function StaffTeamPage({ searchParams }: { searchParams: Pr
   const current = staff.find((member) => member.isCurrentUser);
   const canInvite = current?.role === "SUPER_ADMIN";
   const delivery = organizationInvitationDeliveryStatus();
+  const localMfaBypass = localStaffMfaDisabled(process.env);
 
   return <>
     <header className={styles.header}>
@@ -39,7 +41,7 @@ export default async function StaffTeamPage({ searchParams }: { searchParams: Pr
       <h2>Invite staff</h2>
       <p>Invitations are email-bound, expire after seven days, and can grant Admin or Finance only. Staff access remains inactive until MFA is verified and a Super Admin activates it.</p>
       {!delivery.available && <p role="status">{delivery.message}</p>}
-      <form action={inviteStaffAction}>
+      <form action={inviteStaffAction} className={styles.inviteForm}>
         <label>Email<input name="email" type="email" maxLength={254} autoComplete="off" required disabled={!delivery.available} /></label>
         <label>Role<select name="role" defaultValue="ADMIN" disabled={!delivery.available}><option value="ADMIN">Admin</option><option value="FINANCE">Finance</option></select></label>
         <label><input type="checkbox" name="confirmed" required disabled={!delivery.available} />Send an invitation to this address.</label>
@@ -55,14 +57,14 @@ export default async function StaffTeamPage({ searchParams }: { searchParams: Pr
           </form>}</td></tr>)}
       </tbody></table></div>}
     </section>}
-    <div className={styles.tableWrap}>
+    <div className={styles.tableWrap} tabIndex={0} role="region" aria-label="Staff accounts, scroll horizontally when needed">
       <table><thead><tr><th>Staff member</th><th>Role</th><th>Access</th><th>MFA</th><th>Actions</th></tr></thead>
         <tbody>{staff.map((member) => {
           return <tr key={member.userId}>
             <td><strong>{member.name}</strong><small>{member.email}</small></td>
             <td><span className={styles.role}>{member.role.replaceAll("_", " ")}</span></td>
             <td><span className={member.active ? styles.active : styles.inactive}>{member.active ? "Active" : "Inactive"}</span></td>
-            <td>{member.twoFactorEnabled && member.verifiedTotp ? "TOTP verified" : "Not verified"}</td>
+            <td>{member.twoFactorEnabled && member.verifiedTotp ? "TOTP verified" : localMfaBypass ? "Not verified · local bypass" : "Not verified"}</td>
             <td className={styles.actions}>
               {!member.isCurrentUser && !member.active && <form action={activateStaffAction}>
                 <input type="hidden" name="userId" value={member.userId} />
@@ -91,6 +93,6 @@ export default async function StaffTeamPage({ searchParams }: { searchParams: Pr
       </table>
     </div>
     {staff.length === 0 && <section className={styles.empty}><strong>No staff accounts</strong><p>Staff accounts are provisioned through controlled bootstrap or invitation.</p></section>}
-    <p className={styles.footerNote}>Every role or access change is audited. Super Admin access cannot bypass MFA, database controls, or the audit trail.</p>
+    <p className={styles.footerNote}>{localMfaBypass ? "Local testing bypasses staff MFA only in this development environment. Production requires verified MFA. Role checks, database controls, and audit rules remain active." : "Every role or access change is audited. Super Admin access cannot bypass MFA, database controls, or the audit trail."}</p>
   </>;
 }

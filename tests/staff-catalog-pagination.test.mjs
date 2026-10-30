@@ -24,15 +24,15 @@ test("staff listing and supplier directory queries use total counts, stable orde
     const start = server.indexOf(`export async function ${name}`);
     const next = server.indexOf("\nexport async function ", start + 1);
     const body = server.slice(start, next < 0 ? undefined : next);
-    assert.match(body, /count\(\*\)::int/);
+    assert.match(body, name === "listStaffSuppliersPage" ? /count\(distinct \$\{supplier\.id\}\)::int/ : /count\(\*\)::int/);
     assert.match(body, /orderBy\(desc\([\s\S]*desc\([\s\S]*\.limit\(pagination\.limit\)\.offset\(pagination\.offset\)/);
   }
   const catalogPage = readFileSync(new URL("../src/app/staff/(console)/catalog/page.tsx", import.meta.url), "utf8");
   const suppliersPage = readFileSync(new URL("../src/app/staff/(console)/suppliers/page.tsx", import.meta.url), "utf8");
   assert.match(catalogPage, /listStaffListings\(await headers\(\), requestedPage\)/);
-  assert.match(suppliersPage, /listStaffSuppliersPage\(requestHeaders, requestedPage \?\? "1"\)/);
+  assert.match(suppliersPage, /listStaffSuppliersPage\(requestHeaders, \{ page: first\(query\.page\) \?\? "1", query: search, status \}\)/);
   assert.match(catalogPage, /aria-label="Catalog pages"/);
-  assert.match(suppliersPage, /aria-label="Supplier pages"/);
+  assert.match(suppliersPage, /aria-label="Supplier directory pages"/);
   assert.match(server, /export async function listStaffSuppliers\(headers: Headers\)/);
 });
 
