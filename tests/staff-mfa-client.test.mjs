@@ -12,7 +12,8 @@ test("customer and staff MFA flows use their own host-local verification routes"
   assert.match(customerClient, /twoFactorPage:\s*"\/sign-in\/verify"/);
   assert.match(staffClient, /twoFactorPage:\s*"\/staff\/sign-in\/verify"/);
   assert.match(signInForm, /surface === "staff" \? staffAuthClient : authClient/);
-  assert.match(signInForm, /callbackURL:\s*surface === "staff" \? "\/staff\/sign-in" : "\/sign-in"/);
+  assert.match(signInForm, /const callbackURL = surface === "staff" && !localMfaDisabled \? "\/staff\/sign-in" : returnTo/);
+  assert.match(signInForm, /client\.signIn\.social\(\{ provider: "google", callbackURL \}\)/);
   assert.match(staffSignIn, /href="\/staff\/sign-in\/verify"/);
   assert.match(staffSignIn, /surface="staff"/);
   assert.match(staffVerify, /surface="staff"/);

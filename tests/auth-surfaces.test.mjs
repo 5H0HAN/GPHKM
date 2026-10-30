@@ -91,7 +91,8 @@ test("sign-in pages use a server-checked session projection instead of a pending
   assert.match(identityDomain, /from\(staffAccount\)/);
   assert.match(customerContext, /STAFF_IDENTITY_NOT_CUSTOMER/);
   assert.match(session, /email: authenticated\.user\.email/);
-  assert.match(session, /twoFactorEnabled: authenticated\.user\.twoFactorEnabled === true/);
+  assert.match(session, /const twoFactorEnabled = authenticated && "twoFactorEnabled" in authenticated\.user && authenticated\.user\.twoFactorEnabled === true/);
+  assert.match(session, /twoFactorEnabled: twoFactorEnabled === true/);
   assert.match(customerPage, /getSignInSession\("customer"\)/);
   assert.match(staffPage, /getSignInSession\("staff"\)/);
   assert.match(staff, /if \(session && !session\.twoFactorEnabled\) return <StaffMfaSetup \/>/);

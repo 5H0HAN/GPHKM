@@ -1,7 +1,7 @@
 .form { display: grid; gap: 12px; max-width: 560px; }
 .form label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 12px; }
 .form :is(input:not([type=checkbox]), select) { width: 100%; padding: 10px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--canvas); color: var(--text-primary); font: inherit; }
-.form button, .member button { width: fit-content; padding: 9px 12px; min-height: 36px; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--text-primary); background: var(--surface-2); font-size: 12px; cursor: pointer; }
+.form button, .member button { width: fit-content; padding: 9px 12px; min-height: 44px; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--text-primary); background: var(--surface-2); font-size: 12px; cursor: pointer; }
 .form button:disabled, .member button:disabled { opacity: .45; cursor: not-allowed; }
 .members { margin: 0; padding: 0; list-style: none; }
 .member { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, .8fr); gap: 18px; padding: 18px 0; border-top: 1px solid var(--border); }
@@ -14,4 +14,13 @@
 .links { display: flex; flex-wrap: wrap; gap: 12px 18px; color: var(--text-secondary); font-size: 12px; }
 .links a { text-underline-offset: 3px; }
 .form :is(input,button):focus-visible, .member :is(input,button):focus-visible, .links a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.passwordForm { display: grid; gap: 12px; max-width: 480px; margin-top: 16px; }
+.passwordForm label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+.passwordForm input { min-height: 44px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--canvas); color: var(--text-primary); font: inherit; font-size: 16px; }
+.passwordForm button { width: fit-content; min-height: 44px; padding: 0 14px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-2); color: var(--text-primary); font: inherit; cursor: pointer; }
+.passwordForm button:disabled { opacity: .6; cursor: wait; }
+.passwordForm :is(input,button):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.passwordError,.passwordMessage { margin: 0; font-size: 12px; line-height: 1.5; }
+.passwordError { color: var(--error); }
+.passwordMessage { color: var(--success); }
 @media (max-width: 700px) { .member { grid-template-columns: 1fr; gap: 10px; } }

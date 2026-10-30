@@ -36,6 +36,17 @@ export function localAuthEnabled(env: Environment): boolean {
   return flag === "true";
 }
 
+export function localStaffMfaDisabled(env: Environment): boolean {
+  const flag = env.GPHKM_LOCAL_MFA_DISABLED;
+  if (flag !== undefined && flag !== "true" && flag !== "false") {
+    throw new Error("GPHKM_LOCAL_MFA_DISABLED must be true or false");
+  }
+  if (flag === "true" && (env.NODE_ENV !== "development" || !localAuthEnabled(env))) {
+    throw new Error("Local staff MFA may be disabled only with development-only local authentication");
+  }
+  return flag === "true";
+}
+
 export function authTrustedProxyCidrs(env: Environment): string[] {
   const configured = env.GPHKM_TRUSTED_PROXY_CIDRS?.trim();
   if (!configured) {

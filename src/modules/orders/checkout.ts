@@ -121,6 +121,7 @@ export function customerOrderProjection(order: {
       .map((item) => item.customerStatus).sort((a, b) => progress.indexOf(b) - progress.indexOf(a))[0] ?? order.customerStatus;
   return {
     id: order.id,
+    isOrderer: viewerUserId !== undefined && order.actorUserId === viewerUserId,
     status,
     currency: order.currency,
     placementTotalMinor: order.placementTotalMinor,

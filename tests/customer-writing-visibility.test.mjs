@@ -16,12 +16,14 @@ const order = {
 
 test("shared-order Owner customer projection excludes another member's writing draft text and state even if staff RLS supplied them", () => {
   const owner = customerOrderProjection(order, "organization-owner");
+  assert.equal(owner.isOrderer, false);
   assert.equal(owner.items[0].writingWorkflow, undefined);
   assert.equal(JSON.stringify(owner).includes("PRIVATE_MEMBER_DRAFT"), false);
   assert.equal(JSON.stringify(owner).includes("FIRST_DRAFT_READY"), false);
   const unknownViewer = customerOrderProjection(order);
   assert.equal(unknownViewer.items[0].writingWorkflow, undefined);
   const orderer = customerOrderProjection(order, "member-orderer");
+  assert.equal(orderer.isOrderer, true);
   assert.equal(orderer.items[0].writingWorkflow.firstDraftText, "PRIVATE_MEMBER_DRAFT");
 });
 

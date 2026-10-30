@@ -63,60 +63,67 @@ export default async function CustomerHome({ searchParams }: { searchParams: Pro
     <>
       <div className={styles.headingRow}>
         <div>
-          <h1 className={styles.title}>Good to see you</h1>
-          <p className={styles.subtitle}>A clear view of your placement work, account balance, and next steps.</p>
+          <p className={styles.pageKicker}>Workspace overview</p>
+          <h1 className={styles.title}>Good to see you{organization?.name ? `, ${organization.name}` : ""}</h1>
+          <p className={styles.subtitle}>Your team’s placement work, account balance, and next steps in one place.</p>
         </div>
+        <Link className={styles.primaryAction} href={organization ? `/customer/catalog?organizationId=${encodeURIComponent(organization.id)}` : "/customer/catalog"}>Browse marketplace <span aria-hidden="true">↗</span></Link>
       </div>
       {!organization && <div className={styles.banner}><strong>Your organization is being set up.</strong> Once it is ready, your wallet and marketplace will appear here.</div>}
-      <section className={styles.grid} aria-label="Workspace summary">
-        <article className={`${styles.panel} ${styles.span4}`}>
-          <h2 className={styles.panelTitle}>Organization wallet</h2>
-          <p className={styles.panelText}>Available funds for new placements.</p>
-          <div className={styles.metric}>{balance === null ? "—" : money(balance)}</div>
-          <div className={styles.metricLabel}>{balance === null ? "Wallet details are loading" : "USD balance"}</div>
-          <Link className={styles.panelAction} href={organization ? `/customer/wallet?organizationId=${encodeURIComponent(organization.id)}` : "/customer/wallet"}>View wallet</Link>
-        </article>
-        <article className={`${styles.panel} ${styles.span4}`}>
-          <h2 className={styles.panelTitle}>Your orders</h2>
-          <p className={styles.panelText}>Follow each placement through review and publication.</p>
-          <div className={styles.metric}>{orderLoadFailed ? "—" : orderCount}</div>
-          <div className={styles.metricLabel}>{orderLoadFailed ? "Order details could not be loaded" : `${itemCount} placement${itemCount === 1 ? "" : "s"} · ${pendingItemCount} in progress`}</div>
-          <Link className={styles.panelAction} href={organization ? `/customer/orders?organizationId=${encodeURIComponent(organization.id)}` : "/customer/orders"}>View orders</Link>
-        </article>
-        <article className={`${styles.panel} ${styles.span4}`}>
-          <h2 className={styles.panelTitle}>Marketplace</h2>
-          <p className={styles.panelText}>Explore reviewed websites and their placement requirements.</p>
-          <div className={styles.empty}>
-            <p className={styles.panelText}>Listings will appear after the catalog is ready.</p>
-            <Link className={styles.panelAction} href={`/customer/catalog?organizationId=${encodeURIComponent(organization.id)}`}>Browse marketplace</Link>
-          </div>
-        </article>
-        <article className={`${styles.panel} ${styles.span7}`}>
-          <h2 className={styles.panelTitle}>Recent activity</h2>
+      <section className={styles.dashboardHome} aria-label="Workspace overview">
+        <div className={styles.summaryStrip}>
+          <article className={styles.summaryCard}>
+            <div className={styles.summaryTop}><span>Organization balance</span><span className={styles.summaryMark} aria-hidden="true">$</span></div>
+            <strong className={styles.summaryValue}>{balance === null ? "—" : money(balance)}</strong>
+            <div className={styles.summaryBottom}><span>{balance === null ? "Wallet unavailable" : "USD available"}</span><Link href={organization ? `/customer/wallet?organizationId=${encodeURIComponent(organization.id)}` : "/customer/wallet"}>Open wallet <span aria-hidden="true">↗</span></Link></div>
+          </article>
+          <article className={styles.summaryCard}>
+            <div className={styles.summaryTop}><span>Orders</span><span className={styles.summaryMark} aria-hidden="true">↗</span></div>
+            <strong className={styles.summaryValue}>{orderLoadFailed ? "—" : orderCount}</strong>
+            <div className={styles.summaryBottom}><span>{orderLoadFailed ? "Order details unavailable" : `${itemCount} placement${itemCount === 1 ? "" : "s"} · ${pendingItemCount} active`}</span><Link href={organization ? `/customer/orders?organizationId=${encodeURIComponent(organization.id)}` : "/customer/orders"}>View orders <span aria-hidden="true">↗</span></Link></div>
+          </article>
+          <article className={styles.summaryCard}>
+            <div className={styles.summaryTop}><span>Marketplace access</span><span className={styles.summaryMark} aria-hidden="true">◇</span></div>
+            <strong className={styles.accessValue}>{!organization ? "Setting up" : access?.paidAccessActive ? "Active" : access?.trialActive ? "Trial access" : access ? "Recharge needed" : "Unavailable"}</strong>
+            <div className={styles.summaryBottom}><span>Browse reviewed placement options</span><Link href={organization ? `/customer/catalog?organizationId=${encodeURIComponent(organization.id)}` : "/customer/catalog"}>Explore <span aria-hidden="true">↗</span></Link></div>
+          </article>
+        </div>
+
+        <div className={styles.homeColumns}>
+          <section className={styles.homePanel} aria-labelledby="activity-heading">
+            <div className={styles.homePanelHeader}><div><p className={styles.pageKicker}>Your workspace</p><h2 id="activity-heading">Recent placement activity</h2></div>{orderCount > 0 && organization && <Link href={`/customer/orders?organizationId=${encodeURIComponent(organization.id)}`}>All orders <span aria-hidden="true">↗</span></Link>}</div>
           {orderLoadFailed ? <div className={styles.empty}>
             <p className={styles.emptyTitle}>Activity could not be loaded</p>
             <p className={styles.panelText}>Refresh the page or open your orders to try again.</p>
-            <Link className={styles.panelAction} href={`/customer/orders?organizationId=${encodeURIComponent(organization.id)}`}>Open orders</Link>
+            <Link className={styles.panelAction} href={organization ? `/customer/orders?organizationId=${encodeURIComponent(organization.id)}` : "/customer/orders"}>Open orders</Link>
           </div> : recentItems.length ? <ul className={styles.list}>
             {recentItems.map((item, index) => <li className={styles.listItem} key={`${item.orderId}-${index}`}>
-              <span><strong>{item.title}</strong><br />{label(item.status)} · Order {item.orderId.slice(0, 8)}</span>
-              <span><time dateTime={item.updatedAt}>{date(item.updatedAt)}</time>{item.nextUpdateAt && <><br />Next update {date(item.nextUpdateAt)}</>}</span>
+              <span className={styles.activityTitle}><span className={styles.activityDot} aria-hidden="true" /><span><strong>{item.title}</strong><small>{label(item.status)} · Order {item.orderId.slice(0, 8)}</small></span></span>
+              <span className={styles.activityDate}><time dateTime={item.updatedAt}>{date(item.updatedAt)}</time>{item.nextUpdateAt && <small>Next update {date(item.nextUpdateAt)}</small>}</span>
             </li>)}
           </ul> : <div className={styles.empty}>
-            <p className={styles.emptyTitle}>No placement activity yet</p>
-            <p className={styles.panelText}>Your order updates will appear here.</p>
+            <span className={styles.emptyMark} aria-hidden="true">↗</span>
+            <p className={styles.emptyTitle}>Your next placement starts here</p>
+            <p className={styles.panelText}>Browse the marketplace to compare requirements and find the right site for your team.</p>
+            <Link className={styles.panelAction} href={organization ? `/customer/catalog?organizationId=${encodeURIComponent(organization.id)}` : "/customer/catalog"}>Explore marketplace</Link>
           </div>}
-          {!orderLoadFailed && orderCount > 0 && organization && <Link className={styles.panelAction} href={`/customer/orders?organizationId=${encodeURIComponent(organization.id)}`}>View all orders</Link>}
-        </article>
-        <article className={`${styles.panel} ${styles.span5}`}>
-          <h2 className={styles.panelTitle}>Account</h2>
-          <p className={styles.panelText}>{workspace.customer?.email}</p>
-          <ul className={styles.list}>
-            <li className={styles.listItem}><span>Organization</span><span>{organization?.name ?? "Pending"}</span></li>
-            <li className={styles.listItem}><span>Marketplace access</span><span>{!organization ? "Not available yet" : access?.paidAccessActive ? "Paid access active" : access?.trialActive ? "Trial active" : access ? "Recharge required" : "Status unavailable"}</span></li>
-          </ul>
-          <Link className={styles.panelAction} href="/customer/settings">Manage settings</Link>
-        </article>
+          </section>
+          <aside className={styles.homeSide} aria-label="Account details">
+            <section className={styles.homePanel}>
+              <div className={styles.homePanelHeader}><div><p className={styles.pageKicker}>Workspace</p><h2>Account details</h2></div><span className={styles.accountIcon} aria-hidden="true">{organization?.name?.slice(0, 1).toUpperCase() ?? "G"}</span></div>
+              <dl className={styles.accountDetails}>
+                <div><dt>Organization</dt><dd>{organization?.name ?? "Setting up"}</dd></div>
+                <div><dt>Signed in as</dt><dd>{workspace.customer?.email ?? "Customer account"}</dd></div>
+                <div><dt>Placement activity</dt><dd>{orderLoadFailed ? "Unavailable" : `${orderCount} order${orderCount === 1 ? "" : "s"}`}</dd></div>
+              </dl>
+              <Link className={styles.secondaryAction} href="/customer/settings">Manage account settings <span aria-hidden="true">↗</span></Link>
+            </section>
+            <section className={styles.tipPanel}>
+              <span className={styles.tipMark} aria-hidden="true">i</span>
+              <div><h2>Clear progress, all the way through</h2><p>Every order shows its latest milestone and the next update date, so your team knows what to expect.</p><Link href={organization ? `/customer/orders?organizationId=${encodeURIComponent(organization.id)}` : "/customer/orders"}>How orders progress <span aria-hidden="true">↗</span></Link></div>
+            </section>
+          </aside>
+        </div>
       </section>
     </>
   );
