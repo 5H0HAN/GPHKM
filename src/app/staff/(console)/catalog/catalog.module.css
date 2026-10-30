@@ -4,6 +4,7 @@
 .lede { max-width:640px; margin:10px 0 0; color:var(--text-secondary); font-size:14px; line-height:1.6; }
 .button { display:inline-flex; align-items:center; justify-content:center; min-height:38px; padding:0 14px; border:1px solid var(--border-strong); border-radius:5px; color:var(--text-primary); background:var(--surface-2); font:600 12px/1.2 inherit; text-decoration:none; cursor:pointer; }
 .button:hover { border-color:var(--accent); }
+.button:disabled { color:var(--text-muted); border-color:var(--border); background:var(--surface-2); cursor:not-allowed; opacity:.8; }
 .button:focus-visible { border-color:var(--accent); outline:2px solid var(--focus); outline-offset:2px; }
 .backLink { color:var(--text-secondary); font-size:13px; text-underline-offset:3px; }
 .tableWrap { overflow:auto; border:1px solid var(--border); border-radius:7px; background:var(--surface-1); }
@@ -41,14 +42,18 @@
 .history h2 { margin:0 0 14px; font-size:16px; font-weight:600; }
 .applyPanel { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:18px 0 12px; padding:14px; border:1px solid var(--border); border-radius:7px; background:var(--surface-1); }
 .applyPanel p { margin:0; color:var(--text-secondary); font-size:12px; line-height:1.5; }
+.applyPanel strong { display:block; margin-bottom:4px; color:var(--text-primary); font-size:13px; font-weight:650; }
 .priceInput { display:grid; gap:4px; width:100px; margin-top:7px; font-size:10px; color:var(--text-muted); }
 .priceInput input { width:100%; min-height:30px; padding:5px 6px; border:1px solid var(--border-strong); border-radius:4px; color:var(--text-primary); background:var(--canvas); }
 .decision { display:block; margin-top:5px; color:var(--text-muted); font-size:10px; }
-.correctForm { display:grid; gap:10px; min-width:400px; max-width:620px; padding:12px 0; }
+.correctForm { display:grid; gap:10px; min-width:0; max-width:620px; padding:12px 0; }
 .correctGrid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
 .correctGrid label,.decisionForm label,.rejectForm label { display:grid; gap:4px; color:var(--text-muted); font-size:10px; }
 .correctGrid input,.decisionForm input,.decisionForm select,.rejectForm select { min-width:0; min-height:30px; padding:5px 7px; border:1px solid var(--border-strong); border-radius:4px; color:var(--text-primary); background:var(--canvas); font:inherit; font-size:11px; }
 .decisionForm,.rejectForm { display:flex; flex-wrap:wrap; align-items:end; gap:8px; margin-top:9px; }
+.rowDecision { margin-top:8px; padding-top:8px; border-top:1px solid var(--border); }
+.rowDecision summary,.tableWrap details summary { width:fit-content; color:var(--accent-text); font-size:12px; cursor:pointer; text-underline-offset:3px; }
+.tableWrap details p { line-height:1.5; overflow-wrap:anywhere; }
 .decisionForm button,.rejectForm button { min-height:30px; padding:0 9px; border:1px solid var(--border); border-radius:4px; color:var(--text-secondary); background:var(--surface-2); font-size:10px; cursor:pointer; }
 .pagination { display:flex; justify-content:flex-end; gap:16px; margin-top:12px; color:var(--text-muted); font-size:11px; }
 .pagination a { color:var(--text-secondary); }
@@ -57,3 +62,13 @@
 .success { color:var(--success); background:var(--success-soft); border-color:var(--success); }
 .error { color:var(--error); background:var(--error-soft); border-color:var(--error); }
 @media(max-width:720px) { .supplierForm,.formGrid { grid-template-columns:1fr; } .header { flex-direction:column; } }
+@media(max-width:680px) {
+  .applyPanel { align-items:stretch; flex-direction:column; }
+  .applyPanel .button { width:100%; min-height:44px; }
+  .correctGrid { grid-template-columns:1fr; }
+  .correctGrid input,.decisionForm input,.decisionForm select,.rejectForm select { min-height:40px; font-size:13px; }
+  .decisionForm,.rejectForm { align-items:stretch; flex-direction:column; }
+  .decisionForm button,.rejectForm button { min-height:42px; }
+  .tableWrap table { min-width:820px; }
+  .pagination { align-items:center; flex-wrap:wrap; justify-content:space-between; }
+}

@@ -19,7 +19,7 @@ export default async function FulfillmentPage({ searchParams }: { searchParams: 
   return <>
     <header className={styles.header}>
       <div><p className={styles.eyebrow}>ORDER OPERATIONS</p><h1>Fulfillment</h1><p className={styles.lede}>Assign each placement, keep the customer’s next update current, and record the verified publication link.</p></div>
-      <div className={styles.headerCounts}><span className={styles.count}>{pagination.total} {view === "all" ? "total" : "active"} items</span>{overdueCount > 0 && <span className={styles.overdueCount} role="status">{overdueCount} active overdue update{overdueCount === 1 ? "" : "s"}</span>}</div>
+      <div className={styles.headerCounts}><Link className={styles.open} href="/staff/fulfillment/packets/reconciliation">Handoff reconciliation</Link><span className={styles.count}>{pagination.total} {view === "all" ? "total" : "active"} items</span>{overdueCount > 0 && <span className={styles.overdueCount} role="status">{overdueCount} active overdue update{overdueCount === 1 ? "" : "s"}</span>}</div>
     </header>
     <nav className={styles.viewFilter} aria-label="Fulfillment view">
       <Link className={styles.open} href="/staff/fulfillment" aria-current={view === "active" ? "page" : undefined}>Active items</Link>
@@ -31,7 +31,7 @@ export default async function FulfillmentPage({ searchParams }: { searchParams: 
           const canOpen = actorRole === "SUPER_ADMIN" || row.assignedAdminId === actorUserId;
           return <article className={styles.row} key={row.orderItemId}>
             <div className={styles.rowMain}>
-              <div className={styles.titleLine}><h2>{row.listingTitle}</h2><span className={styles.status}>{stateLabels[row.state] ?? row.state}</span></div>
+              <div className={styles.titleLine}><h2>{row.listingTitle}</h2><span className={styles.status}>{stateLabels[row.state] ?? row.state}</span><span className={row.assignedAdminId ? styles.assignmentState : styles.assignmentNeeded}>{row.assignedAdminId ? `Assigned to ${row.assignedAdminName ?? "Admin"}` : "Needs assignment"}</span></div>
               <p className={styles.meta}>Order {row.orderId.slice(0, 8)} · Item {row.orderItemId.slice(0, 8)}</p>
               <p className={styles.update}>Customer status: {row.customerStatus.replaceAll("_", " ").toLowerCase()} · Updated {row.updatedAt.toLocaleDateString()}</p>
               <p className={isFulfillmentOverdue(row.nextUpdateAt, row.state, asOf) ? styles.overdue : styles.update}>
@@ -48,7 +48,7 @@ export default async function FulfillmentPage({ searchParams }: { searchParams: 
                     <option value="">Unassigned</option>
                     {assignees.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
                   </select>
-                  <button type="submit">Save</button>
+                  <button type="submit">Save assignment</button>
                 </div>
               </form>
               {canOpen ? <Link className={styles.open} href={`/staff/fulfillment/${row.orderItemId}`}>Open item</Link> : <span className={styles.restricted}>Assigned to {row.assignedAdminName ?? "another Admin"}</span>}

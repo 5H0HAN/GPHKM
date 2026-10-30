@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useId, useMemo, useState, useTransition } from "react";
 import styles from "../../catalog/catalog.module.css";
 
 type SearchAction = (supplierId: string, query: string) => Promise<ItemOption[]>;
@@ -8,7 +8,8 @@ type ItemOption = { id: string; title: string };
 type AllocationRow = { key: string; orderItemId: string; amount: string };
 
 export function TransferAllocationEditor({ items, supplierId, idempotencyKey, orderItemsPage, transfersPage, searchAction }: { items: ItemOption[]; supplierId: string; idempotencyKey: string; orderItemsPage: number; transfersPage: number; searchAction: SearchAction }) {
-  const [rows, setRows] = useState<AllocationRow[]>([{ key: crypto.randomUUID(), orderItemId: "", amount: "" }]);
+  const initialRowId = useId();
+  const [rows, setRows] = useState<AllocationRow[]>([{ key: initialRowId, orderItemId: "", amount: "" }]);
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<ItemOption[]>(items);
   const [searchMessage, setSearchMessage] = useState("");

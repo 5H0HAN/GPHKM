@@ -18,10 +18,12 @@ export function TrialBanner({ organizations }: { organizations: OrganizationAcce
   const [now, setNow] = useState<number | null>(null);
 
   useEffect(() => {
-    const update = () => setNow(Date.now());
-    update();
-    const timer = window.setInterval(update, 60_000);
-    return () => window.clearInterval(timer);
+    const initialUpdate = window.setTimeout(() => setNow(Date.now()), 0);
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => {
+      window.clearTimeout(initialUpdate);
+      window.clearInterval(timer);
+    };
   }, []);
 
   if (!selected || selected.paidAccessActive) return null;
@@ -33,7 +35,7 @@ export function TrialBanner({ organizations }: { organizations: OrganizationAcce
         <strong>{countdown?.expired ? "Your browsing access has ended." : "Complimentary marketplace access"}</strong>{" "}
         {countdown?.expired
           ? "Load the required minimum wallet amount to restore browsing and reveal eligible listing URLs."
-          : <>Your trial ends in <span className="customerTrialCountdown">{countdown?.days ?? "—"}d {countdown?.hours ?? "—"}h {countdown?.minutes ?? "—"}m</span>. Load the required minimum wallet amount to keep browsing and reveal eligible listing URLs.</>}
+          : <>Your trial {countdown ? <>ends in <span className="customerTrialCountdown">{countdown.days}d {countdown.hours}h {countdown.minutes}m</span></> : "countdown is updating"}. Load the required minimum wallet amount to keep browsing and reveal eligible listing URLs.</>}
       </p>
       <Link href={`/customer/wallet?organizationId=${encodeURIComponent(selected.organizationId)}`}>Load balance</Link>
     </aside>

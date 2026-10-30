@@ -26,7 +26,7 @@ Every customer organization transaction sets `app.user_id` transaction-locally. 
 
 Organization creation is the only exception before membership exists: set `app.user_id`, insert an organization whose `created_by` equals that user, insert that same user as active `OWNER`, and create its wallet plus audit event atomically. Use a unique `created_by` index to close concurrent first-organization races. The RLS insert policy must check `created_by = app.user_id`; subsequent membership-based access starts only after the owner row exists.
 
-Customer onboarding is available only to a verified customer host session and is idempotent under concurrent requests. The route checks exact `Origin`, caps the request body, and renders no customer workspace content before the first organization exists. Versioned Terms/Privacy consent persistence is implemented in migration `0013_versioned_customer_legal_consent.sql` and enforced before onboarding/protected actions. Public signup remains blocked until approved legal copy, document URLs, and immutable version identifiers are configured.
+Customer onboarding is available only to a verified customer host session and is idempotent under concurrent requests. The route checks exact `Origin`, caps the request body, and renders no customer workspace content before the first organization exists. Versioned Terms/Privacy consent persistence is implemented in migration `0013_customer_legal_consent.sql` and enforced before onboarding/protected actions. Public signup remains blocked until approved legal copy, document URLs, and immutable version identifiers are configured.
 
 ## Appearance preference
 

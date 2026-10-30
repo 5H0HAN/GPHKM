@@ -2,16 +2,21 @@
 
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { refreshOpenPageRank, setMetricRedistributionApproval } from "@/server/catalog/metrics";
+import { MetricRefreshError, refreshOpenPageRank, setMetricRedistributionApproval } from "@/server/catalog/metrics";
 
 export async function refreshOpenPageRankAction(form: FormData) {
   const listingIds = form.getAll("listingId").filter((value): value is string => typeof value === "string");
   const requestedPage = form.get("page");
   const page = typeof requestedPage === "string" && /^[1-9]\d{0,5}$/.test(requestedPage) ? requestedPage : "1";
+  if (listingIds.length === 0) redirect(`/staff/metrics?page=${page}&error=no-selection`);
   let refreshed: number;
   try {
     refreshed = (await refreshOpenPageRank(await headers(), listingIds)).refreshed;
-  } catch {
+  } catch (error) {
+    if (error instanceof MetricRefreshError) {
+      const code = error.code === "DAILY_LIMIT" ? "daily-limit" : error.code === "NON_PUBLIC_DOMAIN" ? "non-public-domain" : "no-selection";
+      redirect(`/staff/metrics?page=${page}&error=${code}`);
+    }
     redirect(`/staff/metrics?page=${page}&error=refresh-failed`);
   }
   redirect(`/staff/metrics?page=${page}&refreshed=${refreshed}`);

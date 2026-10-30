@@ -116,13 +116,13 @@ export function TopUpCheckout({ organizationId, returnedFromProvider, checkoutAv
           <label className={styles.fieldLabel} htmlFor="topup-amount">Amount (USD)</label>
           <input id="topup-amount" className={styles.amountInput} type="number" inputMode="decimal" autoComplete="off" min="0.01" step="0.01"
             value={amount} onChange={(event) => setAmount(event.target.value)} disabled={retryPending} required />
-          <p className={customerStyles.panelText}>A single settled top-up of at least $50 qualifies for marketplace access under the current six-month policy.</p>
+          <p className={customerStyles.panelText}>A single settled top-up of at least {"$"}50 qualifies for marketplace access under the current six-month policy.</p>
           {error ? <p className={styles.error} role="alert">{error}</p> : null}
           <button className={styles.button} type="submit" disabled={busy}>{busy ? "Preparing secure checkout…" : retryPending ? "Retry secure checkout" : "Continue to payment"}</button>
         </form>
       ) : (
         <>
-          <p className={customerStyles.panelText}>Top-up attempt {session.attemptId.slice(0, 8)} · ${(Number(session.amountMinor) / 100).toFixed(2)} USD</p>
+          <p className={customerStyles.panelText}>Top-up attempt {session.attemptId.slice(0, 8)} · {"$"}{(Number(session.amountMinor) / 100).toFixed(2)} USD</p>
           <CheckoutElementsProvider stripe={loadStripe(session.publishableKey)} options={{ clientSecret: session.clientSecret }}>
             <PaymentForm onSubmitted={() => { sessionStorage.removeItem(storageKey); setSubmitted(true); }} />
           </CheckoutElementsProvider>

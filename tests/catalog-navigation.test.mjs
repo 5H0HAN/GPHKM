@@ -29,3 +29,23 @@ test("catalog filters and pagination preserve native link navigation", async () 
   assert.match(source, /role="alert" tabIndex=\{-1\}/);
   assert.match(styles, /catalogPagination a:focus-visible/);
 });
+
+test("customer ordering separates listing selection, item details, and final review", async () => {
+  const source = await readFile(new URL("../src/app/customer/catalog-browser.tsx", import.meta.url), "utf8");
+  const page = await readFile(new URL("../src/app/customer/catalog/page.tsx", import.meta.url), "utf8");
+  const listingCards = source.slice(source.indexOf("{step === \"browse\""), source.indexOf("{selectedListings.length > 0"));
+  const detailsFlow = source.slice(source.indexOf("{step === \"details\""), source.indexOf("</> : <>", source.indexOf("{step === \"details\"")));
+
+  assert.match(source, /useState<"browse" \| "details" \| "review">\("browse"\)/);
+  assert.match(source, /The stated term describes the publisher&apos;s intent/);
+  assert.match(source, /Website address hidden · revealed after a qualifying wallet recharge/);
+  assert.doesNotMatch(listingCards, /Destination URL|Anchor text|<textarea/);
+  assert.match(source, /Complete the destination URL, anchor text, and/);
+  assert.match(source, /function removeSelected\(listingId: string\)/);
+  assert.match(source, /Remove from order/);
+  assert.match(detailsFlow, /Copy shared details across selected placements/);
+  assert.match(source, /Review \{item\.useWriting \? "writing brief" : "article"\}/);
+  assert.match(source, /shareWithPublicationPartner: true/);
+  assert.match(source, /idempotencyKey: idempotencyKeyRef\.current/);
+  assert.match(page, /filterProps=\{/);
+});

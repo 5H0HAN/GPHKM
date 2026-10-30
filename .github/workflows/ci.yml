@@ -87,6 +87,7 @@ jobs:
         run: |
           npm run db:migrate
           npm run db:check-rls:local
+          npm run db:check-content-race:local
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test

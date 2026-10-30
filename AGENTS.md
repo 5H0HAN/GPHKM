@@ -29,6 +29,7 @@
 ## Working style
 
 - Make the smallest change that satisfies an approved requirement.
+- For public, customer, or staff UI changes, follow `docs/FRONTEND_UX_WORKFLOW.md` and the current `DESIGN.md`; review the rendered page at desktop and mobile sizes before calling the work done.
 - Do not add dependencies, services, feature frameworks, or generalized abstractions without a current need.
 - Add tests for changed behavior and security boundaries when implementation is authorized.
 - Keep migrations, RBAC changes, money paths, and import/export handling reviewable and documented.

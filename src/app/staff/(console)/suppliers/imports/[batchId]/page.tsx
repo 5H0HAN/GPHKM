@@ -38,6 +38,8 @@ export default async function ImportReviewPage({ params, searchParams }: { param
   let result;
   try { result = await getStagedImportRows(await headers(), batchId, pageNumber); } catch { notFound(); }
   const page = result.rows;
+  const readyCount = page.filter((row) => row.status === "READY").length;
+  const reviewCount = page.filter((row) => row.status !== "READY" && row.status !== "APPLIED" && row.status !== "REJECTED").length;
   return <>
     <header className={styles.header}><div><p className={styles.eyebrow}>SUPPLIERS / IMPORT REVIEW</p><h1>Staged rows</h1><p className={styles.lede}>Correct and review rows before applying selected entries as draft listings. Nothing is published automatically.</p></div><Link className={styles.backLink} href="/staff/suppliers/imports">Back to imports</Link></header>
     {query.staged && <p className={styles.success}>{query.staged} rows staged. No listing was created or published.</p>}
@@ -51,8 +53,8 @@ export default async function ImportReviewPage({ params, searchParams }: { param
       <form id="apply-form" action={applySelectedImportAction} className={styles.applyPanel}>
         <input type="hidden" name="batchId" value={batchId} />
         <input type="hidden" name="page" value={pageNumber} />
-        <p>Select ready rows and enter the USD retail price to assign to each new draft. Source cost is never used as retail price. Apply accepts up to 50 rows at a time.</p>
-        <button className={styles.button} type="submit">Apply selected as draft listings</button>
+        <div><strong>{page.length} rows on this page</strong><p>{readyCount} ready to apply · {reviewCount} need review. Select only ready rows and set each USD retail price. Source cost is never used as retail price; applying creates drafts only.</p></div>
+        <button className={styles.button} type="submit" disabled={readyCount === 0}>Apply selected as draft listings</button>
       </form>
       <div className={styles.tableWrap}><table><thead><tr><th>Select</th><th>Row</th><th>Website</th><th>Title</th><th>Categories</th><th>Status</th><th>Review notes / actions</th></tr></thead><tbody>{page.map((row) => {
         const original = row.originalValues as Record<string, unknown>;
@@ -74,12 +76,14 @@ export default async function ImportReviewPage({ params, searchParams }: { param
               </tbody></table></div>
             </details>)}
             {row.hiddenMatchCount > 0 && <p>{row.hiddenMatchCount} additional domain matches not shown. Review search results in Catalog before applying.</p>}
-            {editable && <details><summary>Correct row</summary><form action={correctImportRowAction} className={styles.correctForm}><input type="hidden" name="batchId" value={batchId} /><input type="hidden" name="rowId" value={row.id} /><input type="hidden" name="page" value={pageNumber} />
+            {editable && <details><summary>Correct row details</summary><form action={correctImportRowAction} className={styles.correctForm}><input type="hidden" name="batchId" value={batchId} /><input type="hidden" name="rowId" value={row.id} /><input type="hidden" name="page" value={pageNumber} />
               <div className={styles.correctGrid}>{fields.map(([field, label]) => <label key={field}>{label}<input name={`field_${field}`} defaultValue={normalized(field)} maxLength={field === "description" ? 4000 : 2048} /></label>)}</div>
               <button className={styles.button} type="submit">Save corrections</button>
             </form></details>}
-            {row.status === "DUPLICATE_REVIEW" && <form action={decideDuplicateAction} className={styles.decisionForm}><input type="hidden" name="batchId" value={batchId} /><input type="hidden" name="rowId" value={row.id} /><input type="hidden" name="page" value={pageNumber} /><label>Duplicate decision<select name="decision" defaultValue="KEEP_SEPARATE"><option value="KEEP_SEPARATE">Keep as a separate listing</option><option value="REJECT">Reject this row</option></select></label><label>Reason<input name="reason" required maxLength={1000} /></label><button type="submit">Record decision</button></form>}
-            {editable && row.status !== "DUPLICATE_REVIEW" && <form action={rejectImportRowAction} className={styles.rejectForm}><input type="hidden" name="batchId" value={batchId} /><input type="hidden" name="rowId" value={row.id} /><input type="hidden" name="page" value={pageNumber} /><label>Reject reason<select name="reason" defaultValue="INVALID_SOURCE_DATA"><option value="INVALID_SOURCE_DATA">Invalid supplier data</option><option value="NO_LONGER_OFFERED">Supplier no longer offers it</option><option value="OTHER">Other review reason</option></select></label><button type="submit">Reject row</button></form>}
+            {editable && <details className={styles.rowDecision}><summary>Row decisions</summary>
+              {row.status === "DUPLICATE_REVIEW" && <form action={decideDuplicateAction} className={styles.decisionForm}><input type="hidden" name="batchId" value={batchId} /><input type="hidden" name="rowId" value={row.id} /><input type="hidden" name="page" value={pageNumber} /><label>Duplicate decision<select name="decision" defaultValue="KEEP_SEPARATE"><option value="KEEP_SEPARATE">Keep as a separate listing</option><option value="REJECT">Reject this row</option></select></label><label>Reason<input name="reason" required maxLength={1000} /></label><button type="submit">Record decision</button></form>}
+              {editable && row.status !== "DUPLICATE_REVIEW" && <form action={rejectImportRowAction} className={styles.rejectForm}><input type="hidden" name="batchId" value={batchId} /><input type="hidden" name="rowId" value={row.id} /><input type="hidden" name="page" value={pageNumber} /><label>Reject reason<select name="reason" defaultValue="INVALID_SOURCE_DATA"><option value="INVALID_SOURCE_DATA">Invalid supplier data</option><option value="NO_LONGER_OFFERED">Supplier no longer offers it</option><option value="OTHER">Other review reason</option></select></label><button type="submit">Reject row</button></form>}
+            </details>}
           </td>
         </tr>;
       })}</tbody></table></div>

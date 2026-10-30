@@ -12,6 +12,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:check-rls:local": "node --env-file=.env scripts/check-local-rls.ts",
+    "db:check-content-race:local": "node --env-file=.env scripts/check-content-handoff-race-local.ts",
     "db:check-session-guard:local": "NODE_ENV=development node --env-file=.env scripts/check-customer-session-revocation-local.ts",
     "db:check-staff-mfa:local": "NODE_ENV=development node --env-file=.env scripts/check-staff-mfa-local.ts",
     "auth:bootstrap:local": "NODE_ENV=development node --env-file=.env scripts/bootstrap-local-admin.ts",

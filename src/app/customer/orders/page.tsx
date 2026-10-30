@@ -169,7 +169,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                 <div className={styles.detailsBody}>
                   {item.milestoneHistory.length > 0 && <section className={styles.historyBlock} aria-label="Placement update history">
                     <h4>Progress history</h4>
-                    <ol>{[...item.milestoneHistory].reverse().map((milestone, index) => <li key={`${milestone.occurredAt}-${index}`}>
+                    <ol>{[...item.milestoneHistory].reverse().map((milestone) => <li key={`${milestone.status}-${milestone.occurredAt}-${milestone.nextUpdateAt ?? ""}`}>
                       <strong>{milestoneLabel(milestone.status)}</strong>
                       <time dateTime={milestone.occurredAt}>{date(milestone.occurredAt, true)} UTC</time>
                       {milestone.nextUpdateAt && <span>Next update by {date(milestone.nextUpdateAt)}</span>}
@@ -182,7 +182,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                   </dl>
                   {item.publicationUrls.length > 0 && <section className={styles.liveLinks}>
                     <h4>Published link</h4>
-                    <ul>{item.publicationUrls.map((url, index) => <li key={`${index}-${url}`}><a href={url} target="_blank" rel="noopener noreferrer">Open live publication{item.publicationUrls.length > 1 ? ` ${index + 1}` : ""}</a></li>)}</ul>
+                    <ul>{item.publicationUrls.map((url, index) => <li key={url}><a href={url} target="_blank" rel="noopener noreferrer">Open live publication{item.publicationUrls.length > 1 ? ` ${index + 1}` : ""}</a></li>)}</ul>
                     <p>Google indexing: {item.googleIndexingStatus === "UNKNOWN" ? "Unknown. GPHKM does not currently verify indexing." : "Not available."}</p>
                   </section>}
                   <details className={styles.subDetails}>
@@ -234,7 +234,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
               {(offersByItem.get(item.id) ?? []).map((offer) => <EquivalentOfferCard key={offer.id} offer={offer} organizationId={organizationId} />)}
 
               <details className={styles.moreActions}>
-                <summary>More order actions</summary>
+                <summary>Change or cancel this placement</summary>
                 <div className={styles.detailsBody}>
                   <OrderItemCancellationForm organizationId={organizationId} itemId={item.id} />
                   <ContentChangeForm organizationId={organizationId} itemId={item.id} canAct={order.isOrderer} writingSelected={item.writingSelected} writingStopped={item.writingWorkflow?.state === "CUSTOMER_DECLINED_FINAL"}

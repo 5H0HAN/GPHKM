@@ -6,9 +6,9 @@ import { saveAppearanceTheme } from "@/app/theme-actions";
 function applyTheme(theme: "DARK" | "LIGHT") {
   const value = theme.toLowerCase();
   document.documentElement.dataset.theme = value;
-  document.querySelectorAll<HTMLElement>(".frame[data-theme]").forEach((element) => { element.dataset.theme = value; });
+  document.querySelectorAll<HTMLElement>("[data-theme]").forEach((element) => { element.dataset.theme = value; });
   const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
-  if (themeColor) themeColor.content = theme === "DARK" ? "#010102" : "#F7F8FA";
+  if (themeColor) themeColor.content = theme === "DARK" ? "#17202a" : "#f1eadb";
 }
 
 export function ThemeToggle({ initialTheme = "DARK" }: { initialTheme?: "DARK" | "LIGHT" }) {

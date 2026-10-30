@@ -6,13 +6,19 @@ import { listing, listingMetricApprovalEvent, listingMetricObservation, listingU
 import { auditEvent } from "@/db/schema";
 import { appendAuditEvent } from "@/server/audit/append";
 import { requireStaffAccess } from "@/server/auth/staff";
-import { fetchOpenPageRank, normalizeMetricDomain } from "@/server/metrics/open-page-rank";
+import { fetchOpenPageRank, isMetricDomainRefreshable, normalizeMetricDomain } from "@/server/metrics/open-page-rank";
 import { validateMetricRedistributionDecision, type MetricRedistributionDecision } from "@/modules/catalog/metric-approval";
 import { staffCatalogPagination } from "@/modules/catalog/pagination";
 
 const MAX_LISTINGS_PER_BATCH = 100;
 const MAX_BATCHES_PER_STAFF_DAY = 5;
 const WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export class MetricRefreshError extends Error {
+  constructor(readonly code: "DAILY_LIMIT" | "NON_PUBLIC_DOMAIN") {
+    super(code);
+  }
+}
 
 export async function listMetricRefreshCandidates(headers: Headers, requestedPage: unknown = 1) {
   const actor = await requireStaffAccess(headers, "metrics.refresh");
@@ -64,12 +70,13 @@ export async function refreshOpenPageRank(headers: Headers, listingIds: readonly
       eq(auditEvent.action, "METRICS_REFRESH_STARTED"),
       gte(auditEvent.createdAt, since),
     ));
-    if ((prior?.count ?? 0) >= MAX_BATCHES_PER_STAFF_DAY) throw new Error("Daily metric refresh limit reached");
+    if ((prior?.count ?? 0) >= MAX_BATCHES_PER_STAFF_DAY) throw new MetricRefreshError("DAILY_LIMIT");
     const rows = await tx.select({ id: listing.id, websiteUrl: listingUrl.websiteUrl })
       .from(listing).innerJoin(listingUrl, eq(listingUrl.listingId, listing.id))
       .where(inArray(listing.id, [...listingIds]));
     if (rows.length !== listingIds.length) throw new Error("One or more listings are unavailable");
     const domains = rows.map(({ websiteUrl }) => normalizeMetricDomain(new URL(websiteUrl).hostname));
+    if (domains.some((domain) => !isMetricDomainRefreshable(domain))) throw new MetricRefreshError("NON_PUBLIC_DOMAIN");
     await appendAuditEvent(tx, {
       actorUserId: actor.userId, action: "METRICS_REFRESH_STARTED", targetType: "listing_metric_batch", targetId: requestId,
       correlationId: requestId, metadata: { provider: "OPEN_PAGE_RANK", itemCount: rows.length },

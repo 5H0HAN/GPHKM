@@ -135,6 +135,9 @@ export const walletLedgerEntry = pgTable("wallet_ledger_entry", {
 }, (table) => [
   unique("wallet_ledger_idempotency_unique").on(table.organizationId, table.operation, table.idempotencyKey),
   index("wallet_ledger_org_created_idx").on(table.organizationId, table.createdAt),
+  index("wallet_ledger_item_refund_lookup_idx").on(table.organizationId, table.relatedId).where(
+    sql`${table.kind} = 'ITEM_REFUND' and ${table.relatedType} = 'CUSTOMER_ORDER_ITEM'`,
+  ),
   check("wallet_ledger_usd_only", sql`${table.currency} = 'USD'`),
   check("wallet_ledger_kind_valid", sql`${table.kind} in ('TOP_UP', 'ORDER_DEBIT', 'ITEM_REFUND', 'REVERSAL', 'ADJUSTMENT')`),
   check("wallet_ledger_nonzero", sql`${table.deltaMinor} <> 0`),

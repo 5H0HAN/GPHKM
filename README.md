@@ -2,7 +2,7 @@
 
 **Project status:** Local v1 implementation in progress
 **Document baseline:** 0.3
-**Implementation status:** The local v1 build is in progress through migration 0132. Customer and staff workflows, secure invitation acceptance with a gated delivery outbox, supplier operations, customer-approved equivalent offers, Finance reconciliation across original and accepted supplier routes, private supplier-transfer receipts, per-user theme preferences, organization closure, narrow database-enforced identity transitions, bounded Stripe Checkout Session retries, customer-safe order milestone history, audited Super Admin access-policy controls, Owner-only billing profiles, current-observation metric redistribution attestations with an external L-05 display gate, audit/support/notification/cancellation/closure pagination, supplier-to-fulfillment identity enforcement, item-specific supplier notices, Resend event correlation, isolated provider database roles, versioned acceptable-content policy acceptance at checkout, paginated Finance gross-profit reporting, and the restricted-role RLS smoke check are implemented locally. CI migrates an ephemeral PostgreSQL database, runs the rollback-only RLS smoke check under the restricted runtime role, and exercises customer session isolation plus staff MFA over HTTP. Remaining end-to-end gaps and launch gates are listed in the [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md). Real-money checkout and external provider delivery remain gated.
+**Implementation status:** The local v1 build is applied through migration 0140. Migrations 0134–0140 serialize content consent with handoff, scope fulfillment writes to assigned Admins/Super Admins, fix ambiguous Stripe recovery and cancellation-decision SQL references, restrict fulfillment column updates, and serialize assignment against staff authority changes. The local suite includes customer/staff workflows, supplier operations, wallet and Stripe controls, and restricted-role RLS, cancellation-refund, and content-handoff race checks. Current verification and remaining implementation/launch gates are recorded in the [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md). Real-money checkout and external provider delivery remain gated.
 
 GPHKM is a customer-and-admin platform for reselling guest-post placements. Customer organizations browse curated listings, add multiple placements to one order, fund an organization wallet, and follow item-level publication progress. Staff own listing quality, supplier relationships, pricing, fulfillment, and financial reconciliation.
 
@@ -26,6 +26,7 @@ GPHKM is a new project. GuestPost.cc remains a read-only reference and is not th
 14. [Open PageRank provider boundary](docs/OPEN_PAGE_RANK.md)
 15. [Open decisions](docs/OPEN_DECISIONS.md)
 16. [Accepted decisions](docs/adr/README.md)
+17. [Frontend UX workflow](docs/FRONTEND_UX_WORKFLOW.md)
 
 ## Approved v1 direction
 

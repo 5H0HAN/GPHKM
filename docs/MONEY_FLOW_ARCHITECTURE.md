@@ -96,6 +96,8 @@ While an organization has an open Stripe reconciliation case, the database rejec
 
 On a verified win, release the hold and restore the linked grant with its original expiry. On a verified loss, post an authorized compensating ledger entry for the recoverable amount and revoke only the linked grant. If wallet funds cannot cover the full provider principal loss, record uncovered exposure and keep the organization restricted until the remaining amount is recovered or provider facts show it was reinstated. Keep other valid grants unchanged. Reconcile provider dispute events and account restrictions idempotently.
 
+A zero-loss provider review may restore the grant linked to a reversed top-up only when the latest complete snapshot proves that every linked refund failed or was canceled, no refund succeeded, and no dispute is open, pending, or lost. Finance resolution locks the organization/case and funding attempt; a repeated resolution against the same immutable snapshot returns the recorded result without applying another ledger or grant change. Restoration preserves the grant's original UTC interval. Partial-success refunds and any provider loss leave the grant revoked. The restricted-role local database regression covers failed and canceled refund restoration; stale, incomplete, pending, and open-dispute rejection; partial-success denial; unchanged grant dates; and same-snapshot idempotency.
+
 ## 9. Reconciliation, audit, and launch gates
 
 The Finance dashboard computes multi-query payable coverage inside one PostgreSQL `REPEATABLE READ` transaction, so a concurrent cost correction or supplier transfer cannot make a single response mix different committed snapshots.

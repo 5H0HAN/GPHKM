@@ -946,6 +946,48 @@
       "when": 1793346061544,
       "tag": "0134_content_consent_serialization",
       "breakpoints": true
+    },
+    {
+      "idx": 135,
+      "version": "7",
+      "when": 1793390278777,
+      "tag": "0135_fulfillment_assignment_refund_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 136,
+      "version": "7",
+      "when": 1793390710304,
+      "tag": "0136_stripe_reconciliation_column_qualification",
+      "breakpoints": true
+    },
+    {
+      "idx": 137,
+      "version": "7",
+      "when": 1793391156125,
+      "tag": "0137_fulfillment_column_privileges",
+      "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1793391404248,
+      "tag": "0138_assignment_deactivation_serialization",
+      "breakpoints": true
+    },
+    {
+      "idx": 139,
+      "version": "7",
+      "when": 1793391568228,
+      "tag": "0139_lock_assignment_actor_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 140,
+      "version": "7",
+      "when": 1793392683441,
+      "tag": "0140_qualify_cancellation_decision_columns",
+      "breakpoints": true
     }
   ]
 }

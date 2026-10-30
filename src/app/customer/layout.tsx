@@ -74,7 +74,6 @@ export default async function CustomerLayout({ children }: { children: ReactNode
       return null;
     }
   }));
-
   return (
     <div className={styles.frame} data-theme={appearance.toLowerCase()}>
       <div className={styles.layout}>

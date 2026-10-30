@@ -78,6 +78,8 @@ test("Finance listing, order-item, and transfer histories are paged and supplier
   assert.match(page, /Supplier transfer pages/);
   assert.match(page, /transfersPage=/);
   assert.match(editor, /Search order items/);
+  assert.match(editor, /const initialRowId = useId\(\);/);
+  assert.doesNotMatch(editor, /useState<AllocationRow\[\]>\(\[\{ key: crypto\.randomUUID\(\)/);
 });
 
 test("accepted equivalents keep checkout snapshots while Finance reconciles original and approved supplier routes", async () => {

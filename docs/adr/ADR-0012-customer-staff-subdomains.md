@@ -12,7 +12,7 @@ Customers and staff use different parts of GPHKM and have different authorizatio
 
 - Serve the customer application and login page from a customer subdomain.
 - Serve the staff/Admin/Super Admin application and login page from a separate staff subdomain.
-- Keep one codebase, PostgreSQL database, and shared domain modules as the default. Decide whether both hostnames use one deployment or two deployments of the same codebase under O-06.
+- Keep one codebase, PostgreSQL database, and shared domain modules as the default. The Next.js proxy can route both configured hosts in one process, but this capability does not decide whether production uses one deployment or two deployments of the same codebase; that remains open under O-06.
 - Keep Better Auth session cookies host-only. Leave cross-subdomain cookies disabled; do not widen cookie scope to the parent domain for shared login.
 - Configure exact trusted origins and explicit OAuth callback URLs for each environment. Do not trust wildcard subdomains or client-controlled forwarded-host values.
 - Enforce organization membership, staff role, staff MFA, item assignment, and permissions server-side on every protected operation. The hostname is not authorization.

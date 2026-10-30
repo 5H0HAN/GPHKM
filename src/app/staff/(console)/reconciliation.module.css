@@ -27,7 +27,13 @@
 .financeSection > p { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 .sectionHead { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .sectionHead > div > p { color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
+.runControl { display: grid; justify-items: end; gap: 8px; }
+.runControl form { margin: 0; }
 .sectionHead button, .financeForm button { padding: 8px 11px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text-primary); background: var(--surface-2); cursor: pointer; }
+.sectionHead button:disabled { cursor: wait; opacity: .7; }
+.runStatus { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--success-soft); color: var(--success); font-size: 12px; line-height: 1.5; }
+.runError { background: var(--error-soft); color: var(--error); }
+.runError p { margin: 0; }
 .runMeta { color: var(--text-muted); font: 11px ui-monospace, monospace; }
 .financeForm { display: grid; gap: 8px; min-width: 240px; }
 .financeForm label { display: grid; gap: 4px; color: var(--text-muted); font-size: 10px; }
@@ -37,3 +43,8 @@
 .reviewNote { max-width: 260px; overflow-wrap: anywhere; line-height: 1.5; }
 .reviewNote small { color: var(--text-muted); }
 .disclaimer { padding: 10px 12px; border-left: 2px solid var(--border-strong); background: var(--surface-1); }
+@media (max-width: 640px) {
+  .sectionHead { align-items: stretch; flex-direction: column; }
+  .runControl { justify-items: stretch; }
+  .runControl button { width: 100%; }
+}

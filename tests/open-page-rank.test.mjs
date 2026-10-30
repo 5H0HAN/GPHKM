@@ -8,7 +8,7 @@ registerHooks({ resolve(specifier, context, next) {
     ? { url: "data:text/javascript,export{}", shortCircuit: true }
     : next(specifier, context);
 } });
-const { fetchOpenPageRank, isOpenPageRankConfigured, isOpenPageRankKeyValid, normalizeMetricDomain } = await import("../src/server/metrics/open-page-rank.ts");
+const { fetchOpenPageRank, isMetricDomainRefreshable, isOpenPageRankConfigured, isOpenPageRankKeyValid, normalizeMetricDomain } = await import("../src/server/metrics/open-page-rank.ts");
 
 test("provider configuration checks only expose key validity", () => {
   assert.equal(isOpenPageRankConfigured({}), false);
@@ -26,6 +26,15 @@ test("normalizes bare hostnames and rejects URL/IP/credential input", () => {
     "example.com?x=1", "example.com#x", "example.com%2fpath", "example.com\\path", "127.0.0.1",
     "[::1]", "localhost", "bad..com", "-bad.com", "a".repeat(64) + ".com", "example.123", "a\n.com"]) {
     assert.throws(() => normalizeMetricDomain(input), /Invalid metric domain/);
+  }
+});
+
+test("reserved demo hostnames are never sent to the metric provider", () => {
+  for (const hostname of ["sample-tech.example", "preview.test", "invalid.invalid", "local.localhost", "service.local"]) {
+    assert.equal(isMetricDomainRefreshable(hostname), false);
+  }
+  for (const hostname of ["example.com", "gphkm.com", "shop.example.org"]) {
+    assert.equal(isMetricDomainRefreshable(hostname), true);
   }
 });
 

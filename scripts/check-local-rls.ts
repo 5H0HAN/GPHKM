@@ -56,6 +56,19 @@ async function expectCheckConstraint(client: Client, name: string, run: () => Pr
   }
 }
 
+async function expectPermissionDenied(client: Client, name: string, run: () => Promise<unknown>) {
+  await client.query("SAVEPOINT expected_permission_failure");
+  try {
+    await run();
+    assert.fail(`${name} unexpectedly succeeded`);
+  } catch (error) {
+    assert.equal(typeof error === "object" && error !== null && "code" in error ? error.code : null, "42501", `${name} must be denied`);
+  } finally {
+    await client.query("ROLLBACK TO SAVEPOINT expected_permission_failure");
+    await client.query("RELEASE SAVEPOINT expected_permission_failure");
+  }
+}
+
 async function expectUniqueViolation(client: Client, name: string, run: () => Promise<unknown>) {
   await client.query("SAVEPOINT expected_unique_failure");
   try {
@@ -230,11 +243,44 @@ try {
   const ownerOrderA = randomUUID();
   const memberOrderA = randomUUID();
   const ownerOrderB = randomUUID();
+  const cancellationOrder = randomUUID();
+  const cancellationItem = randomUUID();
+  const cancellationDebit = randomUUID();
+  const cancellationRequest = randomUUID();
+  const cancellationApprovalRequest = randomUUID();
   const ledgerA = randomUUID();
   const ledgerB = randomUUID();
   const attemptA = randomUUID();
   const attemptB = randomUUID();
   const disputedAttempt = randomUUID();
+  const failedRefundAttempt = randomUUID();
+  const partialRefundAttempt = randomUUID();
+  const pendingRefundAttempt = randomUUID();
+  const staleRefundAttempt = randomUUID();
+  const openDisputeRefundAttempt = randomUUID();
+  const incompleteRefundAttempt = randomUUID();
+  const canceledRefundAttempt = randomUUID();
+  const failedRefundLedger = randomUUID();
+  const partialRefundLedger = randomUUID();
+  const pendingRefundLedger = randomUUID();
+  const staleRefundLedger = randomUUID();
+  const openDisputeRefundLedger = randomUUID();
+  const incompleteRefundLedger = randomUUID();
+  const canceledRefundLedger = randomUUID();
+  const failedRefundGrant = randomUUID();
+  const partialRefundGrant = randomUUID();
+  const pendingRefundGrant = randomUUID();
+  const staleRefundGrant = randomUUID();
+  const openDisputeRefundGrant = randomUUID();
+  const incompleteRefundGrant = randomUUID();
+  const canceledRefundGrant = randomUUID();
+  const failedRefundHold = randomUUID();
+  const partialRefundHold = randomUUID();
+  const pendingRefundHold = randomUUID();
+  const staleRefundHold = randomUUID();
+  const openDisputeRefundHold = randomUUID();
+  const incompleteRefundHold = randomUUID();
+  const canceledRefundHold = randomUUID();
   const holdA = randomUUID();
   const holdB = randomUUID();
   const listingFixture = randomUUID();
@@ -362,8 +408,9 @@ try {
   );
   await migration.query(
     `insert into organization_member (id, organization_id, user_id, role, active) values
-       ($1, $2, $3, 'OWNER', true), ($4, $5, $6, 'OWNER', true), ($7, $2, $8, 'MEMBER', true)`,
-    [randomUUID(), organizationA, userA, randomUUID(), organizationB, userB, randomUUID(), memberA],
+       ($1, $2, $3, 'OWNER', true), ($4, $5, $6, 'OWNER', true),
+       ($7, $2, $8, 'MEMBER', true), ($9, $5, $8, 'MEMBER', true)`,
+    [randomUUID(), organizationA, userA, randomUUID(), organizationB, userB, randomUUID(), memberA, randomUUID()],
   );
   phase = "checking exclusive customer and staff identity domains";
   await migration.query("SET LOCAL ROLE gphkm_runtime");
@@ -428,8 +475,9 @@ try {
        content_policy_version, content_policy_accepted_at) values
        ($1, $2, $3, $4, repeat('a', 64), 1000, 0, 1000, 'rls-smoke-v1', 'gphkm-content-policy-v1', now()),
        ($5, $2, $6, $7, repeat('b', 64), 1000, 0, 1000, 'rls-smoke-v1', 'gphkm-content-policy-v1', now()),
-       ($8, $9, $10, $11, repeat('c', 64), 1000, 0, 1000, 'rls-smoke-v1', 'gphkm-content-policy-v1', now())`,
-    [ownerOrderA, organizationA, userA, `owner-a-${suffix}`, memberOrderA, memberA, `member-a-${suffix}`, ownerOrderB, organizationB, userB, `owner-b-${suffix}`],
+       ($8, $9, $10, $11, repeat('c', 64), 1000, 0, 1000, 'rls-smoke-v1', 'gphkm-content-policy-v1', now()),
+       ($12, $9, $10, $13, repeat('d', 64), 1000, 500, 1500, 'rls-smoke-v1', 'gphkm-content-policy-v1', now())`,
+    [ownerOrderA, organizationA, userA, `owner-a-${suffix}`, memberOrderA, memberA, `member-a-${suffix}`, ownerOrderB, organizationB, userB, `owner-b-${suffix}`, cancellationOrder, `cancel-${suffix}`],
   );
   phase = "requiring content-policy acceptance for runtime order creation";
   await migration.query("SET LOCAL ROLE gphkm_runtime");
@@ -710,6 +758,18 @@ try {
        'https://example.invalid/target-two', 'example', null, 'Synthetic rollback-only writing brief', true, 'rls-smoke-v1')`,
     [orderItemFixtureTwo, ownerOrderB, listingFixture],
   );
+  await migration.query(
+    `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+       placement_price_minor, writing_selected, writing_price_minor, writing_first_stage_minor, writing_final_stage_minor,
+       target_url, anchor_text, writing_brief, supplier_sharing_consented, consent_notice_version)
+     values ($1, $2, $3, 1, '{"title":"Cancellation Fixture Listing"}'::jsonb, 1000, true, 500, 300, 200,
+       'https://example.invalid/cancellation', 'fixture cancellation', 'Synthetic refund stage fixture', true, 'rls-smoke-v1')`,
+    [cancellationItem, cancellationOrder, listingFixture],
+  );
+  await migration.query("RESET ROLE");
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userB, organizationB]);
+  await migration.query("insert into order_item_writing (order_item_id) values ($1)", [cancellationItem]);
   await migration.query("RESET ROLE");
   await migration.query("SET LOCAL ROLE gphkm_runtime");
   await migration.query(
@@ -803,13 +863,214 @@ try {
     "update customer_order set checkout_state = 'PAID', paid_ledger_entry_id = $2 where id = $1",
     [ownerOrderA, orderDebitA],
   );
+  await migration.query(
+    `insert into wallet_ledger_entry (id, organization_id, actor_user_id, kind, delta_minor, currency,
+       operation, idempotency_key, related_type, related_id, reason_code)
+     values ($1, $2, $3, 'ORDER_DEBIT', -1500, 'USD', 'RLS_SMOKE_CANCELLATION', $4,
+       'CUSTOMER_ORDER', $5, 'ORDER_CHECKOUT')`,
+    [cancellationDebit, organizationB, userB, `cancel-debit-${suffix}`, cancellationOrder],
+  );
+  await migration.query(
+    "update customer_order set checkout_state = 'PAID', paid_ledger_entry_id = $2 where id = $1",
+    [cancellationOrder, cancellationDebit],
+  );
   phase = "creating synthetic fulfillment financial snapshot";
   await migration.query(
     `insert into order_item_financial (order_item_id, commercial_source, supplier_id, fulfillment_supplier_id)
-     values ($1, 'PLATFORM_OWNED', null, $2), ($3, 'PLATFORM_OWNED', null, $2)`,
-    [orderItemFixture, supplierFixture, orderItemFixtureTwo],
+     values ($1, 'PLATFORM_OWNED', null, $2), ($3, 'PLATFORM_OWNED', null, $2), ($4, 'PLATFORM_OWNED', null, null)`,
+    [orderItemFixture, supplierFixture, orderItemFixtureTwo, cancellationItem],
   );
   await migration.query("update order_item_fulfillment_supplier set supplier_id = $2 where order_item_id = $1", [orderItemFixtureTwo, supplierOtherFixture]);
+
+  phase = "checking item-scoped fulfillment updates and assignment command";
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminB]);
+  const columnPrivileges = await migration.query<{ lifecycle: boolean; assignment: boolean; listingTitle: boolean }>(
+    `select has_column_privilege('gphkm_runtime', 'public.order_item_fulfillment', 'state', 'UPDATE') as lifecycle,
+            has_column_privilege('gphkm_runtime', 'public.order_item_fulfillment', 'assigned_admin_id', 'UPDATE') as assignment,
+            has_column_privilege('gphkm_runtime', 'public.order_item_fulfillment', 'listing_title', 'UPDATE') as "listingTitle"`,
+  );
+  assert.deepEqual(columnPrivileges.rows[0], { lifecycle: true, assignment: false, listingTitle: false },
+    "runtime can update only the fulfillment lifecycle columns, never assignment or listing identity");
+  const unassignedAdminUpdate = await migration.query(
+    "update order_item_fulfillment set updated_at = now() where order_item_id = $1",
+    [orderItemFixture],
+  );
+  assert.equal(unassignedAdminUpdate.rowCount, 0, "an unassigned Admin cannot update another Admin's fulfillment item");
+  await expectWriteDenied(migration, "direct reassignment by an assigned Admin", () => migration.query(
+    "update order_item_fulfillment set assigned_admin_id = $2 where order_item_id = $1",
+    [orderItemFixture, adminB],
+  ));
+  const assignment = await migration.query<{ order_item_id: string }>(
+    "select public.gphkm_assign_fulfillment_item($1, $2) as order_item_id",
+    [orderItemFixture, adminB],
+  );
+  assert.equal(assignment.rows[0]?.order_item_id, orderItemFixture, "an active Admin may use the dedicated assignment command");
+  await migration.query("select set_config('app.user_id', $1, true)", [superAdminA]);
+  await expectCheckConstraint(migration, "deactivation with active assigned fulfillment work", () => migration.query(
+    "select public.gphkm_deactivate_staff($1, 'RLS_TEST')", [adminB],
+  ));
+  await expectCheckConstraint(migration, "assignment to a Finance account", () => migration.query(
+    "select public.gphkm_assign_fulfillment_item($1, $2)", [orderItemFixture, financeA],
+  ));
+  await migration.query("select set_config('app.user_id', $1, true)", [adminB]);
+  await expectWriteDenied(migration, "assigned Admin cannot change fulfillment listing identity", () => migration.query(
+    "update order_item_fulfillment set listing_title = 'tampered' where order_item_id = $1",
+    [orderItemFixture],
+  ));
+  await expectWriteDenied(migration, "assigned Admin direct reassignment", () => migration.query(
+    "update order_item_fulfillment set assigned_admin_id = $2 where order_item_id = $1",
+    [orderItemFixture, adminA],
+  ));
+  await migration.query("select set_config('app.user_id', $1, true)", [adminA]);
+  const previousAssigneeUpdate = await migration.query(
+    "update order_item_fulfillment set updated_at = now() where order_item_id = $1",
+    [orderItemFixture],
+  );
+  assert.equal(previousAssigneeUpdate.rowCount, 0, "reassignment immediately removes the former Admin's update access");
+  await migration.query("select set_config('app.user_id', $1, true)", [financeA]);
+  assert.equal((await migration.query("update order_item_fulfillment set updated_at = now() where order_item_id = $1", [orderItemFixture])).rowCount,
+    0, "Finance cannot update fulfillment operational rows");
+  await expectWriteDenied(migration, "Finance fulfillment assignment", () => migration.query(
+    "select public.gphkm_assign_fulfillment_item($1, $2)", [orderItemFixture, adminA],
+  ));
+  await migration.query("select set_config('app.user_id', $1, true)", [superAdminA]);
+  const superAdminAssignment = await migration.query<{ order_item_id: string }>(
+    "select public.gphkm_assign_fulfillment_item($1, $2) as order_item_id",
+    [orderItemFixture, adminA],
+  );
+  assert.equal(superAdminAssignment.rows[0]?.order_item_id, orderItemFixture, "Super Admin can use the dedicated assignment command");
+  await migration.query("RESET ROLE");
+  const assignmentAudit = await migration.query<{ count: number }>(
+    `select count(*)::int as count from audit_event where target_type = 'CUSTOMER_ORDER_ITEM'
+       and target_id = $1 and action = 'FULFILLMENT_ASSIGNMENT_CHANGED'`,
+    [orderItemFixture],
+  );
+  assert.equal(assignmentAudit.rows[0]?.count, 2, "database assignment command records each actual change exactly once");
+
+  phase = "exercising customer cancellation requests and assigned-Admin refund decisions";
+  await migration.query("update order_item_fulfillment set work_started_at = now() where order_item_id = $1", [cancellationItem]);
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userB, organizationB]);
+  await expectPermissionDenied(migration, "cancellation request after fulfillment work starts", () => migration.query(
+    "select public.gphkm_request_order_item_cancellation($1, $2, $3, $4, $5)",
+    [cancellationItem, randomUUID(), `cancel-cutoff-${suffix}`, "1".repeat(64), "synthetic cutoff check"],
+  ));
+  await migration.query("RESET ROLE");
+  await migration.query("update order_item_fulfillment set work_started_at = null where order_item_id = $1", [cancellationItem]);
+  await migration.query("update order_item_fulfillment set handed_off_at = now() where order_item_id = $1", [cancellationItem]);
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userB, organizationB]);
+  await expectPermissionDenied(migration, "cancellation request after handoff", () => migration.query(
+    "select public.gphkm_request_order_item_cancellation($1, $2, $3, $4, $5)",
+    [cancellationItem, randomUUID(), `cancel-handoff-${suffix}`, "6".repeat(64), "synthetic handoff cutoff check"],
+  ));
+  await migration.query("RESET ROLE");
+  await migration.query("update order_item_fulfillment set handed_off_at = null where order_item_id = $1", [cancellationItem]);
+
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
+  await expectPermissionDenied(migration, "cancellation request from a different organization", () => migration.query(
+    "select public.gphkm_request_order_item_cancellation($1, $2, $3, $4, $5)",
+    [cancellationItem, randomUUID(), `cancel-wrong-org-${suffix}`, "2".repeat(64), "synthetic tenant check"],
+  ));
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [memberA, organizationB]);
+  await expectPermissionDenied(migration, "same-organization member who did not place the order", () => migration.query(
+    "select public.gphkm_request_order_item_cancellation($1, $2, $3, $4, $5)",
+    [cancellationItem, randomUUID(), `cancel-nonowner-member-${suffix}`, "7".repeat(64), "synthetic non-owner check"],
+  ));
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userB, organizationB]);
+  const requestDigest = "3".repeat(64);
+  const requestKey = `cancel-request-${suffix}`;
+  const cancellationRequested = await migration.query<{ id: string }>(
+    "select public.gphkm_request_order_item_cancellation($1, $2, $3, $4, $5) as id",
+    [cancellationItem, cancellationRequest, requestKey, requestDigest, "Synthetic cancellation request"],
+  );
+  assert.equal(cancellationRequested.rows[0]?.id, cancellationRequest, "customer request must persist under the restricted runtime role");
+  const requestReplay = await migration.query<{ id: string }>(
+    "select public.gphkm_request_order_item_cancellation($1, $2, $3, $4, $5) as id",
+    [cancellationItem, cancellationRequest, requestKey, requestDigest, "Synthetic cancellation request"],
+  );
+  assert.equal(requestReplay.rows[0]?.id, cancellationRequest, "same request idempotency key and digest replay the original request");
+  await expectUniqueViolation(migration, "cancellation request idempotency hash conflict", () => migration.query(
+    "select public.gphkm_request_order_item_cancellation($1, $2, $3, $4, $5)",
+    [cancellationItem, randomUUID(), requestKey, "4".repeat(64), "Synthetic changed request"],
+  ));
+  await migration.query("RESET ROLE");
+
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [superAdminA]);
+  await migration.query("select public.gphkm_assign_fulfillment_item($1, $2)", [cancellationItem, adminA]);
+  await migration.query("select set_config('app.user_id', $1, true)", [adminB]);
+  await expectPermissionDenied(migration, "unassigned Admin cancellation decision", () => migration.query(
+    "select * from public.gphkm_decide_order_item_cancellation($1, 'DENIED', 'Synthetic denial review')", [cancellationRequest],
+  ));
+  await migration.query("select set_config('app.user_id', $1, true)", [adminA]);
+  const deniedCancellation = await migration.query<{ outcome: string; amount_minor: string; ledger_id: string | null; applied: boolean }>(
+    "select outcome, amount_minor::text, ledger_id, applied from public.gphkm_decide_order_item_cancellation($1, 'DENIED', 'Synthetic denial review')",
+    [cancellationRequest],
+  );
+  assert.deepEqual(deniedCancellation.rows[0], { outcome: "DENIED", amount_minor: "0", ledger_id: null, applied: true },
+    "Admin denial restores the previous fulfillment state and posts no wallet credit");
+  const deniedReplay = await migration.query<{ applied: boolean }>(
+    "select applied from public.gphkm_decide_order_item_cancellation($1, 'DENIED', 'Synthetic denial replay')", [cancellationRequest],
+  );
+  assert.equal(deniedReplay.rows[0]?.applied, false, "same denial replay is idempotent");
+  await expectCheckConstraint(migration, "conflicting decision after cancellation denial", () => migration.query(
+    "select * from public.gphkm_decide_order_item_cancellation($1, 'APPROVED', 'Synthetic conflicting approval')", [cancellationRequest],
+  ));
+  const denialState = await migration.query<{ state: string; state_before_cancellation: string | null; refund_count: number }>(
+    `select f.state, f.state_before_cancellation,
+       (select count(*)::int from wallet_ledger_entry l where l.operation = 'ITEM_CANCELLATION_REFUND' and l.related_id = $1) as refund_count
+     from order_item_fulfillment f where f.order_item_id = $1`, [cancellationItem],
+  );
+  assert.deepEqual(denialState.rows[0], { state: "CONFIRMED", state_before_cancellation: null, refund_count: 0 },
+    "denial restores the original state without refund entries");
+  await migration.query("RESET ROLE");
+
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userB, organizationB]);
+  const approvalRequest = await migration.query<{ id: string }>(
+    "select public.gphkm_request_order_item_cancellation($1, $2, $3, $4, $5) as id",
+    [cancellationItem, cancellationApprovalRequest, `cancel-approve-${suffix}`, "5".repeat(64), "Synthetic cancellation approval"],
+  );
+  assert.equal(approvalRequest.rows[0]?.id, cancellationApprovalRequest, "customer may open a new request after a prior request is denied");
+  await migration.query("select set_config('app.user_id', $1, true)", [adminA]);
+  const approvedCancellation = await migration.query<{ outcome: string; amount_minor: string; ledger_id: string; applied: boolean }>(
+    "select outcome, amount_minor::text, ledger_id, applied from public.gphkm_decide_order_item_cancellation($1, 'APPROVED', 'Synthetic approved refund')",
+    [cancellationApprovalRequest],
+  );
+  assert.equal(approvedCancellation.rows[0]?.outcome, "APPROVED");
+  assert.equal(approvedCancellation.rows[0]?.amount_minor, "1500", "refund includes placement and both undelivered writing stages exactly");
+  assert.ok(approvedCancellation.rows[0]?.ledger_id, "approved cancellation must return its immutable refund ledger id");
+  assert.equal(approvedCancellation.rows[0]?.applied, true);
+  const approvalReplay = await migration.query<{ amount_minor: string; ledger_id: string; applied: boolean }>(
+    "select amount_minor::text, ledger_id, applied from public.gphkm_decide_order_item_cancellation($1, 'APPROVED', 'Synthetic approval replay')",
+    [cancellationApprovalRequest],
+  );
+  assert.deepEqual(approvalReplay.rows[0], {
+    amount_minor: "1500", ledger_id: approvedCancellation.rows[0]?.ledger_id, applied: false,
+  }, "approval replay returns the original refund without applying it twice");
+  await expectCheckConstraint(migration, "conflicting decision after cancellation approval", () => migration.query(
+    "select * from public.gphkm_decide_order_item_cancellation($1, 'DENIED', 'Synthetic conflicting denial')", [cancellationApprovalRequest],
+  ));
+  await migration.query("RESET ROLE");
+  const refundFacts = await migration.query<{ refund_count: number; delta_minor: string; refund_minor: string; ledger_id: string }>(
+    `select (select count(*)::int from wallet_ledger_entry l where l.operation = 'ITEM_CANCELLATION_REFUND' and l.related_id = $1) as refund_count,
+       l.delta_minor::text, c.refund_minor::text, c.wallet_ledger_entry_id as ledger_id
+     from order_item_cancellation_request c join wallet_ledger_entry l on l.id = c.wallet_ledger_entry_id
+     where c.id = $2`, [cancellationItem, cancellationApprovalRequest],
+  );
+  assert.deepEqual(refundFacts.rows[0], {
+    refund_count: 1, delta_minor: "1500", refund_minor: "1500", ledger_id: approvedCancellation.rows[0]?.ledger_id,
+  }, "one approval creates one matching ledger credit and immutable decision amount");
+  const cancelledItem = await migration.query<{ state: string; customer_status: string }>(
+    "select state, customer_status from order_item_fulfillment where order_item_id = $1", [cancellationItem],
+  );
+  assert.deepEqual(cancelledItem.rows[0], { state: "CANCELED_REFUNDED", customer_status: "RESOLVED" },
+    "approved pre-handoff cancellation resolves the item");
+  await migration.query("update order_item_fulfillment set assigned_admin_id = null where order_item_id = $1", [cancellationItem]);
+  await migration.query("RESET ROLE");
 
   phase = "checking manual handoff reservation, evidence, and acknowledgement guards";
   await migration.query(
@@ -846,7 +1107,12 @@ try {
     [orderItemFixture, userA, organizationA],
   );
   assert.equal(cancellationWhileReserved.rows[0]?.allowed, false, "a manual reservation blocks ordinary cancellation before external send");
-  await migration.query("select set_config('app.organization_id', '', true)");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
+  await expectPermissionDenied(migration, "cancellation request while supplier packet is reserved", () => migration.query(
+    "select public.gphkm_request_order_item_cancellation($1, $2, $3, $4, $5)",
+    [orderItemFixture, randomUUID(), `cancel-reserved-packet-${suffix}`, "8".repeat(64), "synthetic reserved packet check"],
+  ));
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminA]);
   await migration.query(
     `insert into supplier_packet_attempt_event (id, attempt_id, actor_user_id, actor_kind, from_state, to_state, reason_code, reference)
      values ($1, $2, $3, 'STAFF', 'SENDING', 'MANUAL_SENT', 'MANUAL_HANDOFF_RECORDED', 'manual-smoke-reference')`,
@@ -1590,6 +1856,213 @@ try {
   );
   assert.equal(walletAfterConflict.rows[0]?.balance_minor, walletBeforeLateEvent.rows[0]?.balance_minor,
     "conflicting late success must not change wallet funds");
+
+  phase = "checking Finance access recovery after a provider-confirmed failed refund";
+  const refundAttempts = [
+    { attempt: failedRefundAttempt, ledger: failedRefundLedger, grant: failedRefundGrant, hold: failedRefundHold, refundStatus: "failed" as const },
+    { attempt: partialRefundAttempt, ledger: partialRefundLedger, grant: partialRefundGrant, hold: partialRefundHold, refundStatus: "succeeded" as const },
+    { attempt: pendingRefundAttempt, ledger: pendingRefundLedger, grant: pendingRefundGrant, hold: pendingRefundHold, refundStatus: "failed" as const },
+    { attempt: staleRefundAttempt, ledger: staleRefundLedger, grant: staleRefundGrant, hold: staleRefundHold, refundStatus: "failed" as const },
+    { attempt: openDisputeRefundAttempt, ledger: openDisputeRefundLedger, grant: openDisputeRefundGrant, hold: openDisputeRefundHold, refundStatus: "failed" as const },
+    { attempt: incompleteRefundAttempt, ledger: incompleteRefundLedger, grant: incompleteRefundGrant, hold: incompleteRefundHold, refundStatus: "failed" as const },
+    { attempt: canceledRefundAttempt, ledger: canceledRefundLedger, grant: canceledRefundGrant, hold: canceledRefundHold, refundStatus: "failed" as const },
+  ];
+  for (const [index, item] of refundAttempts.entries()) {
+    const paymentIntent = `pi_${item.attempt.replaceAll("-", "")}`;
+    await migration.query(
+      `insert into payment_attempt (id, organization_id, actor_user_id, provider, state, amount_minor, currency,
+         idempotency_key, request_hash, provider_payment_id, settled_at)
+       values ($1, $2, $3, 'STRIPE', 'SETTLED', 5000, 'USD', $4, repeat($5,64), $6, now())`,
+      [item.attempt, organizationA, userA, `refund-review-${suffix}-${index}`, index ? "e" : "d", paymentIntent],
+    );
+    await migration.query(
+      `insert into wallet_ledger_entry (id, organization_id, actor_user_id, kind, delta_minor, currency,
+         operation, idempotency_key, related_type, related_id, reason_code)
+       values ($1, $2, $3, 'TOP_UP', 5000, 'USD', 'STRIPE_TOP_UP', $4, 'PAYMENT_ATTEMPT', $4, 'STRIPE_SETTLED')`,
+      [item.ledger, organizationA, userA, item.attempt],
+    );
+    await migration.query(
+      `insert into access_grant (id, organization_id, ledger_entry_id, policy_version, duration, state,
+         starts_at, ends_at, suspension_reason)
+       values ($1, $2, $3, 1, 'SIX_MONTHS', 'REVOKED', now() - interval '1 day', now() + interval '5 months', 'STRIPE_REVERSAL')`,
+      [item.grant, organizationA, item.ledger],
+    );
+    await migration.query("update payment_attempt set state = 'REVERSED' where id = $1", [item.attempt]);
+    await migration.query(
+      `insert into provider_event (id, provider, provider_event_id, state, payload_hash, payment_attempt_id, event_type,
+         provider_object_id, related_payment_id)
+       values ($1, 'STRIPE', $2, 'RECONCILIATION_REQUIRED', repeat('a',64), $3, 'charge.refunded', $4, $4)`,
+      [randomUUID(), `evt_${item.attempt.replaceAll("-", "")}`, item.attempt, paymentIntent],
+    );
+    await migration.query(
+      `insert into wallet_hold (id, organization_id, ledger_entry_id, payment_attempt_id, amount_minor, state, reason_code)
+       values ($1, $2, $3, $4, 200, 'ACTIVE', 'STRIPE_REFUND')`,
+      [item.hold, organizationA, item.ledger, item.attempt],
+    );
+  }
+  const failedIntervalBefore = await migration.query<{ starts_at: string; ends_at: string }>(
+    "select starts_at::text, ends_at::text from access_grant where id = $1", [failedRefundGrant],
+  );
+
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [financeA]);
+  const storeFinanceSnapshot = async (
+    attemptId: string,
+    refundStatus: "failed" | "succeeded" | "canceled",
+    overrides: { complete?: boolean; refreshedAt?: string; refreshStartedAt?: string; pendingRefundCount?: number; openDisputeCount?: number; disputes?: unknown[] } = {},
+  ) => {
+    let refreshId: string;
+    let refreshedAt = overrides.refreshedAt;
+    if (overrides.refreshStartedAt) {
+      refreshId = randomUUID();
+      await migration.query("RESET ROLE");
+      await migration.query(
+        "insert into stripe_finance_refresh (id, payment_attempt_id, actor_user_id, started_at) values ($1, $2, $3, $4)",
+        [refreshId, attemptId, financeA, overrides.refreshStartedAt],
+      );
+      await migration.query("SET LOCAL ROLE gphkm_runtime");
+    } else {
+      const refresh = await migration.query<{ refresh_id: string }>(
+        "select refresh_id from public.gphkm_start_stripe_finance_refresh($1)", [attemptId],
+      );
+      refreshId = refresh.rows[0]!.refresh_id;
+    }
+    if (!refreshedAt) {
+      const timestamp = await migration.query<{ refreshed_at: string }>(
+        `select to_char(clock_timestamp() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as refreshed_at`,
+      );
+      refreshedAt = timestamp.rows[0]!.refreshed_at;
+    }
+    const paymentIntent = `pi_${attemptId.replaceAll("-", "")}`;
+    const facts: Record<string, unknown> = {
+      detailComplete: true,
+      paginationComplete: true,
+      snapshotTruncated: false,
+      providerPaymentId: paymentIntent,
+      amountMinor: "5000",
+      currency: "usd",
+      paymentStatus: "succeeded",
+      amountReceivedMinor: "5000",
+      chargeId: `ch_${attemptId.replaceAll("-", "")}`,
+      chargeBalanceTransaction: { amountMinor: "5000", feeMinor: "100", netMinor: "4900", currency: "usd" },
+      providerMode: "test",
+      refreshedAt,
+      pendingRefundCount: overrides.pendingRefundCount ?? 0,
+      openDisputeCount: overrides.openDisputeCount ?? 0,
+      refunds: refundStatus === "failed" || refundStatus === "canceled"
+        ? [{ id: `re_${attemptId.replaceAll("-", "")}`, status: refundStatus, currency: "usd" }]
+        : [{ id: `re_${attemptId.replaceAll("-", "")}`, status: "succeeded", currency: "usd",
+            balanceTransaction: { id: `txn_${attemptId.replaceAll("-", "")}`, amountMinor: -100,
+              status: "available", currency: "usd" } }],
+      disputes: overrides.disputes ?? [],
+      refreshId,
+    };
+    const snapshot = await migration.query<{ snapshot_id: string }>(
+      "select public.gphkm_store_stripe_finance_snapshot($1, repeat('b',64), $3, $2::jsonb) as snapshot_id",
+      [attemptId, JSON.stringify(facts), overrides.complete ?? true],
+    );
+    return snapshot.rows[0]!.snapshot_id;
+  };
+  // Generate stale refresh timestamps from PostgreSQL's own clock so the
+  // synthetic refresh token stays internally consistent even if the Node
+  // runner and database container clocks differ slightly in CI.
+  const staleTimestamp = await migration.query<{ stale_at: string; refresh_started_at: string }>(
+    `select to_char((clock_timestamp() - interval '30 minutes') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as stale_at,
+            to_char((clock_timestamp() - interval '31 minutes') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as refresh_started_at`,
+  );
+  const staleAt = staleTimestamp.rows[0]!.stale_at;
+  const staleSnapshotId = await storeFinanceSnapshot(staleRefundAttempt, "failed", {
+    refreshedAt: staleAt,
+    refreshStartedAt: staleTimestamp.rows[0]!.refresh_started_at,
+  });
+  await expectCheckConstraint(migration, "stale Stripe snapshot resolution", () => migration.query(
+    `select * from public.gphkm_resolve_stripe_reconciliation_case($1, $2, 'Synthetic stale provider snapshot',
+       'A stale provider snapshot must not restore access')`, [staleRefundAttempt, staleSnapshotId],
+  ));
+  const pendingSnapshotId = await storeFinanceSnapshot(pendingRefundAttempt, "failed", { pendingRefundCount: 1 });
+  await expectCheckConstraint(migration, "pending Stripe refund resolution", () => migration.query(
+    `select * from public.gphkm_resolve_stripe_reconciliation_case($1, $2, 'Synthetic pending refund review',
+       'A pending provider refund must not restore access')`, [pendingRefundAttempt, pendingSnapshotId],
+  ));
+  const disputeSnapshotId = await storeFinanceSnapshot(openDisputeRefundAttempt, "failed", {
+    openDisputeCount: 1,
+    disputes: [{ id: `dp_${openDisputeRefundAttempt.replaceAll("-", "")}`, status: "needs_response", currency: "usd" }],
+  });
+  await expectCheckConstraint(migration, "open dispute Stripe snapshot resolution", () => migration.query(
+    `select * from public.gphkm_resolve_stripe_reconciliation_case($1, $2, 'Synthetic open dispute review',
+       'An unresolved dispute must not restore access')`, [openDisputeRefundAttempt, disputeSnapshotId],
+  ));
+  const incompleteSnapshotId = await storeFinanceSnapshot(incompleteRefundAttempt, "failed", { complete: false });
+  await expectCheckConstraint(migration, "incomplete Stripe snapshot resolution", () => migration.query(
+    `select * from public.gphkm_resolve_stripe_reconciliation_case($1, $2, 'Synthetic incomplete provider snapshot',
+       'An incomplete provider snapshot must not restore access')`, [incompleteRefundAttempt, incompleteSnapshotId],
+  ));
+  const failedSnapshotId = await storeFinanceSnapshot(failedRefundAttempt, "failed");
+  const failedRefundDecision = await migration.query<{ provider_loss_minor: string; wallet_recovery_minor: string; uncovered_minor: string }>(
+    `select * from public.gphkm_resolve_stripe_reconciliation_case($1, $2, 'Synthetic Stripe Dashboard refund verification',
+       'The provider confirms the only refund failed; access should be restored')`, [failedRefundAttempt, failedSnapshotId],
+  );
+  assert.deepEqual(failedRefundDecision.rows[0], { provider_loss_minor: "0", wallet_recovery_minor: "0", uncovered_minor: "0" },
+    "failed refund snapshot resolves with no principal loss");
+  const canceledSnapshotId = await storeFinanceSnapshot(canceledRefundAttempt, "canceled");
+  const canceledRefundDecision = await migration.query<{ provider_loss_minor: string; wallet_recovery_minor: string; uncovered_minor: string }>(
+    `select * from public.gphkm_resolve_stripe_reconciliation_case($1, $2, 'Synthetic canceled Stripe refund verification',
+       'The provider confirms the only refund was canceled; access should be restored')`, [canceledRefundAttempt, canceledSnapshotId],
+  );
+  assert.deepEqual(canceledRefundDecision.rows[0], { provider_loss_minor: "0", wallet_recovery_minor: "0", uncovered_minor: "0" },
+    "canceled refund snapshot resolves with no principal loss");
+  await migration.query("RESET ROLE");
+  const failedRefundState = await migration.query<{ attempt_state: string; grant_state: string; suspension_reason: string | null; hold_state: string; interval_matches: boolean }>(
+    `select a.state as attempt_state, g.state as grant_state, g.suspension_reason,
+       h.state as hold_state, g.starts_at = $3::timestamptz and g.ends_at = $4::timestamptz as interval_matches
+       from payment_attempt a join access_grant g on g.id = $2 and g.ledger_entry_id = (
+         select l.id from wallet_ledger_entry l where l.operation = 'STRIPE_TOP_UP' and l.idempotency_key = a.id
+       ) join wallet_hold h on h.payment_attempt_id = a.id where a.id = $1`,
+    [failedRefundAttempt, failedRefundGrant, failedIntervalBefore.rows[0]!.starts_at, failedIntervalBefore.rows[0]!.ends_at],
+  );
+  assert.deepEqual(failedRefundState.rows[0], {
+    attempt_state: "SETTLED", grant_state: "ACTIVE", suspension_reason: null, hold_state: "RELEASED", interval_matches: true,
+  }, "confirmed failed refund restores only the linked grant, releases its hold, and preserves dates");
+  const canceledRefundState = await migration.query<{ attempt_state: string; grant_state: string }>(
+    `select a.state as attempt_state, g.state as grant_state from payment_attempt a
+       join access_grant g on g.id = $2 and g.ledger_entry_id = (
+         select l.id from wallet_ledger_entry l where l.operation = 'STRIPE_TOP_UP' and l.idempotency_key = a.id
+       ) where a.id = $1`, [canceledRefundAttempt, canceledRefundGrant],
+  );
+  assert.deepEqual(canceledRefundState.rows[0], { attempt_state: "SETTLED", grant_state: "ACTIVE" },
+    "confirmed canceled refund restores its own linked access grant");
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [financeA]);
+  await migration.query(
+    `select * from public.gphkm_resolve_stripe_reconciliation_case($1, $2, 'Synthetic Stripe Dashboard refund verification',
+       'The provider confirms the only refund failed; access should be restored')`, [failedRefundAttempt, failedSnapshotId],
+  );
+  await migration.query("RESET ROLE");
+  const restoreAuditCount = await migration.query<{ count: number }>(
+    `select count(*)::int as count from audit_event where action = 'STRIPE_FAILED_REFUND_ACCESS_RESTORED'
+       and target_type = 'ACCESS_GRANT' and target_id = $1`, [failedRefundGrant],
+  );
+  assert.equal(restoreAuditCount.rows[0]?.count, 1, "same-snapshot Finance retry must not duplicate the access-restoration audit");
+
+  phase = "checking successful partial-refund access denial";
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [financeA]);
+  const partialSnapshotId = await storeFinanceSnapshot(partialRefundAttempt, "succeeded");
+  const partialDecision = await migration.query<{ provider_loss_minor: string; wallet_recovery_minor: string; uncovered_minor: string }>(
+    `select * from public.gphkm_resolve_stripe_reconciliation_case($1, $2, 'Synthetic Stripe Dashboard partial refund',
+       'A successful partial refund remains a real provider loss')`, [partialRefundAttempt, partialSnapshotId],
+  );
+  assert.deepEqual(partialDecision.rows[0], { provider_loss_minor: "100", wallet_recovery_minor: "100", uncovered_minor: "0" },
+    "successful partial refund is fully reconciled against wallet funds");
+  await migration.query("RESET ROLE");
+  const partialState = await migration.query<{ attempt_state: string; grant_state: string; reason: string | null }>(
+    `select a.state as attempt_state, g.state as grant_state, g.suspension_reason as reason
+       from payment_attempt a join access_grant g on g.ledger_entry_id = (
+         select l.id from wallet_ledger_entry l where l.operation = 'STRIPE_TOP_UP' and l.idempotency_key = a.id
+       ) where a.id = $1`, [partialRefundAttempt],
+  );
+  assert.deepEqual(partialState.rows[0], { attempt_state: "REVERSED", grant_state: "REVOKED", reason: "STRIPE_REVERSAL" },
+    "successful partial refund must not restore access or the reversed payment attempt");
   await migration.query("ROLLBACK");
   transactionOpen = false;
   const remainingFixtures = await migration.query(
@@ -1605,7 +2078,7 @@ try {
   await resendWebhook.connect();
   const actualResendRole = await resendWebhook.query<{ user: string }>("select current_user as user");
   assert.equal(actualResendRole.rows[0]?.user, "gphkm_resend_webhook", "RESEND_WEBHOOK_DATABASE_URL must authenticate as the isolated Resend role");
-  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, atomic two-item order checkout with exact debit and idempotent replay, 15-day trial and public-URL visibility boundary, manual handoff reservation/cancellation cutoff/evidence/acknowledgement, no Stripe wallet commands on Resend, customer/staff identity-domain separation, tenant/order/member-directory/milestone-history isolation, Finance-only gross-profit projection with exact confirmed-cost arithmetic and provisional-cost handling, Admin-only supplier refund-count aggregate, versioned content-policy acceptance and immutable order snapshots, owner-only wallet/grant/billing-profile data, Stripe reconciliation, assigned-only publication correction, purchase-bound writing costs, supplier transfer evidence authorization and immutability, scope-preserving registered-domain and host metric projection with L-05 gating, and denied direct wallet writes.");
+  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, atomic two-item checkout with exact debit and idempotent replay, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, exact writing-inclusive refund, decision idempotency, manual handoff evidence/acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, and denied direct wallet writes.");
 } catch (error) {
   console.error(`Local RLS smoke failed while ${phase}; any open synthetic-data transaction will be rolled back.`);
   if (error instanceof Error) console.error(error.message);

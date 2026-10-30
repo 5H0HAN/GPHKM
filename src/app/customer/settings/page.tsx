@@ -18,7 +18,7 @@ import { PasswordChangeForm } from "./password-change-form";
 
 export const dynamic = "force-dynamic";
 
-export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ organizationId?: string | string[]; updated?: string | string[]; sessions?: string | string[]; sessionError?: string | string[]; newsletterError?: string | string[] }> }) {
+export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ organizationId?: string | string[]; updated?: string | string[]; sessions?: string | string[]; sessionError?: string | string[]; notificationError?: string | string[]; newsletterError?: string | string[] }> }) {
   const workspace = await loadCustomerWorkspace();
   if (!workspace.authenticated) return null;
   const [appearance, requestHeaders] = await Promise.all([
@@ -52,11 +52,12 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       {firstQueryValue(query.updated) === "left" && <p role="status" className={settings.notice}>You have left the organization. Your other memberships remain available.</p>}
       {firstQueryValue(query.updated) === "notifications" && <p role="status" className={settings.notice}>Email notification preference saved.</p>}
       {firstQueryValue(query.updated) === "newsletter" && <p role="status" className={settings.notice}>Newsletter preference saved.</p>}
+      {firstQueryValue(query.notificationError) && <p role="alert" className={settings.notice}>Email notifications could not be saved. Refresh the page and try again.</p>}
       {firstQueryValue(query.newsletterError) && <p role="alert" className={settings.notice}>Newsletter preference could not be saved. Check that the consent notice is configured and try again.</p>}
       {firstQueryValue(query.sessions) === "updated" && <p role="status" className={settings.notice}>The session change was applied.</p>}
       {firstQueryValue(query.sessionError) && <p role="alert" className={settings.notice}>Sessions could not be changed. Refresh the page and try again after signing in recently.</p>}
       <section className={styles.grid}>
-        <article className={`${styles.panel} ${styles.span7}`}>
+        <article id="security" className={`${styles.panel} ${styles.span7}`}>
           <h2 className={styles.panelTitle}>Profile</h2>
           <ul className={styles.list}>
             <li className={styles.listItem}><span>Verified email</span><span>{workspace.customer.email}</span></li>
@@ -72,7 +73,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             <p className={styles.panelText}>Your Google password and account recovery are managed by Google.</p>
             <div className={settings.links}><a href="https://myaccount.google.com/" rel="noopener noreferrer">Manage Google Account</a><a href="https://accounts.google.com/signin/recovery" rel="noopener noreferrer">Google account recovery</a></div>
           </>}
-          <div className={settings.links}><Link href="/sign-in">Manage sign-in</Link><Link href={`/customer/support${suffix}`}>Support</Link></div>
+          <div className={settings.links}><Link href={`/customer/settings${suffix}#security`}>Account security</Link><Link href={`/customer/support${suffix}`}>Support</Link></div>
         </article>
         <article className={`${styles.panel} ${styles.span5}`}>
           <h2 className={styles.panelTitle}>Organization</h2>
@@ -89,9 +90,10 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           {sessions === null ? <p className={settings.notice}>Sign in recently to review and revoke sessions.</p> : <>
             {!sessions.length ? <p className={styles.panelText}>No active sessions were returned.</p> : <ul className={settings.members}>{sessions.map((item) => <li className={settings.member} key={item.id}>
               <div><strong>{item.current ? "This session" : "Other session"}</strong><p>Started {item.createdAt.toLocaleString()}</p><p>Expires {item.expiresAt.toLocaleString()}</p></div>
-              {!item.current && <form action={revokeSessionAction}><input type="hidden" name="sessionId" value={item.id} /><button type="submit">Revoke session</button></form>}
+              {!item.current && <form action={revokeSessionAction}><input type="hidden" name="organizationId" value={organizationId ?? ""} /><input type="hidden" name="sessionId" value={item.id} /><button type="submit">Revoke session</button></form>}
             </li>)}</ul>}
             {sessions.some((item) => !item.current) && <form action={revokeOtherSessionsAction} className={settings.form}>
+              <input type="hidden" name="organizationId" value={organizationId ?? ""} />
               <label className={settings.confirmation}><input type="checkbox" name="confirmed" required />Sign out all other devices for this account.</label>
               <button type="submit">Revoke all other sessions</button>
             </form>}
@@ -106,6 +108,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           <h2 className={styles.panelTitle}>Email notifications</h2>
           <p className={styles.panelText}>In-app updates stay on. Choose whether to receive transactional order and Support updates by email. This setting is separate from the optional newsletter.</p>
           <form action={saveNotificationPreference} className={settings.form}>
+            <input type="hidden" name="organizationId" value={organizationId ?? ""} />
             <label htmlFor="transactionalEmailEnabled">Transactional email</label>
             <select id="transactionalEmailEnabled" name="transactionalEmailEnabled" defaultValue={emailNotificationsEnabled ? "true" : "false"}>
               <option value="true">Send me order and Support updates</option>
@@ -119,6 +122,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           <p className={styles.panelText}>This separate choice records whether you want occasional GPHKM product and service updates by email. You can opt out at any time. It does not affect transactional order or Support updates. Newsletter delivery is not enabled in this local build.</p>
           {!newsletterPreference.configured && <p className={settings.notice}>The newsletter consent notice version is not configured, so new opt-ins are unavailable.</p>}
           <form action={saveNewsletterPreference} className={settings.form}>
+            <input type="hidden" name="organizationId" value={organizationId ?? ""} />
             <label htmlFor="newsletterSubscribed">Newsletter choice</label>
             <select id="newsletterSubscribed" name="newsletterSubscribed" defaultValue={newsletterPreference.subscribed ? "true" : "false"}>
               <option value="true" disabled={!newsletterPreference.configured && !newsletterPreference.subscribed}>I agree to receive occasional GPHKM updates</option>
