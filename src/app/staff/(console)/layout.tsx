@@ -15,6 +15,7 @@ const navigation: { group: string; label: string; href: string; permission: Staf
   { group: "Work", label: "Suppliers & imports", href: "/staff/suppliers", permission: "supplier.manage" },
   { group: "Operations", label: "Fulfillment", href: "/staff/fulfillment", permission: "fulfillment.manage" },
   { group: "Operations", label: "Support", href: "/staff/support", permission: "audit.read" },
+  { group: "Operations", label: "Customers", href: "/staff/customers", permission: "customer.directory.read" },
   { group: "Operations", label: "Domain metrics", href: "/staff/metrics", permission: "metrics.refresh" },
   { group: "Operations", label: "Supplier performance", href: "/staff/suppliers/performance", permission: "supplier-report.export" },
   { group: "Finance", label: "Reconciliation", href: "/staff/reconciliation", permission: "wallet.reconcile" },

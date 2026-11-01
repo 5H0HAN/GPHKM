@@ -62,10 +62,35 @@ const fieldNames = new Set<ImportField>([
   "websiteUrl", "title", "description", "countryCode", "primaryLanguage", "categories",
   "linkType", "linkValidity", "turnaroundDays", "allowsSportsAndGaming", "allowsPharmacy", "allowsCrypto", "allowsForeignLanguage", "sponsoredContentMarking",
 ]);
-const allowedCategories = new Set<string>(LISTING_CATEGORY_NAMES);
 const allowedLanguages = new Set<string>(LISTING_LANGUAGES);
 const allowedLinkTypes = new Set<string>(LISTING_LINK_TYPES);
 const allowedLinkValidities = new Set<string>(LISTING_LINK_VALIDITIES);
+const headerAliases: Record<ImportField, string[]> = {
+  websiteUrl: ["website", "website url", "website address", "site", "site url", "site address", "url", "domain", "domain name", "publisher url", "guest post site", "guest post sites list"],
+  title: ["title", "listing title", "site title", "site name", "website name", "publication name"],
+  description: ["description", "listing description", "site description", "website description"],
+  countryCode: ["country", "country code", "country region", "region", "geo", "geography"],
+  primaryLanguage: ["language", "primary language", "content language", "article language"],
+  categories: ["category", "categories", "niche", "niches", "website niche", "websites niche", "website niches", "websites niches", "site niche", "site niches"],
+  linkType: ["link type", "link attribute", "link rel", "link relation", "post link type"],
+  linkValidity: ["link validity", "placement term", "link term", "link duration", "placement duration", "link permanence"],
+  turnaroundDays: ["turnaround", "turnaround time", "turnaround days", "tat", "tat publish time", "publish time", "delivery time", "delivery days"],
+  allowsSportsAndGaming: ["sports and gaming", "sports and gaming allowed", "sports gaming accepted", "sports and gaming accepted"],
+  allowsPharmacy: ["pharmacy", "pharmacy allowed", "pharmacy accepted"],
+  allowsCrypto: ["crypto", "crypto allowed", "crypto accepted"],
+  allowsForeignLanguage: ["foreign language", "foreign language allowed", "foreign language accepted"],
+  sponsoredContentMarking: ["sponsored marking", "sponsored content marking", "sponsored tag", "sponsored content tag"],
+};
+const normalizedHeaders = new Map<string, ImportField>();
+for (const [field, aliases] of Object.entries(headerAliases) as Array<[ImportField, string[]]>) {
+  for (const alias of aliases) normalizedHeaders.set(normalizeImportText(alias), field);
+}
+const categoryAliases = new Map<string, string>([
+  ["news", "News, Media & Magazines"],
+  ["tech", "Technology & Gadgets"],
+]);
+const categoriesByKey = new Map(LISTING_CATEGORY_NAMES.map((category) => [normalizeImportText(category), category]));
+const maxCategoryPartChars = Math.max(...LISTING_CATEGORY_NAMES.map((category) => category.length), ...[...categoryAliases.keys()].map((alias) => alias.length)) + 16;
 const formulas = /^[\s\u0000-\u0020]*[=+\-@]/;
 const blockedSpreadsheetExtensions = /\.(?:xlsm|xltm|xlsb|xls|xlam|xla)$/i;
 const XLSX_PARSER_WORKER = `
@@ -345,12 +370,125 @@ export function parseColumnMapping(fields: Partial<Record<ImportField, string>>)
   return mapping;
 }
 
-function parseBoolean(value: unknown): boolean | null {
+function normalizeImportText(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLocaleLowerCase("en-US").replace(/[^a-z0-9]+/g, " ").trim() : "";
+}
+
+export type ImportMappingSuggestion = {
+  headerRowNumber: number;
+  mapping: ImportMapping;
+  recognizedFields: ImportField[];
+  ambiguousFields: ImportField[];
+};
+
+/**
+ * Suggest a 1-based header row and only exact, known column-name mappings.
+ * Unrecognized columns stay unmapped; callers retain the manual mapping path.
+ */
+export function suggestImportMapping(rows: unknown[][]): ImportMappingSuggestion {
+  if (!Array.isArray(rows)) throw new Error("IMPORT_INPUT_INVALID");
+  const scanCount = Math.min(rows.length, 100);
+  let best: ImportMappingSuggestion = { headerRowNumber: 1, mapping: {}, recognizedFields: [], ambiguousFields: [] };
+  let bestScore = 0;
+  for (let rowIndex = 0; rowIndex < scanCount; rowIndex++) {
+    const row = rows[rowIndex];
+    if (!Array.isArray(row)) continue;
+    const columnsByField = new Map<ImportField, number[]>();
+    for (let column = 0; column < row.length; column++) {
+      const header = normalizeImportText(row[column]);
+      const field = normalizedHeaders.get(header);
+      if (!field) continue;
+      const columns = columnsByField.get(field) ?? [];
+      columns.push(column);
+      columnsByField.set(field, columns);
+    }
+    const mapping: ImportMapping = {};
+    const ambiguousFields: ImportField[] = [];
+    for (const [field, columns] of columnsByField) {
+      if (columns.length === 1) mapping[field] = columns[0];
+      else ambiguousFields.push(field);
+    }
+    const recognizedFields = Object.keys(mapping) as ImportField[];
+    const score = recognizedFields.length + (mapping.websiteUrl === undefined ? 0 : 4) - ambiguousFields.length;
+    if (score > bestScore) {
+      bestScore = score;
+      best = { headerRowNumber: rowIndex + 1, mapping, recognizedFields, ambiguousFields };
+    }
+  }
+  return best;
+}
+
+function parseBoolean(value: unknown, header: unknown, field: ImportField): boolean | null {
   if (typeof value === "boolean") return value;
   if (typeof value !== "string") return null;
-  if (/^(yes|true|1)$/i.test(value.trim())) return true;
-  if (/^(no|false|0)$/i.test(value.trim())) return false;
+  const normalized = normalizeImportText(value);
+  if (["yes", "true", "1"].includes(normalized)) return true;
+  if (["no", "false", "0"].includes(normalized)) return false;
+  const headerField = normalizedHeaders.get(normalizeImportText(header));
+  if (headerField === field && ["allowed", "accepted"].includes(normalized)) return true;
+  if (headerField === field && ["not allowed", "not accepted", "disallowed", "rejected"].includes(normalized)) return false;
   return null;
+}
+
+function normalizeCategoryValues(value: string): string[] | null {
+  const categoryFor = (part: string) => categoriesByKey.get(normalizeImportText(part)) ?? categoryAliases.get(normalizeImportText(part));
+  const whole = categoryFor(value);
+  if (whole) return [whole];
+
+  const parseDelimitedFragment = (fragment: string): string[] | null => {
+    const remaining = fragment.trim();
+    if (!remaining) return null;
+    const result: string[] = [];
+    let offset = 0;
+    while (offset < remaining.length) {
+      const tail = remaining.slice(offset).trimStart();
+      if (!tail) return null;
+      const leadingSpace = remaining.slice(offset).length - tail.length;
+      const separatorEnds: number[] = [];
+      const candidateLimit = Math.min(tail.length, maxCategoryPartChars);
+      for (let index = 0; index < candidateLimit; index++) if (/[,/;]/.test(tail[index])) separatorEnds.push(index);
+      if (tail.length <= maxCategoryPartChars) separatorEnds.push(tail.length);
+      let best: { end: number; category: string } | null = null;
+      for (const end of separatorEnds) {
+        const category = categoryFor(tail.slice(0, end).trim());
+        if (category && (!best || end > best.end)) best = { end, category };
+      }
+      if (!best) return null;
+      result.push(best.category);
+      if (result.length > 7) return null;
+      const consumed = leadingSpace + best.end;
+      const after = offset + consumed;
+      if (after >= remaining.length) break;
+      if (!/[,/;]/.test(remaining[after])) return null;
+      offset = after + 1;
+    }
+    return result;
+  };
+
+  const categories: string[] = [];
+  for (const fragment of value.split("|")) {
+    const parsed = parseDelimitedFragment(fragment);
+    if (!parsed) return null;
+    categories.push(...parsed);
+  }
+  if (!categories.length || categories.length > 7 || new Set(categories).size !== categories.length) return null;
+  return categories;
+}
+
+function normalizeEnumValue(value: unknown, allowed: Set<string>): string | null {
+  const normalized = normalizeImportText(value);
+  for (const candidate of allowed) if (normalizeImportText(candidate) === normalized) return candidate;
+  return null;
+}
+
+function suggestNewMarkerDomain(value: string): string | null {
+  const match = /^((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63})\s+new$/i.exec(value.trim());
+  return match ? normalizeWebsiteUrl(`https://${match[1]}/`) : null;
+}
+
+function hasReviewWarning(warnings: string[]): boolean {
+  return warnings.some((warning) => warning === "LISTING_DETAILS_NEED_REVIEW" || warning === "WEBSITE_NEW_MARKER_CONFIRMATION_REQUIRED" ||
+    warning === "CATEGORY_ROW_MAPPING_REQUIRED" || warning.startsWith("FIELD_VALUE_NEEDS_REVIEW:") || warning.endsWith("_REVIEW_REQUIRED"));
 }
 
 export function stageImportRows(options: {
@@ -385,6 +523,7 @@ export function stageImportRows(options: {
     const warnings: string[] = [];
     const values: ImportCandidate["values"] = {};
     for (const [field, column] of Object.entries(mapping) as Array<[ImportField, number]>) {
+      const header = headers[column];
       let value: unknown;
       try { value = safeCell(row[column]); } catch (error) {
         errors.push({ field, code: error instanceof Error ? error.message : "IMPORT_CELL_INVALID" });
@@ -396,41 +535,61 @@ export function stageImportRows(options: {
         case "websiteUrl": {
           const bareDomain = typeof text === "string" && /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(text);
           const normalized = normalizeWebsiteUrl(bareDomain ? `https://${text}/` : text);
-          if (!normalized) errors.push({ field, code: "INVALID_HTTPS_ORIGIN" });
-          else values.websiteUrl = normalized;
+          if (normalized) values.websiteUrl = normalized;
+          else {
+            const markerSuggestion = typeof text === "string" ? suggestNewMarkerDomain(text) : null;
+            if (markerSuggestion) {
+              values.websiteUrl = markerSuggestion;
+              warnings.push("WEBSITE_NEW_MARKER_CONFIRMATION_REQUIRED");
+            } else errors.push({ field, code: "INVALID_HTTPS_ORIGIN" });
+          }
           break;
         }
         case "categories": {
-          const categories = typeof text === "string" ? text.split("|").map((item) => item.trim()) : [];
-          if (!categories.length || categories.length > 7 || categories.some((item) => !allowedCategories.has(item)) || new Set(categories).size !== categories.length) errors.push({ field, code: "INVALID_CATEGORIES" });
-          else values.categories = categories.join("|");
+          const sourceCategory = typeof text === "string" ? text : "";
+          const categories = normalizeCategoryValues(sourceCategory);
+          if (!categories) warnings.push(`FIELD_VALUE_NEEDS_REVIEW:${field}`);
+          else warnings.push("CATEGORY_ROW_MAPPING_REQUIRED");
           break;
         }
-        case "primaryLanguage":
-          if (typeof text !== "string" || !allowedLanguages.has(text)) errors.push({ field, code: "INVALID_LANGUAGE" });
-          else values.primaryLanguage = text;
+        case "primaryLanguage": {
+          const language = normalizeEnumValue(text, allowedLanguages);
+          if (!language) warnings.push(`FIELD_VALUE_NEEDS_REVIEW:${field}`);
+          else values.primaryLanguage = language as ListingLanguage;
           break;
-        case "linkType":
-          if (typeof text !== "string" || !allowedLinkTypes.has(text)) errors.push({ field, code: "INVALID_LINK_TYPE" });
-          else values.linkType = text;
+        }
+        case "linkType": {
+          const linkType = normalizeEnumValue(text, allowedLinkTypes);
+          if (!linkType) warnings.push(`FIELD_VALUE_NEEDS_REVIEW:${field}`);
+          else values.linkType = linkType as ListingLinkType;
           break;
-        case "linkValidity":
-          if (typeof text !== "string" || !allowedLinkValidities.has(text)) errors.push({ field, code: "INVALID_VALIDITY" });
-          else values.linkValidity = text;
+        }
+        case "linkValidity": {
+          const validity = normalizeEnumValue(text, allowedLinkValidities);
+          if (!validity) warnings.push(`FIELD_VALUE_NEEDS_REVIEW:${field}`);
+          else values.linkValidity = validity as ListingLinkValidity;
           break;
-        case "countryCode":
-          if (typeof text !== "string" || !/^[A-Z]{2}$/.test(text)) errors.push({ field, code: "INVALID_COUNTRY_CODE" });
-          else values.countryCode = text;
+        }
+        case "countryCode": {
+          const countryCode = typeof text === "string" ? text.trim().toUpperCase() : "";
+          if (!/^[A-Z]{2}$/.test(countryCode)) warnings.push(`FIELD_VALUE_NEEDS_REVIEW:${field}`);
+          else values.countryCode = countryCode;
           break;
+        }
         case "turnaroundDays": {
-          const days = typeof text === "number" ? text : typeof text === "string" && /^\d{1,3}$/.test(text) ? Number(text) : NaN;
-          if (!Number.isInteger(days) || days < 1 || days > 365) errors.push({ field, code: "INVALID_TURNAROUND" });
-          else values.turnaroundDays = days;
+          const normalized = normalizeImportText(text);
+          const instant = normalized === "instant";
+          const days = instant ? 1 : typeof text === "number" ? text : typeof text === "string" && /^\d{1,3}$/.test(text) ? Number(text) : NaN;
+          if (!Number.isInteger(days) || days < 1 || days > 365) warnings.push(`FIELD_VALUE_NEEDS_REVIEW:${field}`);
+          else {
+            values.turnaroundDays = days;
+            if (instant) warnings.push("TURNAROUND_INSTANT_REVIEW_REQUIRED");
+          }
           break;
         }
         case "allowsSportsAndGaming": case "allowsPharmacy": case "allowsCrypto": case "allowsForeignLanguage": case "sponsoredContentMarking": {
-          const flag = parseBoolean(text);
-          if (flag === null) errors.push({ field, code: "INVALID_BOOLEAN" });
+          const flag = parseBoolean(text, header, field);
+          if (flag === null) warnings.push(`FIELD_VALUE_NEEDS_REVIEW:${field}`);
           else values[field] = flag;
           break;
         }
@@ -449,6 +608,7 @@ export function stageImportRows(options: {
     const missing = (["title", "description", "countryCode", "primaryLanguage", "categories", "linkType", "linkValidity", "turnaroundDays", "sponsoredContentMarking"] as const)
       .filter((field) => values[field] === undefined);
     if (missing.length) warnings.push("LISTING_DETAILS_NEED_REVIEW");
+    const unresolved = hasReviewWarning(warnings);
     return {
       rowNumber,
       sourceDomain: domain,
@@ -457,10 +617,29 @@ export function stageImportRows(options: {
       warnings,
       duplicateOfRow: previousRow,
       duplicateOfListingIds: existingIds,
-      status: errors.length ? "INVALID" : existingIds.length || previousRow !== null ? "DUPLICATE_REVIEW" : missing.length ? "NEEDS_REVIEW" : "READY",
+      status: errors.length ? "INVALID" : existingIds.length || previousRow !== null ? "DUPLICATE_REVIEW" : missing.length || unresolved ? "NEEDS_REVIEW" : "READY",
       duplicateResolution: null,
     };
   });
+}
+
+export function applyPlatformCategoryOverride(candidate: ImportCandidate, categories: string[]): ImportCandidate {
+  const values = { ...candidate.values };
+  const errors = candidate.errors.filter((error) => error.field !== "categories");
+  const warnings = candidate.warnings.filter((warning) => warning !== "FIELD_VALUE_NEEDS_REVIEW:categories" && warning !== "CATEGORY_ROW_MAPPING_REQUIRED" &&
+    warning !== "CATEGORY_MAPPING_CONFIRMATION_REQUIRED" && warning !== "CATEGORY_ALIAS_REVIEW_REQUIRED");
+  values.categories = categories.join("|");
+  const missing = (["title", "description", "countryCode", "primaryLanguage", "categories", "linkType", "linkValidity", "turnaroundDays", "sponsoredContentMarking"] as const)
+    .filter((field) => values[field] === undefined);
+  const existingMissingWarning = warnings.includes("LISTING_DETAILS_NEED_REVIEW");
+  if (missing.length && !existingMissingWarning) warnings.push("LISTING_DETAILS_NEED_REVIEW");
+  if (!missing.length && existingMissingWarning) warnings.splice(warnings.indexOf("LISTING_DETAILS_NEED_REVIEW"), 1);
+  const duplicate = candidate.duplicateOfListingIds.length > 0 || candidate.duplicateOfRow !== null;
+  const unresolved = hasReviewWarning(warnings);
+  return {
+    ...candidate, values, errors, warnings,
+    status: errors.length ? "INVALID" : duplicate ? "DUPLICATE_REVIEW" : missing.length || unresolved ? "NEEDS_REVIEW" : "READY",
+  };
 }
 
 export function resolveDuplicate(candidate: ImportCandidate, resolution: {
@@ -477,7 +656,7 @@ export function resolveDuplicate(candidate: ImportCandidate, resolution: {
   }
   if (resolution.decision === "KEEP_SEPARATE") {
     const warnings = candidate.warnings.filter((warning) => warning !== "POSSIBLE_DUPLICATE_DOMAIN");
-    return { ...candidate, status: candidate.errors.length ? "INVALID" : warnings.includes("LISTING_DETAILS_NEED_REVIEW") ? "NEEDS_REVIEW" : "READY", warnings, duplicateResolution: resolution };
+    return { ...candidate, status: candidate.errors.length ? "INVALID" : hasReviewWarning(warnings) ? "NEEDS_REVIEW" : "READY", warnings, duplicateResolution: resolution };
   }
   return { ...candidate, status: "REJECTED", duplicateResolution: resolution };
 }
@@ -535,10 +714,11 @@ export function extractPublicSheetReference(input: string): { spreadsheetId: str
   let url: URL;
   try { url = new URL(input); } catch { throw new Error("SHEET_REFERENCE_INVALID"); }
   if (url.protocol !== "https:" || url.hostname !== "docs.google.com" || url.username || url.password || url.port) throw new Error("SHEET_REFERENCE_INVALID");
-  if ([...url.searchParams.keys()].some((key) => key !== "gid" && key !== "usp") || url.searchParams.getAll("gid").length > 1 || url.searchParams.getAll("usp").length > 1) {
+  if ([...url.searchParams.keys()].some((key) => !["gid", "usp", "pli"].includes(key)) || url.searchParams.getAll("gid").length > 1 || url.searchParams.getAll("usp").length > 1 || url.searchParams.getAll("pli").length > 1) {
     throw new Error("SHEET_REFERENCE_INVALID");
   }
   if (url.searchParams.has("usp") && !["sharing", "drive_web"].includes(url.searchParams.get("usp")!)) throw new Error("SHEET_REFERENCE_INVALID");
+  if (url.searchParams.has("pli") && url.searchParams.get("pli") !== "1") throw new Error("SHEET_REFERENCE_INVALID");
   if (url.hash && !/^#gid=\d{1,12}$/.test(url.hash)) throw new Error("SHEET_REFERENCE_INVALID");
   const match = /^\/spreadsheets\/d\/([A-Za-z0-9_-]{20,128})(?:\/.*)?$/.exec(url.pathname);
   if (!match) throw new Error("SHEET_REFERENCE_INVALID");
@@ -551,20 +731,44 @@ export function extractPublicSheetReference(input: string): { spreadsheetId: str
 
 export async function fetchPublicSheetCsv(input: string): Promise<string> {
   const { spreadsheetId, gid } = extractPublicSheetReference(input);
-  const endpoint = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
-  let response: Response;
-  try {
-    response = await fetch(endpoint, {
-      method: "GET", redirect: "error", cache: "no-store", signal: AbortSignal.timeout(15_000),
-      headers: { Accept: "text/csv" },
-    });
-  } catch {
-    throw new Error("SHEET_FETCH_FAILED");
+  const endpoint = new URL(`https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`);
+  let currentUrl = endpoint;
+  let response: Response | undefined;
+  const signal = AbortSignal.timeout(15_000);
+  for (let redirects = 0; redirects <= 3; redirects++) {
+    try {
+      response = await fetch(currentUrl, {
+        method: "GET", redirect: "manual", cache: "no-store", signal,
+        headers: { Accept: "text/csv" },
+      });
+    } catch {
+      throw new Error("SHEET_FETCH_FAILED");
+    }
+    if (![301, 302, 303, 307, 308].includes(response.status)) break;
+    const location = response.headers.get("location");
+    await response.body?.cancel().catch(() => undefined);
+    if (!location || redirects === 3) throw new Error("SHEET_FETCH_FAILED");
+    let nextUrl: URL;
+    try { nextUrl = new URL(location, currentUrl); } catch { throw new Error("SHEET_FETCH_FAILED"); }
+    const allowedHost = nextUrl.hostname === "docs.google.com" || nextUrl.hostname === "googleusercontent.com" || nextUrl.hostname.endsWith(".googleusercontent.com");
+    if (nextUrl.protocol !== "https:" || nextUrl.username || nextUrl.password || nextUrl.port || !allowedHost) {
+      throw new Error("SHEET_FETCH_FAILED");
+    }
+    currentUrl = nextUrl;
+  }
+  if (!response) throw new Error("SHEET_FETCH_FAILED");
+  if (response.status === 401 || response.status === 403) {
+    await response.body?.cancel();
+    throw new Error("SHEET_ACCESS_DENIED");
   }
   const mediaType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
-  if (!response.ok || mediaType !== "text/csv" || !response.body) {
+  if (!response.ok || !response.body) {
     await response.body?.cancel();
     throw new Error("SHEET_FETCH_FAILED");
+  }
+  if (mediaType !== "text/csv") {
+    await response.body.cancel();
+    throw new Error("SHEET_EXPORT_UNAVAILABLE");
   }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -574,14 +778,19 @@ export async function fetchPublicSheetCsv(input: string): Promise<string> {
       const { value, done } = await reader.read();
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > IMPORT_LIMITS.fileBytes) throw new Error("SHEET_RESPONSE_TOO_LARGE");
+      if (bytes > IMPORT_LIMITS.fileBytes) {
+        await reader.cancel();
+        throw new Error("SHEET_RESPONSE_TOO_LARGE");
+      }
       chunks.push(value);
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "SHEET_RESPONSE_TOO_LARGE") throw error;
     throw new Error("SHEET_FETCH_FAILED");
   } finally {
     await reader.cancel();
     reader.releaseLock();
   }
-  return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)); }
+  catch { throw new Error("SHEET_EXPORT_UNAVAILABLE"); }
 }

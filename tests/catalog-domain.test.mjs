@@ -24,6 +24,7 @@ test("customer projection is explicit and withholds URLs without access", () => 
   assert.ok(result);
   assert.equal("websiteUrl" in result, false);
   assert.equal("supplierId" in result, false);
+  assert.equal("supplierName" in result, false);
   assert.equal("commercialSource" in result, false);
   assert.equal("sourceCostCents" in result, false);
   assert.deepEqual(result.metrics.map((metric) => [metric.provider, metric.metricScope]), [

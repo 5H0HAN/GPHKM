@@ -25,7 +25,7 @@ export default async function EditListingPage({ params, searchParams }: {
     <header className={styles.header}><div><p className={styles.eyebrow}>CATALOG / LISTING REVISION {listing.revision}</p><h1>Edit {listing.terms.title}</h1><p className={styles.lede}>Changes apply to future orders. Existing orders keep the terms and price captured at checkout.</p></div><Link className={styles.backLink} href="/staff/catalog">Back to listings</Link></header>
     {query.error && <p className={styles.error}>Changes were not saved. The listing may have changed; reload it and review the fields.</p>}
     <ListingForm listing={listing} suppliers={suppliers} action={editListingAction}>
-      <button className={styles.button} type="submit">Save revision</button>
+      <button className={`${styles.button} ${styles.formSubmit}`} type="submit">Save revision</button>
     </ListingForm>
   </>;
 }

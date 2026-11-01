@@ -3,91 +3,170 @@ import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { getStagedImportRows } from "@/server/catalog/imports";
 import styles from "../../../catalog/catalog.module.css";
-import { applySelectedImportAction, correctImportRowAction, decideDuplicateAction, rejectImportRowAction } from "./actions";
+import layout from "../imports.module.css";
+import {
+  applyAllImportRowsAction, applySelectedImportAction, discardImportBatchAction,
+  refreshGoogleSheetAction,
+} from "./actions";
+import { ImportActionForm } from "../action-form";
+import { ImportStagedRow } from "./import-row";
 
 const fields = [
   ["websiteUrl", "Website URL"], ["title", "Title"], ["description", "Description"], ["countryCode", "Country"],
-  ["primaryLanguage", "Language"], ["categories", "Categories (separate with |)"], ["linkType", "Link type"],
-  ["linkValidity", "Link validity"], ["turnaroundDays", "Turnaround days"], ["allowsSportsAndGaming", "Sports and gaming allowed"],
+  ["primaryLanguage", "Language"], ["categories", "Categories (use | between values)"], ["linkType", "Link type"],
+  ["linkValidity", "Placement term"], ["turnaroundDays", "Turnaround days"], ["allowsSportsAndGaming", "Sports and gaming allowed"],
   ["allowsPharmacy", "Pharmacy allowed"], ["allowsCrypto", "Crypto allowed"], ["allowsForeignLanguage", "Foreign language allowed"],
   ["sponsoredContentMarking", "Sponsored marking"],
 ] as const;
-const comparisonFields = [
-  ["websiteUrl", "Website URL"], ["title", "Title"], ["description", "Description"], ["countryCode", "Country"],
-  ["primaryLanguage", "Language"], ["categories", "Categories"], ["linkType", "Link type"], ["linkValidity", "Link validity"],
-  ["turnaroundDays", "Turnaround"], ["allowsSportsAndGaming", "Sports and gaming"], ["allowsPharmacy", "Pharmacy"],
-  ["allowsCrypto", "Crypto"], ["allowsForeignLanguage", "Foreign language"], ["sponsoredContentMarking", "Sponsored marking"],
+const mappingLabels: Record<string, string> = Object.fromEntries(fields.map(([field, label]) => [field, label]));
+const statuses = [
+  ["READY", "Ready"], ["NEEDS_REVIEW", "Needs review"], ["DUPLICATE_REVIEW", "Possible matches"],
+  ["INVALID", "Invalid"], ["APPLIED", "Applied"], ["REJECTED", "Rejected"],
 ] as const;
 
-function compareText(value: unknown) {
-  if (value === null || value === undefined) return "Not set";
-  if (Array.isArray(value)) return value.join(" | ");
-  if (typeof value === "boolean") return value ? "Yes" : "No";
-  return String(value);
+function columnLabel(index: number) {
+  let value = index;
+  let label = "";
+  while (value >= 0) {
+    label = String.fromCharCode((value % 26) + 65) + label;
+    value = Math.floor(value / 26) - 1;
+  }
+  return label;
 }
 
-function usdCents(value: string) {
-  const cents = BigInt(value);
-  const digits = (cents < 0n ? -cents : cents).toString().padStart(3, "0");
-  return `${cents < 0n ? "-" : ""}$${digits.slice(0, -2).replace(/\B(?=(\d{3})+(?!\d))/g, ",")}.${digits.slice(-2)}`;
+function rowActionError(code?: string) {
+  switch (code) {
+    case "price": return "Enter a valid USD retail price for every selected row. No rows were applied.";
+    case "update": return "The update was not applied. Review the match, row warnings, and reason; the listing may have changed since this batch was staged.";
+    case "discard": return "This batch has apply history or applied listings and must stay available for audit.";
+    case "correct": return "The row could not be corrected. Check the values and try again.";
+    case "decision": return "The duplicate decision could not be saved. Review the row and reason.";
+    case "reject": return "The row could not be rejected. It may already have been applied.";
+    case "apply": return "The selected rows could not be applied. Review their current status and prices.";
+    case "all-review": return "The whole list is not ready yet. Review or reject every pending row, then try again.";
+    case "all-price": return "Save a valid USD retail price for every ready row before importing the whole list.";
+    case "all-apply": return "The whole list could not be imported. Refresh this page and review the current row statuses.";
+    default: return code ? "That action could not be completed. Review the row and try again." : null;
+  }
 }
 
-export default async function ImportReviewPage({ params, searchParams }: { params: Promise<{ batchId: string }>; searchParams: Promise<Record<string, string | undefined>> }) {
+export default async function ImportReviewPage({ params, searchParams }: {
+  params: Promise<{ batchId: string }>;
+  searchParams: Promise<Record<string, string | undefined>>;
+}) {
   const [{ batchId }, query] = await Promise.all([params, searchParams]);
   const pageNumber = typeof query.page === "string" && /^\d{1,2}$/.test(query.page) ? Number(query.page) : 0;
   let result;
-  try { result = await getStagedImportRows(await headers(), batchId, pageNumber); } catch { notFound(); }
+  try { result = await getStagedImportRows(await headers(), batchId, pageNumber, query.status); } catch { notFound(); }
   const page = result.rows;
   const readyCount = page.filter((row) => row.status === "READY").length;
   const reviewCount = page.filter((row) => row.status !== "READY" && row.status !== "APPLIED" && row.status !== "REJECTED").length;
+  const totalRows = statuses.reduce((total, [status]) => total + Number(result.counts[status] ?? 0), 0);
+  const activeStatus = result.activeStatus ?? "";
+  const statusHref = (status: string) => `/staff/suppliers/imports/${batchId}${status ? `?status=${status}` : ""}`;
+  const firstRowNeedingAttention = page.find((row) => !["READY", "APPLIED", "REJECTED"].includes(row.status));
+  const errorMessage = rowActionError(query.error);
+  const pendingReviewCount = Math.max(0, result.pendingCount - Number(result.counts.READY ?? 0));
+  const canImportAll = result.pendingCount > 0 && pendingReviewCount === 0 && result.unpricedReadyCount === 0;
+  const mappedFields = Object.entries(result.batch.mapping).filter(([field, column]) => field !== "__headerRowNumber" && mappingLabels[field] && Number.isInteger(column));
+  const headerRowNumber = Number(result.batch.mapping.__headerRowNumber ?? 1);
+  const ambiguousHeaderFields = Array.isArray(result.batch.mapping.__ambiguousHeaderFields)
+    ? result.batch.mapping.__ambiguousHeaderFields.filter((field): field is string => typeof field === "string") : [];
+  const headerLabelsRaw = result.batch.mapping.__headerLabels;
+  const headerLabels = headerLabelsRaw && typeof headerLabelsRaw === "object" && !Array.isArray(headerLabelsRaw)
+    ? headerLabelsRaw as Record<string, string> : {};
+  const sourceHeaders = Array.isArray(result.batch.mapping.__sourceHeaders)
+    ? result.batch.mapping.__sourceHeaders.filter((header): header is string => typeof header === "string") : [];
+  const mappedColumnIndexes = new Set(mappedFields.map(([, column]) => Number(column)));
+  const unmappedHeaders = sourceHeaders.flatMap((header, index) => mappedColumnIndexes.has(index) ? [] : [`${header} (${columnLabel(index)})`]);
+  const mappedDescription = mappedFields.length ? mappedFields.map(([field, column]) => {
+    const sourceColumn = columnLabel(Number(column));
+    return headerLabels[field]
+      ? `${mappingLabels[field]} ← “${headerLabels[field]}” (${sourceColumn})`
+      : `${mappingLabels[field]} ← column ${sourceColumn}`;
+  }).join(" · ") : "No supported fields detected.";
+  const tabId = result.batch.sourceReference?.split(":").at(-1);
   return <>
-    <header className={styles.header}><div><p className={styles.eyebrow}>SUPPLIERS / IMPORT REVIEW</p><h1>Staged rows</h1><p className={styles.lede}>Correct and review rows before applying selected entries as draft listings. Nothing is published automatically.</p></div><Link className={styles.backLink} href="/staff/suppliers/imports">Back to imports</Link></header>
-    {query.staged && <p className={styles.success}>{query.staged} rows staged. No listing was created or published.</p>}
-    {query.error && <p className={styles.error}>The row action could not be completed. Review the row state, mapping, and price.</p>}
-    {query.corrected && <p className={styles.success}>Row corrections saved and revalidated.</p>}
-    {query.decision && <p className={styles.success}>Duplicate decision recorded.</p>}
-    {query.rejected && <p className={styles.success}>Row rejected and recorded.</p>}
-    {query.applied !== undefined && <p className={styles.success}>{query.applied} rows created as draft listings. Other rows remain staged for review.</p>}
-    {result.sourceAvailable && result.actorRole === "SUPER_ADMIN" && <p className={styles.lede}>Original supplier inventory file is private and may contain source costs. <Link className={styles.backLink} href={`/api/staff/catalog/import/${encodeURIComponent(batchId)}/source`}>Download source file</Link></p>}
-    {page.length === 0 ? <section className={styles.empty}><strong>No rows on this page</strong><p>The file may contain only headers or an empty page number.</p></section> : <>
-      <form id="apply-form" action={applySelectedImportAction} className={styles.applyPanel}>
+    <header className={`${styles.header} ${layout.reviewHeader}`}>
+      <div><h1>Review supplier import</h1><p className={styles.lede}>{result.batch.supplierName} · {totalRows} source rows · staged {new Date(result.batch.createdAt).toLocaleString()}</p></div>
+      <Link className={styles.backLink} href="/staff/suppliers/imports">All imports</Link>
+    </header>
+    {query.staged && <p className={styles.success} role="status">{query.staged} rows staged from a saved source snapshot. Nothing was published.</p>}
+    {errorMessage && <p className={styles.error} role="alert">{errorMessage}</p>}
+    {query.allApplied !== undefined && <p className={styles.success} role="status">{query.allApplied} draft listings created across the batch.{query.partial ? " Processing stopped because a row changed or needs review; check the remaining staged rows." : " Nothing was published."}</p>}
+    {query.decision && <p className={styles.success} role="status">Duplicate decision recorded.</p>}
+    {query.rejected && <p className={styles.success} role="status">Row rejected and recorded.</p>}
+    {query.updated && <p className={styles.success} role="status">The matched listing was revised. Its retail price and live status were preserved.</p>}
+    {query.applied !== undefined && <p className={styles.success} role="status">{query.applied} new draft listings created. Other rows remain staged for review.</p>}
+    <section className={layout.batchOverview} aria-labelledby="batch-overview-title">
+      <div className={layout.batchOverviewHeader}>
+        <div><h2 id="batch-overview-title">Batch overview</h2><p>Rows are checked independently. Importing creates unpublished drafts; existing listings are only changed when you choose a reviewed match.</p></div>
+        <span className={layout.batchStatus}>{result.batch.status.replaceAll("_", " ")}</span>
+      </div>
+      <dl className={layout.summary}>
+        <div><dt>Source</dt><dd>{result.batch.sourceType === "GOOGLE_SHEETS" ? `Google Sheet · tab ${tabId ?? "0"}` : result.batch.sourceFilename ?? result.batch.sourceType}</dd></div>
+        <div><dt>Source rows</dt><dd>{totalRows}</dd></div>
+        <div><dt>Header row</dt><dd>{headerRowNumber}</dd></div>
+        <div><dt>Mapped fields</dt><dd>{mappedFields.length}</dd></div>
+        <div><dt>Ready rows without price</dt><dd>{result.unpricedReadyCount}</dd></div>
+      </dl>
+      <details className={layout.mappingDetails}>
+        <summary>Source columns and mapping</summary>
+        <p><strong>Detected fields:</strong> {mappedDescription}</p>
+        {unmappedHeaders.length > 0 && <p><strong>Not mapped:</strong> {unmappedHeaders.join(" · ")}</p>}
+      </details>
+      {ambiguousHeaderFields.length > 0 && <p className={layout.mappingWarning}>Multiple columns matched {ambiguousHeaderFields.map((field) => mappingLabels[field] ?? field).join(", ")}; these fields were skipped. Stage a new batch with manual mapping to choose the right columns. <Link className={styles.backLink} href={`/staff/suppliers/imports?supplierId=${encodeURIComponent(result.batch.supplierId)}`}>Start a new import</Link></p>}
+    </section>
+    {result.pendingCount > 0 && <ImportActionForm action={applyAllImportRowsAction} className={layout.applyAllPanel}>
+      <input type="hidden" name="batchId" value={batchId} />
+      <div><strong>Import the whole list</strong><p>Applies to all {result.pendingCount} remaining rows across every page. Every pending row must be ready and have a saved USD retail price. New listings are drafts and stay unpublished.</p>
+        {pendingReviewCount > 0 && <small>{pendingReviewCount} rows still need review or must be rejected.</small>}
+        {result.unpricedReadyCount > 0 && <small>{result.unpricedReadyCount} ready rows still need a saved retail price.</small>}
+      </div><button type="submit" disabled={!canImportAll}>Create all remaining drafts</button>
+    </ImportActionForm>}
+    <details className={layout.batchTools}>
+      <summary>Source and batch tools</summary>
+      <div className={layout.batchToolsContent}>
+        {result.batch.sourceType === "GOOGLE_SHEETS" && result.batch.sourceReference && <ImportActionForm action={refreshGoogleSheetAction} className={layout.refreshForm}>
+          <input type="hidden" name="supplierId" value={result.batch.supplierId} />
+          <input type="hidden" name="sourceReference" value={result.batch.sourceReference} />
+          <p>Fetch the current public tab as a new snapshot. Earlier batches stay available for review.</p>
+          <button type="submit">Refresh this Google Sheet</button>
+        </ImportActionForm>}
+        {result.sourceAvailable && result.actorRole === "SUPER_ADMIN" && <p className={styles.hint}>The source snapshot may contain unmapped supplier data. <Link className={styles.backLink} href={`/api/staff/catalog/import/${encodeURIComponent(batchId)}/source`}>Download source snapshot</Link></p>}
+        {result.canDiscard ? <details className={layout.discardDetails}>
+          <summary>Discard this unapplied staging batch</summary>
+          <p className={styles.hint}>This removes its staged rows and private source file. It cannot be undone. Batches with apply attempts or applied listings stay in the audit history.</p>
+          <ImportActionForm action={discardImportBatchAction} className={layout.discardForm}>
+            <input type="hidden" name="batchId" value={batchId} />
+            <label>Reason for discarding<input name="reason" required minLength={5} maxLength={1000} /></label>
+            <label>Type DISCARD to confirm<input name="confirmation" required pattern="DISCARD" autoComplete="off" /></label>
+            <button type="submit">Discard batch</button>
+          </ImportActionForm>
+        </details> : <p className={styles.hint}>This batch has apply history and stays available for audit. Reject any remaining staged rows to finish reviewing it.</p>}
+      </div>
+    </details>
+
+    <section className={layout.reviewQueue} id="review-queue" aria-labelledby="review-queue-title">
+      <div className={layout.reviewQueueHeader}>
+        <div><h2 id="review-queue-title">Review rows</h2><p>Correct supplier details, choose GPHKM categories, set retail prices, and check for existing inventory before importing.</p></div>
+        {firstRowNeedingAttention && <a className={layout.nextReviewLink} href={`#import-row-${firstRowNeedingAttention.id}`}>Next row needing attention</a>}
+      </div>
+      <nav className={layout.statusFilters} aria-label="Filter import rows">
+        <Link href={statusHref("")} aria-current={!activeStatus ? "page" : undefined}>All <small>{totalRows}</small></Link>
+        {statuses.map(([status, label]) => <Link key={status} href={statusHref(status)} aria-current={activeStatus === status ? "page" : undefined}>{label} <small>{result.counts[status] ?? 0}</small></Link>)}
+      </nav>
+    {page.length === 0 ? <section className={styles.empty}><strong>No rows in this view</strong><p>Choose another status filter or return to all rows.</p><Link href={statusHref("")}>Show all rows</Link></section> : <>
+      {activeStatus !== "APPLIED" && activeStatus !== "REJECTED" && <ImportActionForm id="apply-form" action={applySelectedImportAction} className={styles.applyPanel} noValidate>
         <input type="hidden" name="batchId" value={batchId} />
         <input type="hidden" name="page" value={pageNumber} />
-        <div><strong>{page.length} rows on this page</strong><p>{readyCount} ready to apply · {reviewCount} need review. Select only ready rows and set each USD retail price. Source cost is never used as retail price; applying creates drafts only.</p></div>
-        <button className={styles.button} type="submit" disabled={readyCount === 0}>Apply selected as draft listings</button>
-      </form>
-      <div className={styles.tableWrap}><table><thead><tr><th>Select</th><th>Row</th><th>Website</th><th>Title</th><th>Categories</th><th>Status</th><th>Review notes / actions</th></tr></thead><tbody>{page.map((row) => {
-        const original = row.originalValues as Record<string, unknown>;
-        const values = row.values as Record<string, unknown>;
-        const editable = row.status !== "APPLIED" && row.status !== "REJECTED";
-        const normalized = (field: string) => { const value = original[field] ?? values[field]; return typeof value === "boolean" ? value ? "yes" : "no" : String(value ?? ""); };
-        return <tr key={row.id}>
-          <td>{row.status === "READY" && <><input form="apply-form" type="checkbox" name="rowId" value={row.id} aria-label={`Select row ${row.rowNumber}`} /><label className={styles.priceInput}>USD price<input form="apply-form" name={`price_${row.id}`} type="number" min="0.01" step="0.01" /></label></>}</td>
-          <td>{row.rowNumber}</td><td>{String(values.websiteUrl ?? "—")}</td><td>{String(values.title ?? "—")}</td><td>{String(values.categories ?? "—")}</td>
-          <td><span className={styles.status}>{row.status.replaceAll("_", " ")}</span>{row.duplicateDecision && <small className={styles.decision}>{row.duplicateDecision.replaceAll("_", " ")}</small>}</td>
-          <td><p>{[...row.errors.map((error) => `${error.field}: ${error.code}`), ...row.warnings].join(", ") || "—"}{row.duplicateOfRow ? ` (also row ${row.duplicateOfRow})` : ""}</p>
-            {row.duplicateMatches.map((match) => <details key={match.id}><summary>Compare with {match.title} · revision {match.revision}</summary>
-              <p>Existing listing: {match.status.replaceAll("_", " ")} · {usdCents(match.retailPriceCents)} retail price</p>
-              <p>Internal source: {match.commercialSource.replaceAll("_", " ")} · {match.sourceSupplierName ?? "GPHKM"}. Fulfillment: {match.fulfillmentSupplierName ?? "GPHKM"}.</p>
-              <p>Import review never changes an existing listing. Keep this as a separate draft or reject it here; use the catalog editor to revise the existing listing.</p>
-              <Link className={styles.backLink} href={`/staff/catalog/${match.id}/edit`}>Open listing editor</Link>
-              <div className={styles.tableWrap}><table><thead><tr><th>Field</th><th>Current listing</th><th>Imported value</th></tr></thead><tbody>
-                {comparisonFields.filter(([field]) => values[field] !== undefined).map(([field, label]) => <tr key={field}><td>{label}</td><td>{compareText(match[field])}</td><td>{compareText(values[field])}</td></tr>)}
-              </tbody></table></div>
-            </details>)}
-            {row.hiddenMatchCount > 0 && <p>{row.hiddenMatchCount} additional domain matches not shown. Review search results in Catalog before applying.</p>}
-            {editable && <details><summary>Correct row details</summary><form action={correctImportRowAction} className={styles.correctForm}><input type="hidden" name="batchId" value={batchId} /><input type="hidden" name="rowId" value={row.id} /><input type="hidden" name="page" value={pageNumber} />
-              <div className={styles.correctGrid}>{fields.map(([field, label]) => <label key={field}>{label}<input name={`field_${field}`} defaultValue={normalized(field)} maxLength={field === "description" ? 4000 : 2048} /></label>)}</div>
-              <button className={styles.button} type="submit">Save corrections</button>
-            </form></details>}
-            {editable && <details className={styles.rowDecision}><summary>Row decisions</summary>
-              {row.status === "DUPLICATE_REVIEW" && <form action={decideDuplicateAction} className={styles.decisionForm}><input type="hidden" name="batchId" value={batchId} /><input type="hidden" name="rowId" value={row.id} /><input type="hidden" name="page" value={pageNumber} /><label>Duplicate decision<select name="decision" defaultValue="KEEP_SEPARATE"><option value="KEEP_SEPARATE">Keep as a separate listing</option><option value="REJECT">Reject this row</option></select></label><label>Reason<input name="reason" required maxLength={1000} /></label><button type="submit">Record decision</button></form>}
-              {editable && row.status !== "DUPLICATE_REVIEW" && <form action={rejectImportRowAction} className={styles.rejectForm}><input type="hidden" name="batchId" value={batchId} /><input type="hidden" name="rowId" value={row.id} /><input type="hidden" name="page" value={pageNumber} /><label>Reject reason<select name="reason" defaultValue="INVALID_SOURCE_DATA"><option value="INVALID_SOURCE_DATA">Invalid supplier data</option><option value="NO_LONGER_OFFERED">Supplier no longer offers it</option><option value="OTHER">Other review reason</option></select></label><button type="submit">Reject row</button></form>}
-            </details>}
-          </td>
-        </tr>;
-      })}</tbody></table></div>
-      <nav className={styles.pagination} aria-label="Import row pages"><span>Showing {page[0]?.rowNumber}–{page.at(-1)?.rowNumber}</span>{result.hasPrevious && <Link href={`/staff/suppliers/imports/${batchId}?page=${pageNumber - 1}`}>Previous 50 rows</Link>}{result.hasNext && <Link href={`/staff/suppliers/imports/${batchId}?page=${pageNumber + 1}`}>Next 50 rows</Link>}</nav>
+        <input type="hidden" name="status" value={activeStatus} />
+        <div><strong>{page.length} rows on this page</strong><p>{readyCount} ready to create · {reviewCount} need review. Select ready rows with saved USD retail prices. New listings become drafts.</p></div>
+        <button className={styles.button} type="submit" disabled={readyCount === 0}>Create selected drafts</button>
+      </ImportActionForm>}
+      <div className={layout.importRows}>{page.map((row) => <ImportStagedRow key={row.id} row={row} batchId={batchId} supplierId={result.batch.supplierId} pageNumber={pageNumber} activeStatus={activeStatus} />)}</div>
+      <nav className={styles.pagination} aria-label="Import row pages"><span>Showing rows {page[0]?.rowNumber}–{page.at(-1)?.rowNumber}</span>{pageNumber > 0 && <Link href={`/staff/suppliers/imports/${batchId}?page=${pageNumber - 1}${activeStatus ? `&status=${activeStatus}` : ""}`}>Previous 50 rows</Link>}{result.hasNext && <Link href={`/staff/suppliers/imports/${batchId}?page=${pageNumber + 1}${activeStatus ? `&status=${activeStatus}` : ""}`}>Next 50 rows</Link>}</nav>
     </>}
+    </section>
   </>;
 }

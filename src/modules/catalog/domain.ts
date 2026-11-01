@@ -11,7 +11,8 @@ import {
 
 export type StaffRole = "ADMIN" | "FINANCE" | "SUPER_ADMIN";
 export type CommercialSource = "PLATFORM_OWNED" | "SUPPLIER_SOURCED";
-export type ListingStatus = "DRAFT" | "REVIEW" | "LIVE" | "PAUSED" | "ARCHIVED";
+export const LISTING_STATUSES = ["DRAFT", "REVIEW", "LIVE", "PAUSED", "ARCHIVED"] as const;
+export type ListingStatus = typeof LISTING_STATUSES[number];
 
 export type ListingTerms = {
   title: string;

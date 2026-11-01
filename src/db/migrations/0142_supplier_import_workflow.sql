@@ -1,0 +1,4 @@
+ALTER TABLE "catalog_import_row" ADD COLUMN "platform_category_override" text[];--> statement-breakpoint
+ALTER TABLE "catalog_import_row" ADD COLUMN "proposed_retail_price_cents" numeric(20, 0);--> statement-breakpoint
+ALTER TABLE "catalog_import_row" ADD CONSTRAINT "catalog_import_row_platform_categories" CHECK ("catalog_import_row"."platform_category_override" is null or (cardinality("catalog_import_row"."platform_category_override") between 1 and 7 and array_position("catalog_import_row"."platform_category_override", null) is null));--> statement-breakpoint
+ALTER TABLE "catalog_import_row" ADD CONSTRAINT "catalog_import_row_proposed_retail_price" CHECK ("catalog_import_row"."proposed_retail_price_cents" is null or "catalog_import_row"."proposed_retail_price_cents" between 1 and 9007199254740991);

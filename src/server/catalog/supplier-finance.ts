@@ -1,6 +1,6 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { listing, listingCost, listingSourcing, supplier } from "@/db/catalog-schema";
 import { orderItemFinancial, orderItemFulfillmentSupplier } from "@/db/order-schema";
@@ -21,10 +21,34 @@ async function withFinance<T>(headers: Headers, work: (tx: Tx, actor: { userId: 
   }, { isolationLevel });
 }
 
-export async function getSupplierFinanceData(headers: Headers, requestedPages: { listings?: unknown; orderItems?: unknown; transfers?: unknown } = {}) {
+export async function getSupplierFinanceData(headers: Headers, requestedPages: { listings?: unknown; orderItems?: unknown; transfers?: unknown; coverage?: unknown; search?: unknown } = {}) {
   return withFinance(headers, async (tx, actor) => {
-    const [listingCount] = await tx.select({ total: sql<number>`count(*)::int` }).from(listing).innerJoin(listingSourcing, eq(listingSourcing.listingId, listing.id));
-    const [transferCount] = await tx.select({ total: sql<number>`count(*)::int` }).from(supplierTransferEvent);
+    const searchQuery = typeof requestedPages.search === "string" ? requestedPages.search.trim().slice(0, 100) : "";
+    const searchPattern = searchQuery ? `%${searchQuery.replace(/[\\%_]/g, "\\$&")}%` : null;
+    const listingSearch = searchPattern ? or(
+      ilike(listing.title, searchPattern),
+      sql`public.gphkm_finance_supplier_name(${listingSourcing.supplierId}) ILIKE ${searchPattern}`,
+    ) : undefined;
+    const orderItemSearch = searchPattern ? or(
+      ilike(orderItemFinancial.orderItemId, searchPattern),
+      sql`EXISTS (
+        SELECT 1 FROM public.gphkm_finance_item_suppliers(${orderItemFinancial.orderItemId}) eligible
+        WHERE public.gphkm_finance_supplier_name(eligible.supplier_id) ILIKE ${searchPattern}
+      )`,
+    ) : undefined;
+    const transferSearch = searchPattern ? or(
+      ilike(supplierTransferEvent.transferReference, searchPattern),
+      ilike(supplierTransferEvent.evidenceReference, searchPattern),
+      sql`public.gphkm_finance_supplier_name(${supplierTransferEvent.supplierId}) ILIKE ${searchPattern}`,
+      sql`EXISTS (
+        SELECT 1 FROM public.supplier_transfer_allocation allocation
+        WHERE allocation.transfer_event_id = ${supplierTransferEvent.id}
+          AND allocation.order_item_id ILIKE ${searchPattern}
+      )`,
+    ) : undefined;
+    const [listingCount] = await tx.select({ total: sql<number>`count(*)::int` }).from(listing)
+      .innerJoin(listingSourcing, eq(listingSourcing.listingId, listing.id)).where(listingSearch);
+    const [transferCount] = await tx.select({ total: sql<number>`count(*)::int` }).from(supplierTransferEvent).where(transferSearch);
     const listingPagination = staffCatalogPagination(requestedPages.listings, listingCount?.total ?? 0);
     const transferPagination = staffCatalogPagination(requestedPages.transfers, transferCount?.total ?? 0);
     const listingRows = await tx.select({
@@ -32,7 +56,7 @@ export async function getSupplierFinanceData(headers: Headers, requestedPages: {
       supplierName: sql<string | null>`public.gphkm_finance_supplier_name(${listingSourcing.supplierId})`, currentCostMinor: listingCost.sourceCostCents,
     }).from(listing).innerJoin(listingSourcing, eq(listingSourcing.listingId, listing.id))
       .leftJoin(listingCost, eq(listingCost.listingId, listing.id))
-      .orderBy(listing.title, listing.id).limit(listingPagination.limit).offset(listingPagination.offset);
+      .where(listingSearch).orderBy(listing.title, listing.id).limit(listingPagination.limit).offset(listingPagination.offset);
     const listingHistory = await tx.select({
       id: supplierListingCostEvent.id, listingId: supplierListingCostEvent.listingId,
       supplierId: supplierListingCostEvent.supplierId,
@@ -41,7 +65,7 @@ export async function getSupplierFinanceData(headers: Headers, requestedPages: {
       reason: supplierListingCostEvent.reason, createdAt: supplierListingCostEvent.createdAt,
     }).from(supplierListingCostEvent).innerJoin(listing, eq(listing.id, supplierListingCostEvent.listingId))
       .orderBy(desc(supplierListingCostEvent.createdAt)).limit(60);
-    const [orderItemCount] = await tx.select({ total: sql<number>`count(*)::int` }).from(orderItemFinancial);
+    const [orderItemCount] = await tx.select({ total: sql<number>`count(*)::int` }).from(orderItemFinancial).where(orderItemSearch);
     const orderItemPagination = staffCatalogPagination(requestedPages.orderItems, orderItemCount?.total ?? 0);
     const orderItemRows = await tx.select({
       id: orderItemFinancial.orderItemId,
@@ -52,7 +76,7 @@ export async function getSupplierFinanceData(headers: Headers, requestedPages: {
       sourceCostMinor: orderItemFinancial.sourceCostMinor,
       writingCostMinor: orderItemFinancial.writingDirectCostMinor,
       writingSelected: sql<boolean>`public.gphkm_finance_writing_cost_allowed(${orderItemFinancial.orderItemId})`,
-    }).from(orderItemFinancial)
+    }).from(orderItemFinancial).where(orderItemSearch)
       .orderBy(desc(orderItemFinancial.createdAt), desc(orderItemFinancial.orderItemId)).limit(orderItemPagination.limit).offset(orderItemPagination.offset);
     const supplierOptionsByItem = new Map<string, Array<{ id: string; name: string }>>();
     if (orderItemRows.length) {
@@ -97,7 +121,7 @@ export async function getSupplierFinanceData(headers: Headers, requestedPages: {
       transferDate: supplierTransferEvent.transferDate, transferReference: supplierTransferEvent.transferReference,
       evidenceReference: supplierTransferEvent.evidenceReference, reason: supplierTransferEvent.reason,
       createdAt: supplierTransferEvent.createdAt,
-    }).from(supplierTransferEvent).orderBy(desc(supplierTransferEvent.createdAt), desc(supplierTransferEvent.id))
+    }).from(supplierTransferEvent).where(transferSearch).orderBy(desc(supplierTransferEvent.createdAt), desc(supplierTransferEvent.id))
       .limit(transferPagination.limit).offset(transferPagination.offset);
     const allocations = transfers.length === 0 ? [] : await tx.select({
       transferEventId: supplierTransferAllocation.transferEventId,
@@ -158,7 +182,7 @@ export async function getSupplierFinanceData(headers: Headers, requestedPages: {
       .innerJoin(supplierTransferEvent, eq(supplierTransferEvent.id, supplierTransferAllocation.transferEventId))
       .groupBy(supplierTransferAllocation.orderItemId, supplierTransferEvent.supplierId);
     const paidTotals = new Map<string, bigint>(transferTotals.map((row) => [`${row.orderItemId}:${row.supplierId}`, BigInt(row.amountMinor)]));
-    const payableCoverage = [...totals.entries()].map(([key, cost]) => {
+    const allPayableCoverage = [...totals.entries()].map(([key, cost]) => {
       const separator = key.indexOf(":");
       const orderItemId = key.slice(0, separator);
       const supplierId = key.slice(separator + 1);
@@ -166,13 +190,19 @@ export async function getSupplierFinanceData(headers: Headers, requestedPages: {
       const status = paid > cost ? "OVERPAID" : paid === cost ? "PAID" : paid === 0n ? "UNPAID" : "PARTIALLY_PAID";
       return { orderItemId, supplierId, supplierName: supplierNamesByItem.get(`${orderItemId}:${supplierId}`) ?? "Supplier", confirmedCostMinor: cost.toString(), transferredMinor: paid.toString(), status };
     });
+    const filteredPayableCoverage = allPayableCoverage.filter((row) => !searchQuery ||
+      row.supplierName.toLocaleLowerCase().includes(searchQuery.toLocaleLowerCase()) ||
+      row.orderItemId.toLocaleLowerCase().includes(searchQuery.toLocaleLowerCase()));
+    filteredPayableCoverage.sort((left, right) => left.supplierName.localeCompare(right.supplierName) || left.orderItemId.localeCompare(right.orderItemId));
+    const payableCoveragePagination = staffCatalogPagination(requestedPages.coverage, filteredPayableCoverage.length);
+    const payableCoverage = filteredPayableCoverage.slice(payableCoveragePagination.offset, payableCoveragePagination.offset + payableCoveragePagination.limit);
     const allocationsByTransfer = new Map<string, typeof allocations>();
     for (const allocation of allocations) {
       const rows = allocationsByTransfer.get(allocation.transferEventId) ?? [];
       rows.push(allocation);
       allocationsByTransfer.set(allocation.transferEventId, rows);
     }
-    const coverageByItem = new Map(payableCoverage.map((row) => [`${row.orderItemId}:${row.supplierId}`, row]));
+    const coverageByItem = new Map(allPayableCoverage.map((row) => [`${row.orderItemId}:${row.supplierId}`, row]));
     const transferReconciliation = transfers.map((transfer) => ({
       ...transfer,
       evidence: evidenceByTransfer.get(transfer.id) ?? null,
@@ -191,13 +221,14 @@ export async function getSupplierFinanceData(headers: Headers, requestedPages: {
       metadata: { listingCount: listingRows.length, listingPage: listingPagination.page, listingTotal: listingPagination.total,
         orderItemCount: orderItems.length, orderItemPage: orderItemPagination.page, orderItemTotal: orderItemPagination.total,
         transferCount: transfers.length, transferPage: transferPagination.page, transferTotal: transferPagination.total,
-        historyCount: listingHistory.length + actualCostHistory.length + transfers.length + legacyPayments.length },
+        coveragePage: payableCoveragePagination.page, coverageTotal: payableCoveragePagination.total,
+        searchActive: Boolean(searchQuery), historyCount: listingHistory.length + actualCostHistory.length + transfers.length + legacyPayments.length },
     });
     for (const supplierId of accessedSupplierIds) await appendAuditEvent(tx, {
       actorUserId: actor.userId, action: "SUPPLIER_IDENTITY_ACCESSED", targetType: "supplier", targetId: supplierId,
       reasonCode: "FINANCE_DASHBOARD_VIEW",
     });
-    return { listings: listingRows, listingPagination, listingHistory, orderItems, orderItemPagination, actualCostHistory, payments: transferReconciliation, transferPagination, payableCoverage, legacyPayments };
+    return { searchQuery, listings: listingRows, listingPagination, listingHistory, orderItems, orderItemPagination, actualCostHistory, payments: transferReconciliation, transferPagination, payableCoverage, payableCoveragePagination, legacyPayments };
   }, "repeatable read");
 }
 

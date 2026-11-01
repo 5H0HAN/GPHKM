@@ -15,6 +15,7 @@ Amounts use integer minor units or exact decimals, never binary floating point. 
 ## 2. Authoritative financial records
 
 - **Wallet account:** one organization and USD; available balance is a projection of ledger entries and holds.
+- **Staff directory balance view:** Admin and Super Admin may read the current shared wallet balance projection for an open organization where a directory customer has an active membership. Each read is audited. This does not grant access to holds, ledger entries, recharge history, payment evidence, or reconciliation details, and does not allow balance changes.
 - **Wallet ledger entry:** append-only funding credit, purchase debit, item refund credit, reversal, or approved adjustment with unique reference, amount, currency, organization, actor/source, and related aggregate.
 - **Payment attempt:** immutable funding intent, provider, amount, currency, idempotency fingerprint, state, and external identities.
 - **Provider event inbox:** durable verified/rejected event record unique by provider and event identity, with normalized facts and restricted evidence.

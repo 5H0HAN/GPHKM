@@ -5,7 +5,7 @@ import { db } from "@/db";
 import { listing, listingRevision, listingSourcing, listingUrl, supplier, supplierContact } from "@/db/catalog-schema";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { appendAuditEvent } from "@/server/audit/append";
-import { canTransitionListing, normalizeWebsiteUrl, validateListingRelationships, validateListingTerms, validatePublishableListing, type CommercialSource, type ListingStatus, type ListingTerms } from "@/modules/catalog/domain";
+import { canTransitionListing, LISTING_STATUSES, normalizeWebsiteUrl, validateListingRelationships, validateListingTerms, validatePublishableListing, type CommercialSource, type ListingStatus, type ListingTerms } from "@/modules/catalog/domain";
 import { staffCatalogPagination } from "@/modules/catalog/pagination";
 
 export async function staffTransaction<T>(headers: Headers, permission: "catalog.manage" | "supplier.manage" | "costs.read", work: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0], userId: string, role: string) => Promise<T>): Promise<T> {
@@ -67,7 +67,9 @@ export async function transitionListing(headers: Headers, id: string, next: List
   return staffTransaction(headers, "catalog.manage", async (tx, userId) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('gphkm:catalog-listing:' || ${id}, 0))`);
     const [row] = await tx.select().from(listing).where(eq(listing.id, id)).for("update").limit(1);
-    if (!row || !canTransitionListing(row.status, next, "ADMIN")) throw new Error("Invalid listing transition");
+    if (!row) throw new Error("Listing unavailable");
+    if (row.status === next) return { id, status: next, unchanged: true };
+    if (!canTransitionListing(row.status, next, "ADMIN")) throw new Error("Invalid listing transition");
     const [source] = await tx.select().from(listingSourcing).where(eq(listingSourcing.listingId, id)).limit(1);
     const [url] = await tx.select({ websiteUrl: listingUrl.websiteUrl }).from(listingUrl).where(eq(listingUrl.listingId, id)).limit(1);
     if (!source || !url) throw new Error("Listing is incomplete");
@@ -128,10 +130,16 @@ export async function getStaffListingForEdit(headers: Headers, id: string) {
   });
 }
 
-export async function updateListing(headers: Headers, input: {
+export type UpdateListingInput = {
   id: string; expectedRevision: number; terms: ListingTerms; commercialSource: CommercialSource;
   supplierId: string | null; fulfillmentSupplierId: string | null; urlVisibleWithoutRecharge: boolean; reason: string;
-}) {
+};
+
+export async function updateListingInTransaction(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  userId: string,
+  input: UpdateListingInput,
+) {
   if (!/^[0-9a-f-]{36}$/i.test(input.id) || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) {
     throw new Error("Listing version is invalid");
   }
@@ -146,62 +154,64 @@ export async function updateListing(headers: Headers, input: {
   const relationshipErrors = validateListingRelationships(input.commercialSource, input.supplierId, input.fulfillmentSupplierId);
   if (termErrors.length || relationshipErrors.length) throw new Error("Invalid listing fields");
 
-  return staffTransaction(headers, "catalog.manage", async (tx, userId) => {
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('gphkm:catalog-listing:' || ${input.id}, 0))`);
-    const [current] = await tx.select().from(listing).where(eq(listing.id, input.id)).for("update").limit(1);
-    if (!current || current.revision !== input.expectedRevision || current.status === "ARCHIVED") {
-      throw new Error("Listing changed or is unavailable; reload before editing");
-    }
-    const [source] = await tx.select().from(listingSourcing).where(eq(listingSourcing.listingId, input.id)).for("update").limit(1);
-    const [currentUrl] = await tx.select().from(listingUrl).where(eq(listingUrl.listingId, input.id)).for("update").limit(1);
-    if (!source || !currentUrl) throw new Error("Listing is incomplete");
-    const relationshipIds = [input.supplierId, input.fulfillmentSupplierId].filter((value): value is string => value !== null);
-    for (const supplierId of new Set(relationshipIds)) {
-      const [found] = await tx.select({ id: supplier.id, status: supplier.status }).from(supplier)
-        .where(eq(supplier.id, supplierId)).limit(1);
-      const alreadyAssigned = source.supplierId === supplierId || source.fulfillmentSupplierId === supplierId;
-      if (!found || (found.status !== "ACTIVE" && !alreadyAssigned)) throw new Error("Selected supplier is unavailable");
-    }
-    if (current.status === "LIVE") {
-      const errors = validatePublishableListing({
-        ...terms, id: current.id, revision: current.revision, status: current.status,
-        commercialSource: input.commercialSource, supplierId: input.supplierId,
-        fulfillmentSupplierId: input.fulfillmentSupplierId, sourceCostCents: null,
-        urlVisibleWithoutRecharge: input.urlVisibleWithoutRecharge, metrics: [],
-        createdAt: current.createdAt.toISOString(), updatedAt: current.updatedAt.toISOString(),
-      });
-      if (errors.length) throw new Error("Live listing changes must satisfy publication requirements");
-    }
-
-    const nextRevision = current.revision + 1;
-    const now = new Date();
-    await tx.update(listing).set({
-      title: terms.title.trim(), description: terms.description.trim(), countryCode: terms.countryCode,
-      primaryLanguage: terms.primaryLanguage, categories: terms.categories, retailPriceCents: String(terms.retailPriceCents),
-      linkType: terms.linkType, linkValidity: terms.linkValidity, turnaroundDays: terms.turnaroundDays,
-      allowsSportsAndGaming: terms.allowsSportsAndGaming, allowsPharmacy: terms.allowsPharmacy,
-      allowsCrypto: terms.allowsCrypto, allowsForeignLanguage: terms.allowsForeignLanguage,
-      sponsoredContentMarking: terms.sponsoredContentMarking, writingEnabled: terms.writingEnabled,
-      writingPriceCents: terms.writingPriceCents === null ? null : String(terms.writingPriceCents),
-      writingTurnaroundDays: terms.writingTurnaroundDays,
-      writingFirstDraftCents: terms.writingFirstDraftCents === null ? null : String(terms.writingFirstDraftCents),
-      writingFinalDraftCents: terms.writingFinalDraftCents === null ? null : String(terms.writingFinalDraftCents),
-      buyerRequirements: terms.buyerRequirements?.trim() || null, revision: nextRevision, updatedAt: now,
-    }).where(eq(listing.id, input.id));
-    await tx.update(listingUrl).set({ websiteUrl, updatedAt: now }).where(eq(listingUrl.listingId, input.id));
-    await tx.update(listingSourcing).set({
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('gphkm:catalog-listing:' || ${input.id}, 0))`);
+  const [current] = await tx.select().from(listing).where(eq(listing.id, input.id)).for("update").limit(1);
+  if (!current || current.revision !== input.expectedRevision || current.status === "ARCHIVED") {
+    throw new Error("Listing changed or is unavailable; reload before editing");
+  }
+  const [source] = await tx.select().from(listingSourcing).where(eq(listingSourcing.listingId, input.id)).for("update").limit(1);
+  const [currentUrl] = await tx.select().from(listingUrl).where(eq(listingUrl.listingId, input.id)).for("update").limit(1);
+  if (!source || !currentUrl) throw new Error("Listing is incomplete");
+  const relationshipIds = [input.supplierId, input.fulfillmentSupplierId].filter((value): value is string => value !== null);
+  for (const supplierId of new Set(relationshipIds)) {
+    const [found] = await tx.select({ id: supplier.id, status: supplier.status }).from(supplier)
+      .where(eq(supplier.id, supplierId)).limit(1);
+    const alreadyAssigned = source.supplierId === supplierId || source.fulfillmentSupplierId === supplierId;
+    if (!found || (found.status !== "ACTIVE" && !alreadyAssigned)) throw new Error("Selected supplier is unavailable");
+  }
+  if (current.status === "LIVE") {
+    const errors = validatePublishableListing({
+      ...terms, id: current.id, revision: current.revision, status: current.status,
       commercialSource: input.commercialSource, supplierId: input.supplierId,
-      fulfillmentSupplierId: input.fulfillmentSupplierId,
-      urlVisibleWithoutRecharge: input.urlVisibleWithoutRecharge, updatedAt: now,
-    }).where(eq(listingSourcing.listingId, input.id));
-    await tx.insert(listingRevision).values({ listingId: input.id, revision: nextRevision, terms: { ...terms }, actorUserId: userId, reason });
-    await appendAuditEvent(tx, {
-      actorUserId: userId, action: "CATALOG_LISTING_UPDATED", targetType: "marketplace_listing", targetId: input.id,
-      reasonCode: "LISTING_REVISION_CREATED",
-      metadata: { fromRevision: current.revision, toRevision: nextRevision, reason, sourcingChanged: source.commercialSource !== input.commercialSource || source.supplierId !== input.supplierId || source.fulfillmentSupplierId !== input.fulfillmentSupplierId || source.urlVisibleWithoutRecharge !== input.urlVisibleWithoutRecharge },
+      fulfillmentSupplierId: input.fulfillmentSupplierId, sourceCostCents: null,
+      urlVisibleWithoutRecharge: input.urlVisibleWithoutRecharge, metrics: [],
+      createdAt: current.createdAt.toISOString(), updatedAt: current.updatedAt.toISOString(),
     });
-    return { id: input.id, revision: nextRevision };
+    if (errors.length) throw new Error("Live listing changes must satisfy publication requirements");
+  }
+
+  const nextRevision = current.revision + 1;
+  const now = new Date();
+  await tx.update(listing).set({
+    title: terms.title.trim(), description: terms.description.trim(), countryCode: terms.countryCode,
+    primaryLanguage: terms.primaryLanguage, categories: terms.categories, retailPriceCents: String(terms.retailPriceCents),
+    linkType: terms.linkType, linkValidity: terms.linkValidity, turnaroundDays: terms.turnaroundDays,
+    allowsSportsAndGaming: terms.allowsSportsAndGaming, allowsPharmacy: terms.allowsPharmacy,
+    allowsCrypto: terms.allowsCrypto, allowsForeignLanguage: terms.allowsForeignLanguage,
+    sponsoredContentMarking: terms.sponsoredContentMarking, writingEnabled: terms.writingEnabled,
+    writingPriceCents: terms.writingPriceCents === null ? null : String(terms.writingPriceCents),
+    writingTurnaroundDays: terms.writingTurnaroundDays,
+    writingFirstDraftCents: terms.writingFirstDraftCents === null ? null : String(terms.writingFirstDraftCents),
+    writingFinalDraftCents: terms.writingFinalDraftCents === null ? null : String(terms.writingFinalDraftCents),
+    buyerRequirements: terms.buyerRequirements?.trim() || null, revision: nextRevision, updatedAt: now,
+  }).where(eq(listing.id, input.id));
+  await tx.update(listingUrl).set({ websiteUrl, updatedAt: now }).where(eq(listingUrl.listingId, input.id));
+  await tx.update(listingSourcing).set({
+    commercialSource: input.commercialSource, supplierId: input.supplierId,
+    fulfillmentSupplierId: input.fulfillmentSupplierId,
+    urlVisibleWithoutRecharge: input.urlVisibleWithoutRecharge, updatedAt: now,
+  }).where(eq(listingSourcing.listingId, input.id));
+  await tx.insert(listingRevision).values({ listingId: input.id, revision: nextRevision, terms: { ...terms }, actorUserId: userId, reason });
+  await appendAuditEvent(tx, {
+    actorUserId: userId, action: "CATALOG_LISTING_UPDATED", targetType: "marketplace_listing", targetId: input.id,
+    reasonCode: "LISTING_REVISION_CREATED",
+    metadata: { fromRevision: current.revision, toRevision: nextRevision, reason, sourcingChanged: source.commercialSource !== input.commercialSource || source.supplierId !== input.supplierId || source.fulfillmentSupplierId !== input.fulfillmentSupplierId || source.urlVisibleWithoutRecharge !== input.urlVisibleWithoutRecharge },
   });
+  return { id: input.id, revision: nextRevision };
+}
+
+export async function updateListing(headers: Headers, input: UpdateListingInput) {
+  return staffTransaction(headers, "catalog.manage", (tx, userId) => updateListingInTransaction(tx, userId, input));
 }
 
 export async function createSupplier(headers: Headers, input: { name: string; contactName: string; email: string }) {
@@ -220,19 +230,38 @@ export async function createSupplier(headers: Headers, input: { name: string; co
   });
 }
 
-export async function listStaffListings(headers: Headers, requestedPage: unknown = 1) {
+export async function listStaffListings(headers: Headers, requestedPage: unknown = 1, filters: { query?: unknown; status?: unknown; source?: unknown } = {}) {
   return staffTransaction(headers, "catalog.manage", async (tx) => {
-    const [count] = await tx.select({ total: sql<number>`count(*)::int` }).from(listing);
+    const query = typeof filters.query === "string" ? filters.query.trim().slice(0, 120) : "";
+    const status = typeof filters.status === "string" && LISTING_STATUSES.includes(filters.status as ListingStatus) ? filters.status as ListingStatus : "";
+    const source = filters.source === "PLATFORM_OWNED" || filters.source === "SUPPLIER_SOURCED" ? filters.source : "";
+    const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+    const where = and(
+      status ? eq(listing.status, status) : undefined,
+      source ? eq(listingSourcing.commercialSource, source) : undefined,
+      query ? or(
+        ilike(listing.title, pattern), ilike(listingUrl.websiteUrl, pattern),
+        sql`array_to_string(${listing.categories}, ' ') ilike ${pattern}`,
+        and(eq(listingSourcing.commercialSource, "SUPPLIER_SOURCED"), ilike(supplier.name, pattern)),
+      ) : undefined,
+    );
+    const [count] = await tx.select({ total: sql<number>`count(*)::int` }).from(listing)
+      .leftJoin(listingUrl, eq(listingUrl.listingId, listing.id))
+      .leftJoin(listingSourcing, eq(listingSourcing.listingId, listing.id))
+      .leftJoin(supplier, eq(supplier.id, listingSourcing.supplierId))
+      .where(where);
     const pagination = staffCatalogPagination(requestedPage, count?.total ?? 0);
     const rows = await tx.select({
       id: listing.id, title: listing.title, retailPriceCents: listing.retailPriceCents, status: listing.status, revision: listing.revision,
       categories: listing.categories, updatedAt: listing.updatedAt,
       websiteUrl: listingUrl.websiteUrl, commercialSource: listingSourcing.commercialSource,
-      supplierId: listingSourcing.supplierId, urlVisibleWithoutRecharge: listingSourcing.urlVisibleWithoutRecharge,
+      supplierId: listingSourcing.supplierId, supplierName: supplier.name, urlVisibleWithoutRecharge: listingSourcing.urlVisibleWithoutRecharge,
     }).from(listing).leftJoin(listingUrl, eq(listingUrl.listingId, listing.id))
       .leftJoin(listingSourcing, eq(listingSourcing.listingId, listing.id))
+      .leftJoin(supplier, eq(supplier.id, listingSourcing.supplierId))
+      .where(where)
       .orderBy(desc(listing.updatedAt), desc(listing.id)).limit(pagination.limit).offset(pagination.offset);
-    return { ...pagination, items: rows };
+    return { ...pagination, items: rows, query, status, source };
   });
 }
 

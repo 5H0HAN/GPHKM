@@ -1,8 +1,10 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { requireStaffAccess } from "@/server/auth/staff";
+import { logSafeFailure } from "@/server/observability/safe-log";
 import { LISTING_CATEGORY_NAMES, LISTING_LANGUAGES, LISTING_LINK_TYPES, LISTING_LINK_VALIDITIES } from "@/modules/catalog/taxonomy";
 import type { ListingTerms } from "@/modules/catalog/domain";
 import { createDraftListing, transitionListing, updateListing } from "@/server/catalog/admin";
@@ -98,11 +100,21 @@ export async function editListingAction(form: FormData) {
 export async function transitionListingAction(form: FormData) {
   const id = form.get("id");
   const status = form.get("status");
-  if (typeof id !== "string" || typeof status !== "string") redirect("/staff/catalog?error=invalid");
+  const validStatuses: ListingStatus[] = ["DRAFT", "REVIEW", "LIVE", "PAUSED", "ARCHIVED"];
+  if (typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id) || typeof status !== "string" || !validStatuses.includes(status as ListingStatus)) {
+    redirect("/staff/catalog?error=invalid-request");
+  }
   try {
     await transitionListing(await headers(), id, status as ListingStatus);
-  } catch {
-    redirect("/staff/catalog?error=transition-failed");
+  } catch (error) {
+    if (error instanceof Error && error.message === "Unauthorized") redirect("/staff/sign-in");
+    if (error instanceof Error && error.message === "Forbidden") redirect("/staff");
+    const reason = error instanceof Error && error.message === "Listing is not ready to publish" ? "publish-requirements"
+      : error instanceof Error && error.message === "Invalid listing transition" ? "invalid-transition"
+        : error instanceof Error && error.message === "Listing is incomplete" ? "listing-incomplete"
+          : error instanceof Error && error.message === "Listing unavailable" ? "listing-unavailable" : "transition-failed";
+    logSafeFailure("catalog_listing_status_transition_failed", error, randomUUID(), { reasonCode: reason });
+    redirect(`/staff/catalog?error=${reason}&listing=${encodeURIComponent(id)}`);
   }
   redirect("/staff/catalog?updated=1");
 }
