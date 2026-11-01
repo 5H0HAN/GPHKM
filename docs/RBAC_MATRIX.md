@@ -50,6 +50,9 @@ The v1 staff model uses three bundles: Admin, Finance, and Super Admin. Each ord
 | Record or revoke an audited customer-redistribution attestation for a current metric observation | No | No | Yes |
 | View supplier costs and gross-profit reports | No by default | Yes | Yes |
 | Handle routine fulfillment, supplier contact, and customer updates | Yes | No | Yes |
+| Search and view customer directory, customer-safe operational context, and active organization wallet balance projections (`customer.directory.read`) | Yes | No | Yes |
+| Change existing customer organization roles or membership status (`customer.account.manage`) | Yes, audited | No | Yes, audited |
+| Suspend or reactivate a customer account (`customer.account.manage`) | Yes, audited; suspension revokes sessions | No | Yes, audited; suspension revokes sessions |
 | Generate minimum-data handoff for assigned fulfillment | Yes, audited | No | Yes, audited |
 | Record actual supplier transfer event with evidence | No | Yes | Yes |
 | Download supplier transfer receipt evidence | No | Yes, audited | Yes, audited |
@@ -104,6 +107,9 @@ See the detailed packet lifecycle and reconciliation contract in [Supplier Email
 | Internal JSON export | No | No | No | Yes |
 | Payment payload/credentials | No | No | Restricted evidence only | Restricted, audited |
 | Organization billing profile | Owner only | No | No | No by default |
+| Customer directory identity and membership projection | No | Admin/Super Admin only | No | Admin/Super Admin only |
+| Shared USD wallet balance projection for active organization memberships in the directory | No | Admin/Super Admin only | No | Admin/Super Admin only |
+| Wallet ledger, holds, recharge history, payment evidence, or order content from the directory | No | No | No | No |
 
 Use field-level allowlists. Access to a row or screen does not grant every field in the underlying record.
 
@@ -111,6 +117,7 @@ Use field-level allowlists. Access to a row or screen does not grant every field
 
 - Customer query and mutation scope is derived from active membership, not caller-supplied organization ID alone.
 - Staff commands resolve active staff authority and exact permission at action time.
+- Only Admin and Super Admin receive `customer.directory.read`; cross-organization directory reads use allowlisted database functions that repeat the active-role check. The directory includes only the current shared USD wallet balance projection for an organization where the customer has an active membership. It does not expose holds, ledger entries, recharge history, payment evidence, or order content; wallet balance reads are audited. Membership and account state changes are audited database commands. Suspension revokes customer sessions; the last active organization Owner cannot be removed or demoted.
 - Apply RLS to organization-owned records using a trusted transaction-scoped tenant context and restricted runtime roles.
 - Test customer/admin/finance/Super Admin boundaries, cross-organization denial, exports, and supplier handoffs under the actual runtime roles.
 - Denials and sensitive reads/writes are auditable without logging private article content or provider secrets.

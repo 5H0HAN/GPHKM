@@ -17,6 +17,7 @@
 - A Support Case belongs to an organization and links to an order/item where applicable. It records requester, assigned Admin, reason, customer-visible messages, private staff notes, evidence references, status history, and any Finance/Super Admin refund decision.
 - An Order Item Assignment determines which Admin may access its article, supplier packet, and manual handoff evidence. Assignment changes are audited.
 - A Staff Membership grants Admin, Finance, or Super Admin permissions.
+- A Customer Account Control records the current staff-imposed active/suspended state for a customer identity; suspension revokes customer sessions and every transition is audited. Organization membership remains a separate per-organization role/access relation.
 - Supplier Handoff Packet groups eligible items for one supplier within one order; immutable versions snapshot the recipient, exact content, consent references, and included items.
 - Handoff Attempt records automatic provider or manual-send attempt, event/message references, status, and evidence without overwriting prior attempts.
 - Audit Events record sensitive commands, packet/export/send events, actual manual supplier transfer events, and money/access changes. Audit records are append-only; corrections are linked follow-up events.
@@ -49,7 +50,8 @@
 | Data family | Owner/scope | Customer access | Staff access |
 |---|---|---|---|
 | User/session | User | Self | Restricted identity/security operations |
-| Membership | Organization | Own active organization membership | Admin/Super Admin as assigned |
+| Membership | Organization | Own active organization membership | Admin/Super Admin; customer support directory and audited change commands |
+| Customer account control | Customer identity | No direct control | Admin/Super Admin; suspension/reactivation audited |
 | Wallet/ledger/top-up | Organization | Owner sees history; Members see balance/sufficiency through restricted projections | Finance/Super Admin |
 | Access grant | Organization | Effective access state only | Super Admin policy access; scoped Finance support |
 | Listing customer fields | Platform catalog | Live projection when signed in and entitled | Admin and Super Admin |

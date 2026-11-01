@@ -190,7 +190,7 @@ export const catalogImportBatch = pgTable("catalog_import_batch", {
   sourceObjectKey: text("source_object_key"),
   sourceBytes: integer("source_bytes"),
   contentSha256: text("content_sha256").notNull(),
-  mapping: jsonb("mapping").$type<Record<string, number>>().notNull(),
+  mapping: jsonb("mapping").$type<Record<string, number | string | string[] | Record<string, string> | Record<string, string[]>>>().notNull(),
   status: catalogImportStatus("status").notNull().default("STAGED"),
   createdByUserId: text("created_by_user_id").notNull().references(() => user.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -212,6 +212,8 @@ export const catalogImportRow = pgTable("catalog_import_row", {
   rowNumber: integer("row_number").notNull(),
   originalValues: jsonb("original_values").$type<Record<string, unknown>>().notNull(),
   stagedValues: jsonb("staged_values").$type<Record<string, unknown>>().notNull(),
+  platformCategoryOverride: text("platform_category_override").array(),
+  proposedRetailPriceCents: numeric("proposed_retail_price_cents", { precision: 20, scale: 0 }),
   errors: jsonb("errors").$type<Array<{ field: string; code: string }>>().notNull().default([]),
   warnings: jsonb("warnings").$type<string[]>().notNull().default([]),
   duplicateOfRow: integer("duplicate_of_row"),
@@ -231,6 +233,8 @@ export const catalogImportRow = pgTable("catalog_import_row", {
   index("catalog_import_row_status_idx").on(t.batchId, t.status),
   check("catalog_import_row_number_positive", sql`${t.rowNumber} > 0`),
   check("catalog_import_row_json_shapes", sql`jsonb_typeof(${t.originalValues}) = 'object' and jsonb_typeof(${t.stagedValues}) = 'object' and jsonb_typeof(${t.errors}) = 'array' and jsonb_typeof(${t.warnings}) = 'array' and jsonb_typeof(${t.duplicateOfListingIds}) = 'array'`),
+  check("catalog_import_row_platform_categories", sql`${t.platformCategoryOverride} is null or (cardinality(${t.platformCategoryOverride}) between 1 and 7 and array_position(${t.platformCategoryOverride}, null) is null)`),
+  check("catalog_import_row_proposed_retail_price", sql`${t.proposedRetailPriceCents} is null or ${t.proposedRetailPriceCents} between 1 and 9007199254740991`),
   check("catalog_import_duplicate_resolution", sql`(
     ${t.duplicateDecision} is null and ${t.duplicateReason} is null and ${t.duplicateDecidedByUserId} is null and ${t.duplicateDecidedAt} is null
     or ${t.duplicateDecision} in ('KEEP_SEPARATE', 'REJECT') and ${t.duplicateReason} is not null and length(btrim(${t.duplicateReason})) > 0

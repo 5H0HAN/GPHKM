@@ -29,7 +29,9 @@ test("staff listing and supplier directory queries use total counts, stable orde
   }
   const catalogPage = readFileSync(new URL("../src/app/staff/(console)/catalog/page.tsx", import.meta.url), "utf8");
   const suppliersPage = readFileSync(new URL("../src/app/staff/(console)/suppliers/page.tsx", import.meta.url), "utf8");
-  assert.match(catalogPage, /listStaffListings\(await headers\(\), requestedPage\)/);
+  assert.match(catalogPage, /listStaffListings\(requestHeaders, first\(params\.page\) \?\? "1", \{ query: search, status, source \}\)/);
+  assert.match(server, /array_to_string\(\$\{listing\.categories\}, ' '\) ilike \$\{pattern\}/);
+  assert.match(server, /supplierName: supplier\.name/);
   assert.match(suppliersPage, /listStaffSuppliersPage\(requestHeaders, \{ page: first\(query\.page\) \?\? "1", query: search, status \}\)/);
   assert.match(catalogPage, /aria-label="Catalog pages"/);
   assert.match(suppliersPage, /aria-label="Supplier directory pages"/);

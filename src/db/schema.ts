@@ -107,6 +107,19 @@ export const organizationMember = pgTable("organization_member", {
   check("organization_member_role_valid", sql`${table.role} in ('OWNER', 'MEMBER')`),
 ]).enableRLS();
 
+// A suspension blocks future customer access and revokes sessions. Status
+// transitions happen through audited database commands, never direct writes.
+export const customerAccountControl = pgTable("customer_account_control", {
+  userId: text("user_id").primaryKey().references(() => user.id),
+  state: text("state", { enum: ["ACTIVE", "SUSPENDED"] }).notNull(),
+  reasonCode: text("reason_code").notNull(),
+  changedByUserId: text("changed_by_user_id").notNull().references(() => user.id),
+  changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  check("customer_account_control_state_valid", sql`${table.state} in ('ACTIVE', 'SUSPENDED')`),
+  check("customer_account_control_reason_valid", sql`${table.reasonCode} in ('CUSTOMER_REQUEST', 'POLICY_REVIEW', 'SECURITY_REVIEW', 'OTHER_OPERATIONAL')`),
+]).enableRLS();
+
 // The balance is a database-maintained projection of append-only ledger entries.
 export const walletAccount = pgTable("wallet_account", {
   organizationId: text("organization_id").primaryKey().references(() => organization.id),

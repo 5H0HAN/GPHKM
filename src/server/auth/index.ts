@@ -11,6 +11,7 @@ import { assertLoopbackUrl, authTrustedProxyCidrs, hasStrongAuthSecret, localAut
 import { authSurfaceOrigins, type AuthSurface } from "./surfaces";
 import { currentLegalDocuments } from "@/modules/legal/policy";
 import { customerAuthEmailAvailable, sendCustomerAuthEmailInBackground } from "./email-delivery";
+import { isCustomerAccountSuspended } from "@/server/identity/customer-access";
 
 const CUSTOMER_SESSION_REVOCATION_PATHS = new Set([
   "/revoke-session",
@@ -160,6 +161,7 @@ function createAuth(surface: AuthSurface) {
         }
       } } },
       session: { create: { before: async (session) => {
+        if (surface === "customer" && await isCustomerAccountSuspended(session.userId)) return false;
         const [staff] = await db.transaction(async (tx) => {
           await tx.execute(sql`select set_config('app.user_id', ${session.userId}, true)`);
           return tx.select({ active: schema.staffAccount.active })

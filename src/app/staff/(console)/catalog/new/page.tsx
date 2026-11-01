@@ -23,6 +23,6 @@ export default async function NewListingPage({ searchParams }: { searchParams: P
     <header className={styles.header}><div><p className={styles.eyebrow}>CATALOG / NEW LISTING</p><h1>Create a draft</h1><p className={styles.lede}>New listings stay private until reviewed and explicitly published.</p></div><Link className={styles.backLink} href="/staff/catalog">Back to listings</Link></header>
     {query.error === "invalid-options" && <p className={styles.error}>Listing not created. Choose a supported language, link type, and placement term, then select 1–7 valid categories.</p>}
     {query.error && query.error !== "invalid-options" && <p className={styles.error}>Listing not created. Check the required details and supplier selection, then try again.</p>}
-    <ListingForm suppliers={suppliers} initialSupplierId={initialSupplierId} initialCommercialSource={initialCommercialSource} action={createListingAction}><button className={styles.button} type="submit">Save draft listing</button></ListingForm>
+    <ListingForm suppliers={suppliers} initialSupplierId={initialSupplierId} initialCommercialSource={initialCommercialSource} action={createListingAction}><button className={`${styles.button} ${styles.formSubmit}`} type="submit">Save draft listing</button></ListingForm>
   </>;
 }

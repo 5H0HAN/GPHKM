@@ -16,6 +16,8 @@ export type StaffPermission =
   | "access-policy.manage"
   | "supplier-report.export"
   | "staff.manage"
+  | "customer.directory.read"
+  | "customer.account.manage"
   | "organization.closure.manage"
   | "audit.read";
 
@@ -28,6 +30,8 @@ const grants: Record<StaffRole, readonly StaffPermission[]> = {
     "fulfillment.assigned.read",
     "refund.pre-handoff.approve",
     "organization.closure.manage",
+    "customer.directory.read",
+    "customer.account.manage",
     "audit.read",
   ],
   FINANCE: [
@@ -52,6 +56,8 @@ const grants: Record<StaffRole, readonly StaffPermission[]> = {
     "access-policy.manage",
     "supplier-report.export",
     "staff.manage",
+    "customer.directory.read",
+    "customer.account.manage",
     "organization.closure.manage",
     "audit.read",
   ],

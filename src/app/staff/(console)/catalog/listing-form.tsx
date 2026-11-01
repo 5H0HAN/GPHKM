@@ -3,6 +3,8 @@ import { LISTING_CATEGORY_NAMES, LISTING_LANGUAGES, LISTING_LINK_TYPES, LISTING_
 import type { ListingTerms } from "@/modules/catalog/domain";
 import type { listStaffSuppliers } from "@/server/catalog/admin";
 import styles from "./catalog.module.css";
+import { ListingSourceFields } from "./listing-source-fields";
+import { ListingWritingFields } from "./listing-writing-fields";
 
 type SupplierRows = Awaited<ReturnType<typeof listStaffSuppliers>>;
 type ListingEdit = { id: string; revision: number; terms: ListingTerms; sourcing: {
@@ -46,21 +48,23 @@ export function ListingForm({ suppliers, listing, action, children, initialSuppl
     </fieldset>
     <fieldset><legend>Internal sourcing</legend>
       <div className={styles.formGrid}>
-        <label>Commercial source<select name="commercialSource" defaultValue={listing?.sourcing.commercialSource ?? initialCommercialSource ?? "PLATFORM_OWNED"}><option value="PLATFORM_OWNED">Platform owned</option><option value="SUPPLIER_SOURCED">Supplier sourced</option></select></label>
-        <label>Source supplier<select name="supplierId" defaultValue={listing?.sourcing.supplierId ?? initialSupplierId ?? ""}><option value="">Choose if supplier sourced</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>
+        <ListingSourceFields
+          suppliers={suppliers}
+          initialCommercialSource={listing?.sourcing.commercialSource ?? initialCommercialSource ?? "PLATFORM_OWNED"}
+          initialSupplierId={listing?.sourcing.supplierId ?? initialSupplierId ?? ""}
+        />
         <label>Fulfillment supplier (optional)<select name="fulfillmentSupplierId" defaultValue={listing?.sourcing.fulfillmentSupplierId ?? ""}><option value="">None</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>
         <label>Show website URL during allowed browsing?<select name="urlVisibleWithoutRecharge" defaultValue={listing?.sourcing.urlVisibleWithoutRecharge ? "yes" : "no"}><option value="no">No, keep hidden</option><option value="yes">Yes</option></select></label>
       </div>
     </fieldset>
     <fieldset><legend>GPHKM Writing (optional)</legend>
-      <label>Offer writing?<select name="writingEnabled" defaultValue={terms?.writingEnabled ? "yes" : "no"}><option value="no">No</option><option value="yes">Yes</option></select></label>
-      <div className={styles.formGrid}>
-        <label>Writing price (USD)<input name="writingPrice" type="number" min="0" step="0.01" defaultValue={dollars(terms?.writingPriceCents ?? null)} /></label>
-        <label>Writing turnaround (days)<input name="writingTurnaroundDays" type="number" min="1" max="365" defaultValue={terms?.writingTurnaroundDays ?? ""} /></label>
-        <label>First draft stage (USD)<input name="writingFirstDraft" type="number" min="0" step="0.01" defaultValue={dollars(terms?.writingFirstDraftCents ?? null)} /></label>
-        <label>Final draft stage (USD)<input name="writingFinalDraft" type="number" min="0" step="0.01" defaultValue={dollars(terms?.writingFinalDraftCents ?? null)} /></label>
-      </div>
-      <p className={styles.hint}>When enabled, the two disclosed stage prices must add up to the writing price.</p>
+      <ListingWritingFields
+        enabledInitially={terms?.writingEnabled ?? false}
+        price={dollars(terms?.writingPriceCents ?? null)}
+        turnaroundDays={terms?.writingTurnaroundDays ?? ""}
+        firstDraftPrice={dollars(terms?.writingFirstDraftCents ?? null)}
+        finalDraftPrice={dollars(terms?.writingFinalDraftCents ?? null)}
+      />
     </fieldset>
     {listing && <label>Reason for this change<input name="reason" required minLength={5} maxLength={500} placeholder="For example, updated retail price after supplier review" /></label>}
     {children}

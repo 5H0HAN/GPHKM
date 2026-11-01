@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { strToU8, zipSync } from "fflate";
 
 const imports = await import("../src/modules/catalog/imports.ts");
+const importReview = await import("../src/modules/catalog/import-review.ts");
 
 function xlsxBuffer({ formula = false, external = false, macro = false, extra = {} } = {}) {
   const cells = formula
@@ -83,7 +84,8 @@ test("mapping and staging validate listing fields and duplicate review while rej
   assert.equal("sourceCostCents" in persisted.stagedValues, false);
   assert.equal(candidates[1].duplicateOfRow, 2);
   assert.equal(candidates[2].status, "INVALID");
-  const resolved = imports.resolveDuplicate(candidates[0], {
+  const categorized = imports.applyPlatformCategoryOverride(candidates[0], ["Business", "Technology & Gadgets"]);
+  const resolved = imports.resolveDuplicate(categorized, {
     decision: "KEEP_SEPARATE", staffUserId: "staff-1", reason: "Supplier has distinct placement terms", decidedAt: "2026-10-28T00:00:00.000Z",
   });
   assert.equal(resolved.status, "READY");
@@ -107,8 +109,48 @@ test("imports can map a later header row and safely normalize bare domains", () 
   assert.equal(candidates[0].values.websiteUrl, "https://example.org/");
   assert.equal(candidates[0].status, "NEEDS_REVIEW");
   assert.equal(candidates[1].rowNumber, 4);
-  assert.equal(candidates[1].status, "INVALID");
+  assert.equal(candidates[1].status, "NEEDS_REVIEW");
+  assert.ok(candidates[1].warnings.includes("WEBSITE_NEW_MARKER_CONFIRMATION_REQUIRED"));
   assert.throws(() => imports.stageImportRows({ rows, mapping: { websiteUrl: 0 }, existingListings: [], headerRowNumber: 101 }), /HEADER_ROW_INVALID/);
+});
+
+test("supplier category labels require a row-specific platform selection and keep the original label", () => {
+  const familiarRows = [["domain", "title", "description", "country", "language", "category", "link", "term", "days", "sponsored"],
+    ["general.example", "General Site", "Description", "US", "English", "General", "DOFOLLOW", "PERMANENT", "10", "yes"]];
+  const rows = [["domain", "title", "description", "country", "language", "category", "link", "term", "days", "sponsored"],
+    ["example.com", "Example", "Description", "US", "English", "Fintech and Money", "DOFOLLOW", "PERMANENT", "10", "yes"]];
+  const mapping = { websiteUrl: 0, title: 1, description: 2, countryCode: 3, primaryLanguage: 4, categories: 5,
+    linkType: 6, linkValidity: 7, turnaroundDays: 8, sponsoredContentMarking: 9 };
+  const pending = imports.stageImportRows({ rows, mapping, existingListings: [] })[0];
+  assert.equal(pending.status, "NEEDS_REVIEW");
+  assert.ok(pending.warnings.includes("FIELD_VALUE_NEEDS_REVIEW:categories"));
+  const familiar = imports.stageImportRows({ rows: familiarRows, mapping, existingListings: [] })[0];
+  assert.equal(familiar.status, "NEEDS_REVIEW");
+  assert.ok(familiar.warnings.includes("CATEGORY_ROW_MAPPING_REQUIRED"));
+  assert.equal(familiar.values.categories, undefined);
+  const override = imports.applyPlatformCategoryOverride(pending, ["Fintech"]);
+  assert.equal(override.status, "READY");
+  assert.equal(override.values.categories, "Fintech");
+  assert.equal(imports.getPersistableImportValues(pending, rows[1], mapping).originalValues.categories, "Fintech and Money");
+});
+
+test("row review items name the fields to fix and open the right review action", () => {
+  const items = importReview.buildImportReviewItems({
+    status: "NEEDS_REVIEW",
+    values: { title: "Site", description: "Description", countryCode: "US", turnaroundDays: 1, sponsoredContentMarking: true },
+    errors: [],
+    warnings: ["WEBSITE_NEW_MARKER_CONFIRMATION_REQUIRED", "TURNAROUND_INSTANT_REVIEW_REQUIRED", "LISTING_DETAILS_NEED_REVIEW", "CATEGORY_ROW_MAPPING_REQUIRED"],
+    platformCategories: [], retailPriceSaved: false, duplicateOfRow: null,
+  });
+  assert.deepEqual(items.map((item) => item.label), ["Website URL", "Turnaround days", "GPHKM categories", "Language", "Link type", "Placement term", "USD retail price"]);
+  assert.ok(items.every((item) => !/^[A-Z0-9_]+$/.test(item.message)));
+  const duplicate = importReview.buildImportReviewItems({
+    status: "DUPLICATE_REVIEW",
+    values: { title: "Site", description: "Description", countryCode: "US", primaryLanguage: "English", linkType: "DOFOLLOW", linkValidity: "PERMANENT", turnaroundDays: 3, sponsoredContentMarking: true },
+    errors: [], warnings: ["POSSIBLE_DUPLICATE_DOMAIN"], platformCategories: ["Business"], retailPriceSaved: true, duplicateOfRow: 14,
+  });
+  assert.equal(duplicate.at(-1).section, "decisions");
+  assert.match(duplicate.at(-1).message, /row 14/);
 });
 
 test("supplier imports preserve the supplier as fulfillment contact", async () => {
@@ -122,18 +164,97 @@ test("supplier imports preserve the supplier as fulfillment contact", async () =
 
 test("import review compares bounded existing listing snapshots without source costs", async () => {
   const server = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
-  const page = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/page.tsx", import.meta.url), "utf8");
+  const rowView = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/import-row.tsx", import.meta.url), "utf8");
   assert.match(server, /duplicateOfListingIds\.slice\(0, 3\)/);
   assert.match(server, /listing\.retailPriceCents/);
   assert.match(server, /listing\.revision/);
   assert.match(server, /listingSourcing\.commercialSource/);
   assert.match(server, /sourceSupplierName: importSourceSupplier\.name/);
   assert.match(server, /fulfillmentSupplierName: importFulfillmentSupplier\.name/);
-  assert.match(page, /Current listing/);
-  assert.match(page, /Imported value/);
-  assert.match(page, /Internal source:/);
-  assert.match(page, /Import review never changes an existing listing/);
+  assert.match(rowView, /Current listing/);
+  assert.match(rowView, /Imported value/);
+  assert.match(rowView, /Internal source:/);
+  assert.match(rowView, /match\.sourceSupplierId !== supplierId/);
+  assert.match(rowView, /Supplier conflict:/);
+  assert.match(rowView, /website match found/);
+  assert.match(rowView, /rowActionDialogRef/);
+  assert.match(rowView, /<dialog[\s\S]*?Review row \{row\.rowNumber\}/);
+  assert.match(rowView, /Review and edit row/);
+  assert.match(rowView, /setRowActionsOpen\(true\)/);
+  assert.match(rowView, /Import review never changes an existing listing/);
   assert.doesNotMatch(server.slice(server.indexOf("const matches ="), server.indexOf("const matchesById")), /sourceCost|supplierContact/);
+});
+
+test("staged imports support one ready row without applying other selected rows", async () => {
+  const page = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/page.tsx", import.meta.url), "utf8");
+  const actions = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/actions.ts", import.meta.url), "utf8");
+  const rowView = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/import-row.tsx", import.meta.url), "utf8");
+  const server = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
+  assert.match(page, /action=\{applySelectedImportAction\}/);
+  assert.match(rowView, /Import row to inventory/);
+  assert.match(rowView, /buildImportReviewItems/);
+  assert.match(rowView, /Open correction/);
+  assert.doesNotMatch(rowView, /error\.code|warnings\.join/);
+  assert.match(rowView, /disabled=\{!canCreateDraft \|\| applying\}/);
+  assert.match(rowView, /name="proposedRetailPriceUsd"/);
+  assert.match(page, /action=\{applyAllImportRowsAction\}/);
+  assert.match(rowView, /Supplier category/);
+  assert.match(rowView, /GPHKM categories/);
+  assert.match(page, /Source columns and mapping/);
+  assert.match(page, /Detected fields/);
+  assert.match(page, /Next row needing attention/);
+  assert.match(rowView, /id=\{`import-row-\$\{row\.id\}`\}/);
+  assert.doesNotMatch(page, /Map supplier categories|categorySources|saveImportCategoryMappings/);
+  assert.match(server, /if \(!row\.platformCategoryOverride\?\.length\) throw new Error\("IMPORT_CATEGORY_SELECTION_REQUIRED"\)/);
+  assert.match(rowView, /useActionState\(applySingleImportRowAction, null\)/);
+  assert.match(actions, /applySelectedImportRows\(await headers\(\), batchId, \[\{ rowId \}\]\)/);
+  assert.match(actions, /applySelectedImportRows\(await headers\(\), batchId, selections\)/);
+  assert.match(server, /proposedRetailPriceCents/);
+  assert.match(server, /appliedListings\.push\(\{ rowId: row\.id, id: created\.id, title: terms\.title, websiteUrl: terms\.websiteUrl/);
+  assert.match(rowView, /Created as an unpublished supplier draft/);
+  assert.match(rowView, /Open listing details/);
+});
+
+test("older staged batch category mappings cannot bypass row-level category review", async () => {
+  const migration = await readFile(new URL("../src/db/migrations/0143_import_categories_are_row_scoped.sql", import.meta.url), "utf8");
+  const server = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
+  assert.match(migration, /mapping = mapping - '__categoryMappings'/);
+  assert.match(migration, /staged_values = staged_values - 'categories'/);
+  assert.match(migration, /THEN 'NEEDS_REVIEW'/);
+  assert.match(server, /row\.platformCategoryOverride\?\.length/);
+});
+
+test("staged import corrections stay in the edited row and preserve other row inputs", async () => {
+  const page = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/page.tsx", import.meta.url), "utf8");
+  const rowView = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/import-row.tsx", import.meta.url), "utf8");
+  const actions = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/actions.ts", import.meta.url), "utf8");
+  const server = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
+  assert.match(rowView, /useActionState\(correctImportRowAction, null\)/);
+  assert.match(rowView, /Row saved\. It is ready to import as an unpublished draft/);
+  assert.match(page, /<ImportStagedRow key=\{row\.id\}/);
+  assert.doesNotMatch(page, /query\.corrected|query\.single/);
+  assert.match(actions, /kind: "saved", row: await correctStagedImportRow/);
+  assert.doesNotMatch(actions.slice(actions.indexOf("export async function correctImportRowAction"), actions.indexOf("export async function applySingleImportRowAction")), /redirectResult|target\(/);
+  assert.match(actions, /selectedCategories, retailPriceUsd/);
+  assert.match(server, /const effectiveCategories = platformCategories\.length \? platformCategories : null/);
+  assert.match(server, /platformCategoryOverride: effectiveCategories/);
+});
+
+test("applied staged rows retain the created website and listing details", async () => {
+  const server = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
+  const rowView = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/import-row.tsx", import.meta.url), "utf8");
+  assert.match(server, /appliedListingId: catalogImportRow\.appliedListingId/);
+  assert.match(server, /appliedListing: applied \? \{ id: applied\.id, title: applied\.title, websiteUrl: applied\.websiteUrl/);
+  assert.match(rowView, /appliedListing\.websiteUrl/);
+  assert.match(rowView, /appliedListing\.title/);
+});
+
+test("recent staged batch removal also returns through the staff-hosted action form", async () => {
+  const page = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/page.tsx", import.meta.url), "utf8");
+  const action = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/recent-actions.ts", import.meta.url), "utf8");
+  assert.match(page, /ImportActionForm action=\{discardRecentImportBatchAction\}/);
+  assert.match(action, /return \{ redirectTo: destination\(/);
+  assert.doesNotMatch(action, /from "next\/navigation"|\bredirect\(/);
 });
 
 test("manual column mapping accepts bounded zero-based indexes only", () => {
@@ -157,21 +278,24 @@ test("Google Sheet references accept only fixed validated Google hosts", () => {
   ]) assert.throws(() => imports.extractPublicSheetReference(value), /REFERENCE_INVALID/);
 });
 
-test("public Sheets fetch uses the fixed CSV endpoint and rejects redirects", async () => {
+test("public Sheets fetch follows only approved Google redirects and rejects unsafe destinations", async () => {
   const originalFetch = globalThis.fetch;
-  let requestUrl;
-  let requestOptions;
+  const requests = [];
   globalThis.fetch = async (input, options) => {
-    requestUrl = String(input);
-    requestOptions = options;
+    requests.push({ url: String(input), redirect: options.redirect });
+    if (requests.length === 1) return new Response(null, { status: 302, headers: { location: "https://drive.googleusercontent.com/download.csv" } });
     return new Response("domain,title\nhttps://example.com,Example", { status: 200, headers: { "content-type": "text/csv; charset=utf-8" } });
   };
   try {
     const csv = await imports.fetchPublicSheetCsv("https://docs.google.com/spreadsheets/d/1aBcdefghijklmnopQRSTuvwxYZ1234567890/edit?gid=17");
     assert.match(csv, /^domain,title/);
-    assert.equal(requestUrl, "https://docs.google.com/spreadsheets/d/1aBcdefghijklmnopQRSTuvwxYZ1234567890/export?format=csv&gid=17");
-    assert.equal(requestOptions.redirect, "error");
+    assert.deepEqual(requests, [
+      { url: "https://docs.google.com/spreadsheets/d/1aBcdefghijklmnopQRSTuvwxYZ1234567890/export?format=csv&gid=17", redirect: "manual" },
+      { url: "https://drive.googleusercontent.com/download.csv", redirect: "manual" },
+    ]);
     globalThis.fetch = async () => { throw new Error("redirect denied"); };
+    await assert.rejects(imports.fetchPublicSheetCsv("https://docs.google.com/spreadsheets/d/1aBcdefghijklmnopQRSTuvwxYZ1234567890/edit"), /SHEET_FETCH_FAILED/);
+    globalThis.fetch = async () => new Response(null, { status: 302, headers: { location: "http://127.0.0.1/internal" } });
     await assert.rejects(imports.fetchPublicSheetCsv("https://docs.google.com/spreadsheets/d/1aBcdefghijklmnopQRSTuvwxYZ1234567890/edit"), /SHEET_FETCH_FAILED/);
   } finally {
     globalThis.fetch = originalFetch;

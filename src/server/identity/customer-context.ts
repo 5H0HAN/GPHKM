@@ -10,6 +10,7 @@ import { isStaffIdentity } from "@/server/auth/identity-domain";
 import type { DbTransaction } from "@/server/audit/append";
 import { requireCurrentLegalAcceptance } from "@/server/legal/consent";
 import { logSafeEvent } from "@/server/observability/safe-log";
+import { isCustomerAccountSuspended } from "./customer-access";
 
 export async function requireVerifiedCustomer(headers: Headers) {
   const requestId = randomUUID();
@@ -28,6 +29,12 @@ export async function requireVerifiedCustomer(headers: Headers) {
   if (await isStaffIdentity(result.user.id)) {
     logSafeEvent("customer_authorization_denied", requestId, {
       actorId: result.user.id, surface: "customer", reasonCode: "STAFF_IDENTITY_NOT_CUSTOMER",
+    });
+    throw new Error("Forbidden");
+  }
+  if (await isCustomerAccountSuspended(result.user.id)) {
+    logSafeEvent("customer_authorization_denied", requestId, {
+      actorId: result.user.id, surface: "customer", reasonCode: "CUSTOMER_ACCOUNT_SUSPENDED",
     });
     throw new Error("Forbidden");
   }

@@ -15,7 +15,15 @@ function pageValue(form: FormData, key: string) {
 }
 
 function financeQuery(form: FormData) {
-  return `listingsPage=${pageValue(form, "listingsPage")}&orderItemsPage=${pageValue(form, "orderItemsPage")}&transfersPage=${pageValue(form, "transfersPage")}`;
+  const params = new URLSearchParams({
+    listingsPage: pageValue(form, "listingsPage"),
+    orderItemsPage: pageValue(form, "orderItemsPage"),
+    transfersPage: pageValue(form, "transfersPage"),
+    coveragePage: pageValue(form, "coveragePage"),
+  });
+  const search = value(form, "q").trim().slice(0, 100);
+  if (search) params.set("q", search);
+  return params.toString();
 }
 
 export async function searchSupplierTransferItemsAction(supplierId: string, query: string) {

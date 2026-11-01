@@ -64,6 +64,7 @@ export async function POST(request: Request) {
     if (!form) return redirectToStaff("/staff/suppliers/imports?error=size");
     const supplierId = form.get("supplierId");
     const sourceType = form.get("sourceType");
+    const mappingMode = form.get("mappingMode") === "MANUAL" ? "MANUAL" : "AUTO";
     if (typeof supplierId !== "string" || !["CSV", "XLSX", "GOOGLE_SHEETS"].includes(String(sourceType))) {
       return redirectToStaff("/staff/suppliers/imports?error=invalid");
     }
@@ -75,13 +76,16 @@ export async function POST(request: Request) {
     let mapping: ImportMapping;
     try { mapping = parseColumnMapping(fields); } catch { return redirectToStaff("/staff/suppliers/imports?error=mapping"); }
     const headerRowRaw = form.get("headerRowNumber");
-    const headerRowNumber = headerRowRaw === null ? 1 : typeof headerRowRaw === "string" && /^\d{1,3}$/.test(headerRowRaw) ? Number(headerRowRaw) : 0;
-    if (!Number.isInteger(headerRowNumber) || headerRowNumber < 1 || headerRowNumber > 100) return redirectToStaff("/staff/suppliers/imports?error=mapping");
+    let headerRowNumber: number | null = null;
+    if (mappingMode === "MANUAL") {
+      headerRowNumber = typeof headerRowRaw === "string" && /^\d{1,3}$/.test(headerRowRaw) ? Number(headerRowRaw) : 0;
+      if (!Number.isInteger(headerRowNumber) || headerRowNumber < 1 || headerRowNumber > 100) return redirectToStaff("/staff/suppliers/imports?error=mapping");
+    }
     let result: { batchId: string; rowCount: number };
     if (sourceType === "GOOGLE_SHEETS") {
       const reference = form.get("sheetReference");
       if (typeof reference !== "string") return redirectToStaff("/staff/suppliers/imports?error=source");
-      result = await stageInventoryImport(request.headers, { supplierId, sourceType, sheetReference: reference, headerRowNumber, mapping });
+      result = await stageInventoryImport(request.headers, { supplierId, sourceType, sheetReference: reference, headerRowNumber, mappingMode, mapping });
     } else {
       const file = form.get("file");
       if (!(file instanceof File) || file.size < 1 || file.size > IMPORT_LIMITS.fileBytes) return redirectToStaff("/staff/suppliers/imports?error=file");
@@ -89,13 +93,29 @@ export async function POST(request: Request) {
       const sheetIndex = typeof sheetIndexRaw === "string" && /^\d{1,2}$/.test(sheetIndexRaw) ? Number(sheetIndexRaw) : 0;
       result = await stageInventoryImport(request.headers, {
         supplierId, sourceType: sourceType as "CSV" | "XLSX",
-        file: { name: file.name, bytes: Buffer.from(await file.arrayBuffer()) }, sheetIndex, headerRowNumber, mapping,
+        file: { name: file.name, bytes: Buffer.from(await file.arrayBuffer()) }, sheetIndex, headerRowNumber, mappingMode, mapping,
       });
     }
     return redirectToStaff(`/staff/suppliers/imports/${result.batchId}?staged=${result.rowCount}`);
   } catch (error) {
     if (error instanceof Error && error.message === "IMPORT_XLSX_PARSER_BUSY") {
       return redirectToStaff("/staff/suppliers/imports?error=busy");
+    }
+    if (error instanceof Error && error.message.startsWith("SHEET_")) {
+      if (error.message === "SHEET_REFERENCE_INVALID") return redirectToStaff("/staff/suppliers/imports?error=source");
+      const code = error.message === "SHEET_RESPONSE_TOO_LARGE" ? "sheet-size"
+        : error.message === "SHEET_ACCESS_DENIED" ? "sheet-access"
+        : error.message === "SHEET_EXPORT_UNAVAILABLE" ? "sheet-export" : "sheet-fetch";
+      return redirectToStaff(`/staff/suppliers/imports?error=${code}`);
+    }
+    if (error instanceof Error && (error.message.includes("MAPPING") || error.message.includes("HEADER_ROW"))) {
+      return redirectToStaff("/staff/suppliers/imports?error=mapping");
+    }
+    if (error instanceof Error && (error.message.includes("TOO_LARGE") || error.message.includes("LIMIT_EXCEEDED"))) {
+      return redirectToStaff("/staff/suppliers/imports?error=size");
+    }
+    if (error instanceof Error && (error.message.includes("FORMAT") || error.message.includes("SOURCE_TYPE_MISMATCH"))) {
+      return redirectToStaff("/staff/suppliers/imports?error=format");
     }
     return redirectToStaff("/staff/suppliers/imports?error=stage");
   }

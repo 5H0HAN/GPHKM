@@ -988,6 +988,41 @@
       "when": 1793392683441,
       "tag": "0140_qualify_cancellation_decision_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 141,
+      "version": "7",
+      "when": 1793430220000,
+      "tag": "0141_import_batch_discard",
+      "breakpoints": true
+    },
+    {
+      "idx": 142,
+      "version": "7",
+      "when": 1793435654039,
+      "tag": "0142_supplier_import_workflow",
+      "breakpoints": true
+    },
+    {
+      "idx": 143,
+      "version": "7",
+      "when": 1793437100000,
+      "tag": "0143_import_categories_are_row_scoped",
+      "breakpoints": true
+    },
+    {
+      "idx": 144,
+      "version": "7",
+      "when": 1793461881000,
+      "tag": "0144_staff_customer_directory",
+      "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "7",
+      "when": 1793462377723,
+      "tag": "0145_staff_customer_wallet_balance_projection",
+      "breakpoints": true
     }
   ]
 }

@@ -26,3 +26,6 @@ ADRs capture material choices and their consequences. Product behavior details r
 - [ADR-0022: Require fresh authentication for customer session revocation](ADR-0022-fresh-customer-session-revocation.md)
 - [ADR-0023: Bind Stripe webhook events to the configured API account](ADR-0023-bind-stripe-events-to-configured-account.md)
 - [ADR-0024: Final writing decline returns the undelivered stage to wallet](ADR-0024-final-writing-decline.md)
+- [ADR-0025: Audited discard of unapplied import batches](ADR-0025-audited-discard-of-unapplied-import-batches.md)
+- [ADR-0026: Explicit supplier import mapping and application](ADR-0026-explicit-supplier-import-mapping-and-application.md)
+- [ADR-0027: Staff customer directory and access management](ADR-0027-staff-customer-directory-and-access-management.md)
