@@ -13,6 +13,10 @@ registerHooks({ resolve(specifier, context, next) {
     "./surfaces": "../src/server/auth/surfaces.ts",
   };
   if (paths[specifier]) return { url: new URL(paths[specifier], import.meta.url).href, shortCircuit: true };
+  if (specifier.startsWith("@/server/")) {
+    const path = specifier.slice("@/server/".length).replace(/\.(?:js|ts)$/, "");
+    return { url: new URL(`../src/server/${path}.ts`, import.meta.url).href, shortCircuit: true };
+  }
   if (specifier === "./policy" && context.parentURL?.endsWith("/src/server/auth/index.ts")) {
     return { url: new URL("../src/server/auth/policy.ts", import.meta.url).href, shortCircuit: true };
   }
