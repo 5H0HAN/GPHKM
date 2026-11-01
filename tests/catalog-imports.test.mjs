@@ -234,6 +234,9 @@ test("staged import corrections stay in the edited row and preserve other row in
   assert.match(page, /<ImportStagedRow key=\{row\.id\}/);
   assert.doesNotMatch(page, /query\.corrected|query\.single/);
   assert.match(actions, /kind: "saved", row: await correctStagedImportRow/);
+  assert.match(actions, /row: previousState\?\.kind === "saved" \? previousState\.row : undefined/);
+  assert.match(rowView, /const correction = correctionState\?\.kind === "saved" \? correctionState\.row\s*: correctionState\?\.kind === "error" \? correctionState\.row \?\? null : null/);
+  assert.match(rowView, /const rowMessage = correctionSaved && correction/);
   assert.doesNotMatch(actions.slice(actions.indexOf("export async function correctImportRowAction"), actions.indexOf("export async function applySingleImportRowAction")), /redirectResult|target\(/);
   assert.match(actions, /selectedCategories, retailPriceUsd/);
   assert.match(server, /const effectiveCategories = platformCategories\.length \? platformCategories : null/);

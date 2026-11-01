@@ -202,7 +202,7 @@ export async function getSupplierFinanceData(headers: Headers, requestedPages: {
       rows.push(allocation);
       allocationsByTransfer.set(allocation.transferEventId, rows);
     }
-    const coverageByItem = new Map(payableCoverage.map((row) => [`${row.orderItemId}:${row.supplierId}`, row]));
+    const coverageByItem = new Map(allPayableCoverage.map((row) => [`${row.orderItemId}:${row.supplierId}`, row]));
     const transferReconciliation = transfers.map((transfer) => ({
       ...transfer,
       evidence: evidenceByTransfer.get(transfer.id) ?? null,

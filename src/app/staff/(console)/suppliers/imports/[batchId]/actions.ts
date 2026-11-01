@@ -29,11 +29,12 @@ function redirectResult(path: string): ImportActionState {
 
 type CorrectedRow = Awaited<ReturnType<typeof correctStagedImportRow>>;
 type ApplyRowsResult = Awaited<ReturnType<typeof applySelectedImportRows>>;
-type CorrectImportRowState = { kind: "saved"; row: CorrectedRow } | { kind: "error"; rowId: string } | null;
+type CorrectImportRowState = { kind: "saved"; row: CorrectedRow }
+  | { kind: "error"; rowId: string; row?: CorrectedRow } | null;
 type ApplySingleImportRowState = { kind: "applied"; listing: ApplyRowsResult["appliedListings"][number] }
   | { kind: "skipped"; row: ApplyRowsResult["skippedRows"][number] } | { kind: "error"; message: string } | null;
 
-export async function correctImportRowAction(_previousState: CorrectImportRowState, form: FormData): Promise<CorrectImportRowState> {
+export async function correctImportRowAction(previousState: CorrectImportRowState, form: FormData): Promise<CorrectImportRowState> {
   const batchId = safeId(form.get("batchId"));
   const rowId = safeId(form.get("rowId"));
   const corrections: Record<string, string> = {};
@@ -42,7 +43,7 @@ export async function correctImportRowAction(_previousState: CorrectImportRowSta
   const retailPriceUsd = safeId(form.get("proposedRetailPriceUsd"));
   try { return { kind: "saved", row: await correctStagedImportRow(await headers(), batchId, rowId, corrections,
     selectedCategories, retailPriceUsd) }; }
-  catch { return { kind: "error", rowId }; }
+  catch { return { kind: "error", rowId, row: previousState?.kind === "saved" ? previousState.row : undefined }; }
 }
 
 export async function applySingleImportRowAction(_previousState: ApplySingleImportRowState, form: FormData): Promise<ApplySingleImportRowState> {

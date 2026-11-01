@@ -52,7 +52,8 @@
 | User/session | User | Self | Restricted identity/security operations |
 | Membership | Organization | Own active organization membership | Admin/Super Admin; customer support directory and audited change commands |
 | Customer account control | Customer identity | No direct control | Admin/Super Admin; suspension/reactivation audited |
-| Wallet/ledger/top-up | Organization | Owner sees history; Members see balance/sufficiency through restricted projections | Finance/Super Admin |
+| Wallet/ledger/top-up | Organization | Owner sees history; Members see balance/sufficiency through restricted projections | Finance/Super Admin; directory balance projection is separately limited to Admin/Super Admin |
+| Staff directory wallet balance projection | Organization | None | Admin/Super Admin may read the current shared USD balance for an open organization with an active directory membership; audited, read-only, no holds or ledger detail |
 | Access grant | Organization | Effective access state only | Super Admin policy access; scoped Finance support |
 | Listing customer fields | Platform catalog | Live projection when signed in and entitled | Admin and Super Admin |
 | Source mode/supplier/contact/cost | Platform/supplier internal | None | Admin for catalog/assigned fulfillment; Finance for costs; Super Admin |

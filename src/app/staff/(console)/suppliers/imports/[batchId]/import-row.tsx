@@ -75,7 +75,9 @@ export function ImportStagedRow({ row, batchId, supplierId, pageNumber, activeSt
     if (rowActionsOpen && !dialog.open) dialog.showModal();
     else if (!rowActionsOpen && dialog.open) dialog.close();
   }, [rowActionsOpen]);
-  const correction = lastAction === "correct" && !correcting && correctionState?.kind === "saved" ? correctionState.row : null;
+  const correction = correctionState?.kind === "saved" ? correctionState.row
+    : correctionState?.kind === "error" ? correctionState.row ?? null : null;
+  const correctionSaved = lastAction === "correct" && !correcting && correctionState?.kind === "saved";
   const correctionError = lastAction === "correct" && !correcting && correctionState?.kind === "error" ? correctionState : null;
   const singleResult = lastAction === "apply" && !applying ? singleApplyState : null;
   const appliedListing = singleResult?.kind === "applied" ? singleResult.listing : row.appliedListing;
@@ -115,7 +117,7 @@ export function ImportStagedRow({ row, batchId, supplierId, pageNumber, activeSt
   const importUnavailableReason = reviewItems.length
     ? `Resolve ${reviewItems.length} review item${reviewItems.length === 1 ? "" : "s"} to enable import.`
     : "Complete review and save the row details to enable import.";
-  const rowMessage = correction
+  const rowMessage = correctionSaved && correction
     ? canCreateDraft ? "Row saved. It is ready to import as an unpublished draft."
       : currentStatus === "DUPLICATE_REVIEW" ? "Row saved. Review the website match and record a decision before importing."
         : `Row saved. ${reviewItems.length} item${reviewItems.length === 1 ? " still needs" : "s still need"} attention.`

@@ -71,6 +71,7 @@ test("Finance listing, order-item, and transfer histories are paged and supplier
   assert.match(source, /staffCatalogPagination\(requestedPages\.orderItems/);
   assert.match(source, /staffCatalogPagination\(requestedPages\.transfers/);
   assert.match(source, /requireStaffAccess\(headers, "costs\.read"\)/);
+  assert.match(source, /new Map\(allPayableCoverage\.map\(\(row\) => \[`\$\{row\.orderItemId\}:\$\{row\.supplierId\}`, row\]\)\)/);
   assert.match(source, /ilike\(orderItemFinancial\.orderItemId, `\$\{query\}%`\)/);
   assert.match(source, /\.limit\(25\)/);
   assert.match(page, /Finance listing pages/);
