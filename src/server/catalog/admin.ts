@@ -195,7 +195,9 @@ export async function updateListingInTransaction(
     writingFinalDraftCents: terms.writingFinalDraftCents === null ? null : String(terms.writingFinalDraftCents),
     buyerRequirements: terms.buyerRequirements?.trim() || null, revision: nextRevision, updatedAt: now,
   }).where(eq(listing.id, input.id));
-  await tx.update(listingUrl).set({ websiteUrl, updatedAt: now }).where(eq(listingUrl.listingId, input.id));
+  if (currentUrl.websiteUrl !== websiteUrl) {
+    await tx.update(listingUrl).set({ websiteUrl, updatedAt: now }).where(eq(listingUrl.listingId, input.id));
+  }
   await tx.update(listingSourcing).set({
     commercialSource: input.commercialSource, supplierId: input.supplierId,
     fulfillmentSupplierId: input.fulfillmentSupplierId,

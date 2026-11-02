@@ -290,4 +290,6 @@ export const auditEvent = pgTable("audit_event", {
   index("audit_event_org_created_idx").on(table.organizationId, table.createdAt),
   index("audit_event_target_idx").on(table.targetType, table.targetId, table.createdAt),
   index("audit_event_created_cursor_idx").on(table.createdAt, table.id),
+  index("audit_event_metrics_refresh_quota_idx").on(table.actorUserId, table.createdAt)
+    .where(sql`${table.action} = 'METRICS_REFRESH_STARTED'`),
 ]).enableRLS();

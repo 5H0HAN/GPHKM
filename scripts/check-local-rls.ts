@@ -300,6 +300,7 @@ try {
   const holdA = randomUUID();
   const holdB = randomUUID();
   const listingFixture = randomUUID();
+  const metricUrlHistoryListing = randomUUID();
   const checkoutListingFixture = randomUUID();
   const checkoutOrderFixture = randomUUID();
   const checkoutOrderItemFixture = randomUUID();
@@ -793,7 +794,7 @@ try {
     [listingFixture, supplierFixture, adminA],
   );
   await migration.query(
-    "insert into marketplace_listing_url (listing_id, website_url) values ($1, 'https://blog.fixture.example/')",
+    "insert into marketplace_listing_url (listing_id, website_url) values ($1, 'https://blog.fixture.com/')",
     [listingFixture],
   );
   phase = "checking category migration, staged-import permissions, discard, and applied-history protection";
@@ -962,18 +963,66 @@ try {
   const newerMetricObservation = randomUUID();
   const metricApproval = randomUUID();
   const hostMetricApproval = randomUUID();
+  const legacyLocalObservation = randomUUID();
+  const legacyLocalApproval = randomUUID();
+  const blockedLegacyLocalApproval = randomUUID();
+  const rootHistoryObservation = randomUUID();
+  const subdomainHistoryObservation = randomUUID();
+  const refreshedRootHistoryObservation = randomUUID();
+  const rootHistoryApproval = randomUUID();
+  const subdomainHistoryApproval = randomUUID();
+  const refreshedRootHistoryApproval = randomUUID();
+  const staleRootHistoryApproval = randomUUID();
+  await migration.query(
+    `insert into marketplace_listing (id, title, description, country_code, primary_language, categories,
+       retail_price_cents, link_type, link_validity, turnaround_days, sponsored_content_marking)
+     values ($1, 'Metric URL History Fixture', 'Synthetic rollback-only URL revision fixture', 'US', 'English', ARRAY['General'],
+       1000, 'DOFOLLOW', 'PERMANENT', 30, true)`,
+    [metricUrlHistoryListing],
+  );
+  await migration.query(
+    `insert into marketplace_listing_sourcing (listing_id, commercial_source, created_by_user_id)
+     values ($1, 'PLATFORM_OWNED', $2)`,
+    [metricUrlHistoryListing, adminA],
+  );
+  await migration.query(
+    "insert into marketplace_listing_url (listing_id, website_url) values ($1, 'https://history.fixture.com/')",
+    [metricUrlHistoryListing],
+  );
+  await migration.query(
+    `update marketplace_listing set status = 'LIVE', allows_sports_and_gaming = false,
+       allows_pharmacy = false, allows_crypto = false, allows_foreign_language = false where id = $1`,
+    [metricUrlHistoryListing],
+  );
+  const recordHistoryMetricApproval = async (observationId: string, eventId: string, attribution: string, reason: string) => {
+    await migration.query(
+      `insert into audit_event (id, actor_user_id, action, target_type, target_id, correlation_id, reason_code, metadata)
+       values ($1, $2, 'METRIC_REDISTRIBUTION_APPROVED', 'listing_metric_observation', $3, $4, 'URL_HISTORY_FIXTURE',
+         jsonb_build_object('listingId', $5::text, 'provider', 'OPEN_PAGE_RANK', 'decision', 'APPROVED'))`,
+      [randomUUID(), superAdminA, observationId, eventId, metricUrlHistoryListing],
+    );
+    await migration.query("SET LOCAL ROLE gphkm_runtime");
+    await migration.query("select set_config('app.user_id', $1, true)", [superAdminA]);
+    await migration.query(
+      `insert into listing_metric_approval_event (id, observation_id, listing_id, provider, decision, attribution_text,
+         evidence_reference, reason, actor_user_id)
+       values ($1, $2, $3, 'OPEN_PAGE_RANK', 'APPROVED', $4, 'LEGAL-HISTORY-123', $5, $6)`,
+      [eventId, observationId, metricUrlHistoryListing, attribution, reason, superAdminA],
+    );
+    await migration.query("RESET ROLE");
+  };
   await migration.query(
     `insert into listing_metric_observation (id, listing_id, provider, value, status, observed_on, refreshed_at, source,
        metric_target, requested_target)
-     values ($1, $2, 'OPEN_PAGE_RANK', 4.25, 'AVAILABLE', now(), now() - interval '1 minute', 'OpenPageRank API',
-       'fixture.example', 'blog.fixture.example')`,
+     values ($1, $2, 'OPEN_PAGE_RANK', 4.25, 'AVAILABLE', now(), clock_timestamp() + interval '1 microsecond', 'OpenPageRank API',
+       'fixture.com', 'blog.fixture.com')`,
     [metricObservation, listingFixture],
   );
   await migration.query(
     `insert into listing_metric_observation (id, listing_id, provider, metric_scope, value, status, observed_on, refreshed_at, source,
        metric_target, requested_target)
-     values ($1, $2, 'OPEN_PAGE_RANK', 'HOST', 8.5, 'AVAILABLE', now(), now(), 'OpenPageRank API',
-       'blog.fixture.example', 'blog.fixture.example')`,
+     values ($1, $2, 'OPEN_PAGE_RANK', 'HOST', 8.5, 'AVAILABLE', now(), clock_timestamp() + interval '2 microseconds', 'OpenPageRank API',
+       'blog.fixture.com', 'blog.fixture.com')`,
     [hostMetricObservation, listingFixture],
   );
   await migration.query("SET LOCAL ROLE gphkm_runtime");
@@ -1045,7 +1094,7 @@ try {
   ], "the customer projection preserves the distinct approved host and registered-domain scores");
   await migration.query("RESET ROLE");
   await migration.query(
-    "update marketplace_listing_url set website_url = 'https://changed.fixture.example/' where listing_id = $1",
+    "update marketplace_listing_url set website_url = 'https://changed.fixture.com/' where listing_id = $1",
     [listingFixture],
   );
   await migration.query("SET LOCAL ROLE gphkm_runtime");
@@ -1060,9 +1109,247 @@ try {
   assert.equal(changedTargetMetrics.rowCount, 0, "changing a listing URL invalidates approved observations for its former host");
   await migration.query("RESET ROLE");
   await migration.query(
-    "update marketplace_listing_url set website_url = 'https://blog.fixture.example/' where listing_id = $1",
+    "update marketplace_listing_url set website_url = 'https://blog.fixture.com/' where listing_id = $1",
     [listingFixture],
   );
+  const domainRefreshability = await migration.query<{ target: string; refreshable: boolean }>(
+    `select target, public.gphkm_metric_domain_refreshable(target) as refreshable
+       from unnest(ARRAY['blog.fixture.com', 'blog.fixture.example', 'site.internal', 'bad host']::text[]) as domains(target)`,
+  );
+  assert.deepEqual(domainRefreshability.rows, [
+    { target: "blog.fixture.com", refreshable: true },
+    { target: "blog.fixture.example", refreshable: false },
+    { target: "site.internal", refreshable: false },
+    { target: "bad host", refreshable: false },
+  ], "database metric domain policy accepts public DNS and rejects reserved or malformed hostnames");
+
+  await migration.query(
+    "update marketplace_listing_url set website_url = 'https://blog.legacy.internal/' where listing_id = $1",
+    [listingFixture],
+  );
+  await migration.query(
+    `insert into listing_metric_observation (id, listing_id, provider, value, status, observed_on, refreshed_at, source,
+       metric_target, requested_target)
+     values ($1, $2, 'OPEN_PAGE_RANK', 6.5, 'AVAILABLE', now(), now() + interval '10 minutes', 'Legacy OpenPageRank record',
+       'legacy.internal', 'blog.legacy.internal')`,
+    [legacyLocalObservation, listingFixture],
+  );
+  await migration.query(
+    `insert into audit_event (id, actor_user_id, action, target_type, target_id, correlation_id, reason_code, metadata)
+     values ($1, $2, 'METRIC_REDISTRIBUTION_APPROVED', 'listing_metric_observation', $3, $4, 'LEGACY_FIXTURE',
+       jsonb_build_object('listingId', $5::text, 'provider', 'OPEN_PAGE_RANK', 'decision', 'APPROVED'))`,
+    [randomUUID(), superAdminA, legacyLocalObservation, legacyLocalApproval, listingFixture],
+  );
+  await migration.query("ALTER TABLE public.listing_metric_approval_event DISABLE TRIGGER listing_metric_approval_guard");
+  await migration.query(
+    `insert into listing_metric_approval_event (id, observation_id, listing_id, provider, decision, attribution_text,
+       evidence_reference, reason, actor_user_id)
+     values ($1, $2, $3, 'OPEN_PAGE_RANK', 'APPROVED', 'Legacy attribution',
+       'LEGACY-REVIEW-123', 'Synthetic pre-policy approval', $4)`,
+    [legacyLocalApproval, legacyLocalObservation, listingFixture, superAdminA],
+  );
+  await migration.query("ALTER TABLE public.listing_metric_approval_event ENABLE TRIGGER listing_metric_approval_guard");
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query(
+    "select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true), set_config('app.metric_customer_display_l05_verified', 'true', true)",
+    [superAdminA],
+  );
+  const legacyLocalDisplayGate = await migration.query<{ approved: boolean }>(
+    "select public.gphkm_metric_observation_customer_approved($1) as approved", [legacyLocalObservation],
+  );
+  assert.equal(legacyLocalDisplayGate.rows[0]?.approved, false,
+    "an old approval for a local-only hostname is hidden even when the feature-level display flag is on");
+  const legacyLocalReview = await migration.query<{ metric_scope: string; requested_target: string; current_target: string; refreshable: boolean }>(
+    `select current_metric.metric_scope, current_metric.requested_target,
+       lower(rtrim(substring(u.website_url from '^https?://([^/:?#]+)'), '.')) as current_target,
+       public.gphkm_metric_domain_refreshable(current_metric.requested_target) as refreshable
+     from (
+       select distinct on (m.listing_id, m.provider, m.metric_scope) m.*
+       from public.listing_metric_observation m
+       where m.listing_id = $1
+       order by m.listing_id, m.provider, m.metric_scope, m.refreshed_at desc, m.id desc
+     ) current_metric join public.marketplace_listing_url u on u.listing_id = current_metric.listing_id
+     where current_metric.metric_target is not null and current_metric.requested_target is not null
+       and public.gphkm_metric_domain_refreshable(current_metric.requested_target)
+       and current_metric.refreshed_at >= u.updated_at
+       and current_metric.requested_target = lower(rtrim(substring(u.website_url from '^https?://([^/:?#]+)'), '.'))`,
+    [listingFixture],
+  );
+  assert.deepEqual(legacyLocalReview.rows, [], "local-only observations are excluded from the review list");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
+  const legacyLocalProjection = await migration.query(
+    "select * from public.gphkm_latest_customer_listing_metrics($1, $2, $3)",
+    [[listingFixture], userA, organizationA],
+  );
+  assert.equal(legacyLocalProjection.rowCount, 0, "legacy local-only metric values never enter the customer projection");
+  await migration.query("RESET ROLE");
+  await migration.query(
+    `insert into audit_event (id, actor_user_id, action, target_type, target_id, correlation_id, reason_code, metadata)
+     values ($1, $2, 'METRIC_REDISTRIBUTION_APPROVED', 'listing_metric_observation', $3, $4, 'LEGACY_FIXTURE',
+       jsonb_build_object('listingId', $5::text, 'provider', 'OPEN_PAGE_RANK', 'decision', 'APPROVED'))`,
+    [randomUUID(), superAdminA, legacyLocalObservation, blockedLegacyLocalApproval, listingFixture],
+  );
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true)", [superAdminA]);
+  await expectCheckConstraint(migration, "new attestation for a local-only metric observation", () => migration.query(
+    `insert into listing_metric_approval_event (id, observation_id, listing_id, provider, decision, attribution_text,
+       evidence_reference, reason, actor_user_id)
+     values ($1, $2, $3, 'OPEN_PAGE_RANK', 'APPROVED', 'New attribution',
+       'LEGAL-REVIEW-123', 'Reviewed rights for the synthetic observation.', $4)`,
+    [blockedLegacyLocalApproval, legacyLocalObservation, listingFixture, superAdminA],
+  ));
+  await migration.query("RESET ROLE");
+  await migration.query(
+    "update marketplace_listing_url set website_url = 'https://blog.fixture.com/' where listing_id = $1",
+    [listingFixture],
+  );
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query(
+    "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true), set_config('app.metric_customer_display_l05_verified', 'true', true)",
+    [userA, organizationA],
+  );
+  const revertedTargetMetrics = await migration.query<{ metric_scope: string; value: string }>(
+    "select metric_scope, value::text from public.gphkm_latest_customer_listing_metrics($1, $2, $3)",
+    [[listingFixture], userA, organizationA],
+  );
+  assert.deepEqual(revertedTargetMetrics.rows.map((row) => [row.metric_scope, row.value]), [],
+    "URL reversion does not revive old scores from either scope after a newer local-only observation");
+  await migration.query("RESET ROLE");
+
+  await migration.query(
+    `insert into listing_metric_observation (id, listing_id, provider, metric_scope, value, status, observed_on, refreshed_at, source,
+       metric_target, requested_target)
+     values ($1, $2, 'OPEN_PAGE_RANK', 'REGISTERED_DOMAIN', 3.25, 'AVAILABLE', now(),
+       (select updated_at + interval '1 microsecond' from marketplace_listing_url where listing_id = $2),
+       'OpenPageRank API', 'history.fixture.com', 'history.fixture.com')`,
+    [rootHistoryObservation, metricUrlHistoryListing],
+  );
+  await recordHistoryMetricApproval(rootHistoryObservation, rootHistoryApproval,
+    'Open PageRank registered-domain attribution.', 'Reviewed root-domain rights evidence.');
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query(
+    "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true), set_config('app.metric_customer_display_l05_verified', 'true', true)",
+    [userA, organizationA],
+  );
+  const rootHistoryMetrics = await migration.query<{ metric_scope: string; value: string }>(
+    "select metric_scope, value::text from public.gphkm_latest_customer_listing_metrics($1, $2, $3)",
+    [[metricUrlHistoryListing], userA, organizationA],
+  );
+  assert.deepEqual(rootHistoryMetrics.rows.map((row) => [row.metric_scope, row.value]), [["REGISTERED_DOMAIN", "3.2500"]],
+    "a fresh approved root-domain observation is eligible for customer display");
+  await migration.query("RESET ROLE");
+
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true)", [superAdminA]);
+  const refreshUrlLock = await migration.query(
+    "select listing_id from marketplace_listing_url where listing_id = $1 for share",
+    [metricUrlHistoryListing],
+  );
+  assert.equal(refreshUrlLock.rowCount, 1,
+    "the restricted staff runtime can lock a selected listing URL while persisting a refresh");
+  await migration.query(
+    "update marketplace_listing_url set website_url = 'https://blog.history.fixture.com/' where listing_id = $1",
+    [metricUrlHistoryListing],
+  );
+  await migration.query("RESET ROLE");
+  await migration.query(
+    `insert into listing_metric_observation (id, listing_id, provider, metric_scope, value, status, observed_on, refreshed_at, source,
+       metric_target, requested_target)
+     values ($1, $2, 'OPEN_PAGE_RANK', 'HOST', 7.5, 'AVAILABLE', now(),
+       (select updated_at + interval '1 microsecond' from marketplace_listing_url where listing_id = $2),
+       'OpenPageRank API', 'blog.history.fixture.com', 'blog.history.fixture.com')`,
+    [subdomainHistoryObservation, metricUrlHistoryListing],
+  );
+  await recordHistoryMetricApproval(subdomainHistoryObservation, subdomainHistoryApproval,
+    'Open PageRank host attribution.', 'Reviewed subdomain rights evidence.');
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query(
+    "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true), set_config('app.metric_customer_display_l05_verified', 'true', true)",
+    [userA, organizationA],
+  );
+  const subdomainHistoryMetrics = await migration.query<{ metric_scope: string; value: string }>(
+    "select metric_scope, value::text from public.gphkm_latest_customer_listing_metrics($1, $2, $3)",
+    [[metricUrlHistoryListing], userA, organizationA],
+  );
+  assert.deepEqual(subdomainHistoryMetrics.rows.map((row) => [row.metric_scope, row.value]), [["HOST", "7.5000"]],
+    "a fresh approved subdomain host observation supersedes the old root target while that URL is current");
+  await migration.query("RESET ROLE");
+
+  await migration.query(
+    "update marketplace_listing_url set website_url = 'https://history.fixture.com/' where listing_id = $1",
+    [metricUrlHistoryListing],
+  );
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query(
+    "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true), set_config('app.metric_customer_display_l05_verified', 'true', true)",
+    [userA, organizationA],
+  );
+  const staleRootHistoryGate = await migration.query<{ approved: boolean }>(
+    "select public.gphkm_metric_observation_customer_approved($1) as approved", [rootHistoryObservation],
+  );
+  assert.equal(staleRootHistoryGate.rows[0]?.approved, false,
+    "returning to the root URL does not revive its pre-subdomain approval");
+  const revertedHistoryMetrics = await migration.query(
+    "select * from public.gphkm_latest_customer_listing_metrics($1, $2, $3)",
+    [[metricUrlHistoryListing], userA, organizationA],
+  );
+  assert.equal(revertedHistoryMetrics.rowCount, 0, "root → subdomain → root hides both older scopes until refreshed");
+  await migration.query("RESET ROLE");
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true)", [superAdminA]);
+  const staleRootHistoryReview = await migration.query(
+    `select current_metric.id
+       from (select distinct on (m.listing_id, m.provider, m.metric_scope) m.*
+               from public.listing_metric_observation m where m.listing_id = $1
+              order by m.listing_id, m.provider, m.metric_scope, m.refreshed_at desc, m.id desc) current_metric
+       join public.marketplace_listing_url u on u.listing_id = current_metric.listing_id
+      where current_metric.metric_target is not null and current_metric.requested_target is not null
+        and public.gphkm_metric_domain_refreshable(current_metric.requested_target)
+        and current_metric.refreshed_at >= u.updated_at
+        and current_metric.requested_target = lower(rtrim(substring(u.website_url from '^https?://([^/:?#]+)'), '.'))`,
+    [metricUrlHistoryListing],
+  );
+  assert.equal(staleRootHistoryReview.rowCount, 0, "root → subdomain → root excludes old observations from review");
+  await migration.query("RESET ROLE");
+  await migration.query(
+    `insert into audit_event (id, actor_user_id, action, target_type, target_id, correlation_id, reason_code, metadata)
+     values ($1, $2, 'METRIC_REDISTRIBUTION_APPROVED', 'listing_metric_observation', $3, $4, 'URL_HISTORY_FIXTURE',
+       jsonb_build_object('listingId', $5::text, 'provider', 'OPEN_PAGE_RANK', 'decision', 'APPROVED'))`,
+    [randomUUID(), superAdminA, rootHistoryObservation, staleRootHistoryApproval, metricUrlHistoryListing],
+  );
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true)", [superAdminA]);
+  await expectCheckConstraint(migration, "old root approval after URL changes away and back", () => migration.query(
+    `insert into listing_metric_approval_event (id, observation_id, listing_id, provider, decision, attribution_text,
+       evidence_reference, reason, actor_user_id)
+     values ($1, $2, $3, 'OPEN_PAGE_RANK', 'APPROVED', 'Old root attribution',
+       'LEGAL-HISTORY-123', 'Old root evidence cannot be reused.', $4)`,
+    [staleRootHistoryApproval, rootHistoryObservation, metricUrlHistoryListing, superAdminA],
+  ));
+  await migration.query("RESET ROLE");
+  await migration.query(
+    `insert into listing_metric_observation (id, listing_id, provider, metric_scope, value, status, observed_on, refreshed_at, source,
+       metric_target, requested_target)
+     values ($1, $2, 'OPEN_PAGE_RANK', 'REGISTERED_DOMAIN', 5.5, 'AVAILABLE', now(),
+       (select updated_at + interval '1 microsecond' from marketplace_listing_url where listing_id = $2),
+       'OpenPageRank API', 'history.fixture.com', 'history.fixture.com')`,
+    [refreshedRootHistoryObservation, metricUrlHistoryListing],
+  );
+  await recordHistoryMetricApproval(refreshedRootHistoryObservation, refreshedRootHistoryApproval,
+    'Fresh Open PageRank root attribution.', 'Reviewed rights after refreshing the current root URL.');
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query(
+    "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true), set_config('app.metric_customer_display_l05_verified', 'true', true)",
+    [userA, organizationA],
+  );
+  const refreshedRootHistoryMetrics = await migration.query<{ metric_scope: string; value: string }>(
+    "select metric_scope, value::text from public.gphkm_latest_customer_listing_metrics($1, $2, $3)",
+    [[metricUrlHistoryListing], userA, organizationA],
+  );
+  assert.deepEqual(refreshedRootHistoryMetrics.rows.map((row) => [row.metric_scope, row.value]), [["REGISTERED_DOMAIN", "5.5000"]],
+    "a new root refresh after URL reversion restores eligibility without reviving the old observation");
+  await migration.query("RESET ROLE");
+
   phase = "checking trial and public-URL boundaries as gphkm_runtime";
   await migration.query(
     "update marketplace_listing_sourcing set url_visible_without_recharge = true where listing_id = $1",
@@ -1147,7 +1434,7 @@ try {
     `insert into listing_metric_observation (id, listing_id, provider, value, status, observed_on, refreshed_at, source,
        metric_target, requested_target)
      values ($1, $2, 'OPEN_PAGE_RANK', 4.5, 'AVAILABLE', now(), now() + interval '1 minute', 'OpenPageRank API',
-       'fixture.example', 'blog.fixture.example')`,
+       'fixture.com', 'blog.fixture.com')`,
     [newerMetricObservation, listingFixture],
   );
   await migration.query("SET LOCAL ROLE gphkm_runtime");
@@ -2510,7 +2797,7 @@ try {
   await resendWebhook.connect();
   const actualResendRole = await resendWebhook.query<{ user: string }>("select current_user as user");
   assert.equal(actualResendRole.rows[0]?.user, "gphkm_resend_webhook", "RESEND_WEBHOOK_DATABASE_URL must authenticate as the isolated Resend role");
-  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, atomic two-item checkout with exact debit and idempotent replay, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence/acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, and denied direct wallet writes.");
+  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, atomic two-item checkout with exact debit and idempotent replay, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence/acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, public-domain and URL-revision metric invalidation, and denied direct wallet writes.");
 } catch (error) {
   console.error(`Local RLS smoke failed while ${phase}; any open synthetic-data transaction will be rolled back.`);
   if (error instanceof Error) console.error(error.message);

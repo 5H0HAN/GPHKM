@@ -1,0 +1,3 @@
+DROP INDEX "listing_metric_listing_provider_date_idx";--> statement-breakpoint
+CREATE INDEX "audit_event_metrics_refresh_quota_idx" ON "audit_event" USING btree ("actor_user_id","created_at") WHERE "audit_event"."action" = 'METRICS_REFRESH_STARTED';--> statement-breakpoint
+CREATE INDEX "listing_metric_listing_provider_date_idx" ON "listing_metric_observation" USING btree ("listing_id","provider","metric_scope","refreshed_at" DESC NULLS LAST,"id" DESC NULLS LAST);

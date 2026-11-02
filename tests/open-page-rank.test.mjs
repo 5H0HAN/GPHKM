@@ -8,7 +8,7 @@ registerHooks({ resolve(specifier, context, next) {
     ? { url: "data:text/javascript,export{}", shortCircuit: true }
     : next(specifier, context);
 } });
-const { fetchOpenPageRank, isMetricDomainRefreshable, isOpenPageRankConfigured, isOpenPageRankKeyValid, normalizeMetricDomain } = await import("../src/server/metrics/open-page-rank.ts");
+const { fetchOpenPageRank, isMetricDomainRefreshable, isOpenPageRankConfigured, isOpenPageRankKeyValid, metricHostnameFromUrl, normalizeMetricDomain } = await import("../src/server/metrics/open-page-rank.ts");
 
 test("provider configuration checks only expose key validity", () => {
   assert.equal(isOpenPageRankConfigured({}), false);
@@ -30,11 +30,24 @@ test("normalizes bare hostnames and rejects URL/IP/credential input", () => {
 });
 
 test("reserved demo hostnames are never sent to the metric provider", () => {
-  for (const hostname of ["sample-tech.example", "preview.test", "invalid.invalid", "local.localhost", "service.local"]) {
+  for (const hostname of ["sample-tech.example", "preview.test", "invalid.invalid", "local.localhost", "service.local",
+    "printer.internal", "device.home", "nas.lan", "hidden.onion", "corp.corp", "gateway.home.arpa"]) {
     assert.equal(isMetricDomainRefreshable(hostname), false);
   }
   for (const hostname of ["example.com", "gphkm.com", "shop.example.org"]) {
     assert.equal(isMetricDomainRefreshable(hostname), true);
+  }
+  for (const hostname of ["localhost", "127.0.0.1", "https://example.com", "bad..example.com"]) {
+    assert.equal(isMetricDomainRefreshable(hostname), false);
+  }
+});
+
+test("website URL extraction accepts only safe HTTP(S) DNS origins and ignores path/query", () => {
+  assert.equal(metricHostnameFromUrl("https://Example.COM./catalog/path?q=1"), "example.com");
+  assert.equal(metricHostnameFromUrl("http://gphkm.com:8080/?campaign=staff"), "gphkm.com");
+  assert.equal(metricHostnameFromUrl("https://bücher.de/articles"), "xn--bcher-kva.de");
+  for (const value of ["not a URL", "ftp://example.com", "https://user:secret@example.com", "https://127.0.0.1", "https://localhost"]) {
+    assert.equal(metricHostnameFromUrl(value), null);
   }
 });
 
