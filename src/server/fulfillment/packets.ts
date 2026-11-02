@@ -14,7 +14,8 @@ import { correlateResendAttempt } from "@/modules/fulfillment/resend-correlation
 import { staffCatalogPagination } from "@/modules/catalog/pagination";
 import { buildSupplierPacketPdf } from "@/server/fulfillment/pdf";
 import { getConsentedSupplierPacketContent } from "@/server/orders/content-changes";
-import { deletePrivateFile, readPrivateFile, savePrivateFile } from "@/server/storage/private-files";
+import { readPrivateFile, savePrivateFile } from "@/server/storage/private-files";
+import { linkPrivateFileUpload, preparePrivateFileUpload, queuePrivateFileDeleteOutsideTransaction } from "@/server/storage/private-file-lifecycle";
 import { readSmallJsonResponse } from "@/modules/security/small-json-response";
 
 type Actor = { userId: string; role: "ADMIN" | "FINANCE" | "SUPER_ADMIN" };
@@ -653,7 +654,8 @@ export async function recordManualSupplierHandoff(headers: Headers, input: { pac
     const authorized = await requireStaffAccess(headers, "fulfillment.manage");
     if (authorized.role === "FINANCE") throw new Error("Forbidden");
   }
-  const storageKey = file ? await savePrivateFile(file.bytes) : null;
+  const storageKey = file ? await preparePrivateFileUpload() : null;
+  if (file && storageKey) await savePrivateFile(file.bytes, storageKey);
   let transactionCallbackReturned = false;
   try {
     const result = await staffTx(headers, async (tx, actor) => {
@@ -686,6 +688,7 @@ export async function recordManualSupplierHandoff(headers: Headers, input: { pac
         fileName: `handoff-${attempt.id}.${file.kind.toLowerCase()}`, byteSize: file.bytes.byteLength,
         contentSha256: evidenceAudit.sha256, uploadedByUserId: actor.userId,
       });
+      await linkPrivateFileUpload(tx, storageKey);
     }
     await markItemsHandedOff(tx, { itemIds: packet.items.map((item) => item.orderItemId), actorId: actor.userId, actorRole, at: sentAt, reason: "MANUAL_HANDOFF_RECORDED" });
     await appendAuditEvent(tx, { actorUserId: actor.userId, action: "SUPPLIER_PACKET_MANUAL_HANDOFF_RECORDED", targetType: "SUPPLIER_PACKET", targetId: input.packetId, metadata: {
@@ -701,7 +704,7 @@ export async function recordManualSupplierHandoff(headers: Headers, input: { pac
   } catch (error) {
     // A lost commit acknowledgement is ambiguous. Preserve bytes once the
     // transaction callback completed so a committed evidence row never dangles.
-    if (storageKey && !transactionCallbackReturned) await deletePrivateFile(storageKey).catch(() => undefined);
+    if (storageKey && !transactionCallbackReturned) await queuePrivateFileDeleteOutsideTransaction(storageKey).catch(() => undefined);
     throw error;
   }
 }

@@ -23,6 +23,8 @@ export const customerOrder = pgTable("customer_order", {
 }, (t) => [
   unique("customer_order_org_actor_idem_uq").on(t.organizationId, t.actorUserId, t.idempotencyKey),
   index("customer_order_org_created_idx").on(t.organizationId, t.createdAt),
+  index("customer_order_actor_paid_created_idx").on(t.actorUserId, t.createdAt.desc(), t.id.desc())
+    .where(sql`${t.checkoutState} = 'PAID'`),
   check("customer_order_usd_only", sql`${t.currency} = 'USD'`),
   check("customer_order_totals_valid", sql`${t.placementTotalMinor} >= 0 and ${t.writingTotalMinor} >= 0 and ${t.totalMinor} > 0 and ${t.totalMinor} = ${t.placementTotalMinor} + ${t.writingTotalMinor}`),
   check("customer_order_idempotency_valid", sql`length(${t.idempotencyKey}) between 16 and 128 and ${t.requestHash} ~ '^[0-9a-f]{64}$'`),

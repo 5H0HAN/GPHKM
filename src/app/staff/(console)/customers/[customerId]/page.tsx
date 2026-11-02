@@ -54,6 +54,11 @@ export default async function CustomerDetailPage({ params, searchParams }: {
     {updated === "unchanged" && <p role="status" className={styles.notice}>No change was needed.</p>}
     {error && <p role="alert" className={styles.error}>{error === "account" ? "Account status could not be changed. Refresh the customer record and try again." : "Membership could not be changed. Refresh the customer record; the last active Owner cannot be removed or demoted."}</p>}
 
+    <nav className={styles.customerActions} aria-label="Customer management actions">
+      <Link href="#account-access-heading">Manage account access</Link>
+      <Link href="#organization-memberships-heading">Manage organization memberships</Link>
+    </nav>
+
     <div className={styles.summaryGrid}>
       <section className={styles.section}>
         <h2>Customer details</h2>
@@ -64,8 +69,8 @@ export default async function CustomerDetailPage({ params, searchParams }: {
           <div><dt>Organizations</dt><dd>{detail.memberships.length}</dd></div>
         </dl>
       </section>
-      <section className={`${styles.section} ${styles.accessSection}`}>
-        <h2>Account access</h2>
+      <section className={`${styles.section} ${styles.accessSection}`} aria-labelledby="account-access-heading">
+        <h2 id="account-access-heading" tabIndex={-1}>Account access</h2>
         <p>{isSuspended ? "This customer cannot sign in or use the customer workspace." : "This customer can sign in where an active organization membership allows access."}</p>
         {detail.customer.changedAt && <p className={styles.muted}>Last changed {formatDate(detail.customer.changedAt)} · {detail.customer.reasonCode?.replaceAll("_", " ").toLowerCase()}</p>}
         <form action={setCustomerAccountStateAction} className={styles.actionForm}>
@@ -101,8 +106,8 @@ export default async function CustomerDetailPage({ params, searchParams }: {
       <p className={styles.muted}>This is the current balance projection. Holds can reduce what is available to spend; the underlying holds, ledger, funding history, and payment evidence are not shown here.</p>
     </section>
 
-    <section className={styles.section}>
-      <div className={styles.sectionHeading}><div><h2>Organization memberships</h2><p>Manage the customer’s role and access in each organization. At least one active Owner must remain.</p></div></div>
+    <section className={styles.section} aria-labelledby="organization-memberships-heading">
+      <div className={styles.sectionHeading}><div><h2 id="organization-memberships-heading" tabIndex={-1}>Organization memberships</h2><p>Manage the customer’s role and access in each organization. At least one active Owner must remain.</p></div></div>
       {!detail.memberships.length ? <p className={styles.emptyInline}>No organization memberships are recorded.</p> : <div className={styles.membershipList}>
         {detail.memberships.map((membership) => {
           const closed = Boolean(membership.closedAt);

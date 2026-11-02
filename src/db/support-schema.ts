@@ -1,7 +1,28 @@
 import { sql } from "drizzle-orm";
-import { check, index, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { check, index, integer, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
 import { organization, user } from "./schema";
 import { customerOrder, customerOrderItem } from "./order-schema";
+
+// A private object upload is recorded before leaving the database so a crashed
+// request can be reconciled without deleting an object that became referenced.
+export const privateFileObject = pgTable("private_file_object", {
+  storageKey: text("storage_key").primaryKey(),
+  state: text("state").notNull().default("UPLOADING"),
+  deleteAttempts: integer("delete_attempts").notNull().default(0),
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+  leaseId: text("lease_id"),
+  leaseUntil: timestamp("lease_until", { withTimezone: true }),
+  lastErrorCode: text("last_error_code"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("private_file_object_cleanup_idx").on(t.state, t.nextAttemptAt, t.createdAt),
+  check("private_file_object_key_valid", sql`${t.storageKey} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`),
+  check("private_file_object_state_valid", sql`${t.state} in ('UPLOADING','LINKED','DELETE_PENDING','DELETING','DELETED')`),
+  check("private_file_object_attempts_valid", sql`${t.deleteAttempts} >= 0`),
+  check("private_file_object_lease_shape", sql`(${t.state} = 'DELETING' and ${t.leaseId} is not null and ${t.leaseUntil} is not null) or (${t.state} <> 'DELETING' and ${t.leaseId} is null and ${t.leaseUntil} is null)`),
+  check("private_file_object_error_valid", sql`${t.lastErrorCode} is null or ${t.lastErrorCode} = 'STORAGE_DELETE_FAILED'`),
+]).enableRLS();
 
 export const supportCase = pgTable("support_case", {
   id: text("id").primaryKey(),
@@ -19,6 +40,8 @@ export const supportCase = pgTable("support_case", {
   unique("support_case_open_idem_uq").on(t.organizationId, t.openedByUserId, t.idempotencyKey),
   index("support_case_org_updated_idx").on(t.organizationId, t.updatedAt, t.id),
   index("support_case_updated_cursor_idx").on(t.updatedAt, t.id),
+  index("support_case_opened_active_idx").on(t.openedByUserId).where(sql`${t.state} <> 'CLOSED'`),
+  index("support_case_opened_updated_idx").on(t.openedByUserId, t.updatedAt.desc(), t.id.desc()),
   index("support_case_item_idx").on(t.orderItemId),
   check("support_case_state_valid", sql`${t.state} in ('OPEN','INVESTIGATING','WAITING_ON_CUSTOMER','WAITING_ON_SUPPLIER','FINANCE_REVIEW','RESOLVED','CLOSED')`),
   check("support_case_summary_valid", sql`length(trim(${t.summary})) between 1 and 2000`),

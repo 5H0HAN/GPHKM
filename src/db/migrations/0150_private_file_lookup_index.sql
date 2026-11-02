@@ -1,0 +1,1 @@
+CREATE INDEX "catalog_import_batch_source_object_key_idx" ON "catalog_import_batch" USING btree ("source_object_key") WHERE "catalog_import_batch"."source_object_key" is not null;

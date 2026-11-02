@@ -76,6 +76,9 @@ test("lifecycle transitions and purchase snapshots are explicit", () => {
   assert.equal(catalog.canTransitionListing("DRAFT", "REVIEW", "ADMIN"), true);
   assert.equal(catalog.canTransitionListing("DRAFT", "LIVE", "SUPER_ADMIN"), false);
   assert.equal(catalog.canTransitionListing("LIVE", "PAUSED", "FINANCE"), false);
+  assert.equal(catalog.canTransitionListing("ARCHIVED", "DRAFT", "ADMIN"), true);
+  assert.equal(catalog.canTransitionListing("ARCHIVED", "LIVE", "SUPER_ADMIN"), false);
+  assert.equal(catalog.canTransitionListing("ARCHIVED", "DRAFT", "FINANCE"), false);
   const snapshot = catalog.makeListingSnapshot(listing);
   assert.equal(snapshot.revision, listing.revision);
   assert.equal("sourceCostCents" in snapshot, false);

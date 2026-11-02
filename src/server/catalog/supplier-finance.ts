@@ -7,7 +7,8 @@ import { orderItemFinancial, orderItemFulfillmentSupplier } from "@/db/order-sch
 import { supplierListingCostEvent, supplierOrderItemCostEvent, supplierPaymentRecord, supplierTransferAllocation, supplierTransferEvent, supplierTransferEvidence } from "@/db/supplier-finance-schema";
 import { appendAuditEvent } from "@/server/audit/append";
 import { requireStaffAccess } from "@/server/auth/staff";
-import { deletePrivateFile, readPrivateFile, savePrivateFile } from "@/server/storage/private-files";
+import { readPrivateFile, savePrivateFile } from "@/server/storage/private-files";
+import { linkPrivateFileUpload, preparePrivateFileUpload, queuePrivateFileDelete, queuePrivateFileDeleteOutsideTransaction } from "@/server/storage/private-file-lifecycle";
 import { normalizeEvidenceReference, normalizeFinanceReason, normalizeTransferReference, parsePaymentDate, parseUsdMinor, validSupplierTransferEvidence } from "@/modules/supplier-finance/validation";
 import { staffCatalogPagination } from "@/modules/catalog/pagination";
 
@@ -339,7 +340,8 @@ export async function recordSupplierTransfer(headers: Headers, input: { supplier
       uniqueOrderItemIds.size !== normalizedAllocations.length || allocationTotal !== BigInt(amount) ||
       !transferDate || transferDate.getTime() > Date.now() || !transferReference || !evidenceReference || !reason || !/^[0-9a-f-]{36}$/i.test(input.idempotencyKey)) throw new Error("Invalid supplier transfer record");
   await requireStaffAccess(headers, "costs.read");
-  const storageKey = await savePrivateFile(evidence.bytes);
+  const storageKey = await preparePrivateFileUpload();
+  await savePrivateFile(evidence.bytes, storageKey);
   let transactionCallbackReturned = false;
   try {
     const result = await withFinance(headers, async (tx, actor) => {
@@ -352,6 +354,7 @@ export async function recordSupplierTransfer(headers: Headers, input: { supplier
       .from(supplierTransferEvent).where(and(eq(supplierTransferEvent.actorUserId, actor.userId), eq(supplierTransferEvent.idempotencyKey, input.idempotencyKey))).limit(1);
     if (prior) {
       if (prior.requestHash !== requestHash) throw new Error("Supplier transfer idempotency key was reused for different details");
+      await queuePrivateFileDelete(tx, storageKey);
       transactionCallbackReturned = true;
       return { id: prior.id, replayed: true };
     }
@@ -378,15 +381,15 @@ export async function recordSupplierTransfer(headers: Headers, input: { supplier
       await tx.insert(supplierTransferAllocation).values({ id: allocationId, transferEventId: id, orderItemId: allocation.orderItemId, amountMinor: allocation.amountMinor, actorUserId: actor.userId });
     }
     await tx.insert(supplierTransferEvidence).values({ id: evidenceId, transferEventId: id, storageKey, fileKind: evidence.kind, fileName: `supplier-transfer-${id}.${evidence.kind.toLowerCase()}`, byteSize: evidence.bytes.byteLength, contentSha256: evidenceSha256, uploadedByUserId: actor.userId });
+    await linkPrivateFileUpload(tx, storageKey);
     transactionCallbackReturned = true;
     return { id, replayed: false };
     });
-    if (result.replayed) await deletePrivateFile(storageKey).catch(() => undefined);
     return result;
   } catch (error) {
     // Once the callback has returned, a connection failure may mean COMMIT
     // succeeded but its acknowledgement was lost. Keep the file for review.
-    if (!transactionCallbackReturned) await deletePrivateFile(storageKey).catch(() => undefined);
+    if (!transactionCallbackReturned) await queuePrivateFileDeleteOutsideTransaction(storageKey).catch(() => undefined);
     throw error;
   }
 }

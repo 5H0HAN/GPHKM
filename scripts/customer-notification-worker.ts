@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { assertInvitationTokenEncryptionConfigured, decryptInvitationToken } from "../src/modules/identity/invitation-crypto.ts";
 import { readSmallJsonResponse } from "../src/modules/security/small-json-response.ts";
+import { assertPrivateFileStorageConfigured, deletePrivateFile } from "../src/server/storage/private-files.ts";
 
 type ClaimedEmail = {
   kind: "CUSTOMER_NOTIFICATION";
@@ -31,32 +32,48 @@ type ClaimedInvitation = {
   first_attempt_at: Date;
 };
 
+type ClaimedPrivateFile = { storage_key: string };
+type MailSettings = {
+  apiKey: string;
+  from: string;
+  webhookId: string;
+  webhookSecret: string;
+  publicBase: URL;
+  customerBase: URL;
+  staffBase: URL;
+  senderDomain: string;
+};
+
 const required = (name: string) => {
   const value = process.env[name]?.trim();
   if (!value) throw new Error("Customer notification worker configuration is incomplete");
   return value;
 };
 const workerUrl = required("WORKER_DATABASE_URL");
-const apiKey = required("RESEND_API_KEY");
-const from = required("RESEND_FROM_EMAIL");
-const webhookId = required("RESEND_WEBHOOK_ID");
-const webhookSecret = required("RESEND_WEBHOOK_SECRET");
-const publicBase = new URL(required("GPHKM_PUBLIC_BASE_URL"));
-const customerBase = new URL(required("CUSTOMER_APP_URL"));
-const staffBase = new URL(required("STAFF_APP_URL"));
-if (process.env.GPHKM_RESEND_DATA_HANDLING_APPROVED !== "true"
-  || /[\r\n\0]/.test(from)
-  || [customerBase, staffBase].some((base) => base.username !== "" || base.password !== ""
-    || (base.protocol !== "https:" && base.hostname !== "localhost" && !base.hostname.endsWith(".localhost"))
-    || base.pathname !== "/" || base.search || base.hash)
-  || publicBase.protocol !== "https:" || publicBase.username !== "" || publicBase.password !== ""
-  || publicBase.pathname !== "/" || publicBase.search || publicBase.hash) {
-  throw new Error("Customer notification delivery is disabled until provider and sender settings are approved");
-}
-const senderAddress = /<([^<>]+)>/.exec(from)?.[1] ?? from;
-const senderDomain = senderAddress.slice(senderAddress.lastIndexOf("@")+1).toLowerCase();
-if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(senderAddress)) throw new Error("Customer notification sender address is invalid");
-assertInvitationTokenEncryptionConfigured();
+const mailSettings: MailSettings | null = process.env.GPHKM_RESEND_DATA_HANDLING_APPROVED === "true" ? (() => {
+  const apiKey = required("RESEND_API_KEY");
+  const from = required("RESEND_FROM_EMAIL");
+  const webhookId = required("RESEND_WEBHOOK_ID");
+  const webhookSecret = required("RESEND_WEBHOOK_SECRET");
+  const publicBase = new URL(required("GPHKM_PUBLIC_BASE_URL"));
+  const customerBase = new URL(required("CUSTOMER_APP_URL"));
+  const staffBase = new URL(required("STAFF_APP_URL"));
+  if (/[\r\n\0]/.test(from)
+    || [customerBase, staffBase].some((base) => base.username !== "" || base.password !== ""
+      || (base.protocol !== "https:" && base.hostname !== "localhost" && !base.hostname.endsWith(".localhost"))
+      || base.pathname !== "/" || base.search || base.hash)
+    || publicBase.protocol !== "https:" || publicBase.username !== "" || publicBase.password !== ""
+    || publicBase.pathname !== "/" || publicBase.search || publicBase.hash) {
+    throw new Error("Customer notification sender or URL settings are invalid");
+  }
+  const senderAddress = /<([^<>]+)>/.exec(from)?.[1] ?? from;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(senderAddress)) throw new Error("Customer notification sender address is invalid");
+  assertInvitationTokenEncryptionConfigured();
+  return {
+    apiKey, from, webhookId, webhookSecret, publicBase, customerBase, staffBase,
+    senderDomain: senderAddress.slice(senderAddress.lastIndexOf("@") + 1).toLowerCase(),
+  };
+})() : null;
 
 const client = new Client({ connectionString: workerUrl });
 const workerId = randomUUID();
@@ -65,26 +82,27 @@ process.on("SIGINT", () => { running = false; });
 process.on("SIGTERM", () => { running = false; });
 
 async function providerPreflight() {
+  if (!mailSettings) return;
   const response = await fetch("https://api.resend.com/domains", {
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    headers: { Authorization: `Bearer ${mailSettings.apiKey}`, Accept: "application/json" },
     redirect: "error", signal: AbortSignal.timeout(10_000),
   });
   if (!response.ok) throw new Error("Customer notification provider preflight failed");
   const payload = await readSmallJsonResponse<{ data?: Array<{ name?: string; status?: string; capabilities?: { sending?: string } }> }>(response);
-  if (!payload.data?.some((domain) => domain.name?.toLowerCase() === senderDomain
+  if (!payload.data?.some((domain) => domain.name?.toLowerCase() === mailSettings.senderDomain
     && domain.status === "verified" && domain.capabilities?.sending === "enabled")) {
     throw new Error("Customer notification sender domain is not verified for sending");
   }
-  const webhookResponse = await fetch(`https://api.resend.com/webhooks/${encodeURIComponent(webhookId)}`, {
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+  const webhookResponse = await fetch(`https://api.resend.com/webhooks/${encodeURIComponent(mailSettings.webhookId)}`, {
+    headers: { Authorization: `Bearer ${mailSettings.apiKey}`, Accept: "application/json" },
     redirect: "error", signal: AbortSignal.timeout(10_000),
   });
   if (!webhookResponse.ok) throw new Error("Customer notification webhook preflight failed");
   const webhook = await readSmallJsonResponse<{ endpoint?: string; events?: string[]; signing_secret?: string }>(webhookResponse);
-  const expectedEndpoint = new URL("/api/webhooks/resend", publicBase).toString();
+  const expectedEndpoint = new URL("/api/webhooks/resend", mailSettings.publicBase).toString();
   const requiredEvents = ["email.delivered", "email.bounced", "email.failed", "email.delivery_delayed"];
-  if (publicBase.protocol !== "https:" || webhook.endpoint !== expectedEndpoint
-    || !requiredEvents.every((event) => webhook.events?.includes(event)) || webhook.signing_secret !== webhookSecret) {
+  if (mailSettings.publicBase.protocol !== "https:" || webhook.endpoint !== expectedEndpoint
+    || !requiredEvents.every((event) => webhook.events?.includes(event)) || webhook.signing_secret !== mailSettings.webhookSecret) {
     throw new Error("Customer notification webhook is not verified for this deployment");
   }
 }
@@ -122,21 +140,22 @@ function invitationRetryAt(job: ClaimedInvitation) {
 }
 
 async function sendOne(job: ClaimedEmail) {
+  if (!mailSettings) throw new Error("Customer notification delivery is disabled");
   if (!job.email_enabled) return finish(job, "SKIPPED", { errorCode: "EMAIL_PREFERENCE_DISABLED" });
   if (!job.email_verified || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(job.recipient_email)) {
     return finish(job, "FAILED", { errorCode: "RECIPIENT_UNVERIFIED" });
   }
-  const text = `${job.subject}\n\n${job.body}\n\nView your notifications: ${new URL("/customer/notifications", customerBase).toString()}`;
+  const text = `${job.subject}\n\n${job.body}\n\nView your notifications: ${new URL("/customer/notifications", mailSettings.customerBase).toString()}`;
   let response: Response;
   try {
     response = await fetch("https://api.resend.com/emails", {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${mailSettings.apiKey}`,
         "Content-Type": "application/json",
         "Idempotency-Key": `gphkm-customer-${job.outbox_id}`,
       },
-      body: JSON.stringify({ from, to: [job.recipient_email], subject: job.subject, text,
+      body: JSON.stringify({ from: mailSettings.from, to: [job.recipient_email], subject: job.subject, text,
         tags: [{ name: "gphkm_outbox", value: job.outbox_id }] }),
     });
   } catch {
@@ -170,6 +189,7 @@ async function sendOne(job: ClaimedEmail) {
 }
 
 async function sendInvitation(job: ClaimedInvitation) {
+  if (!mailSettings) throw new Error("Invitation delivery is disabled");
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(job.recipient_email)) {
     return finishInvitation(job, "FAILED", { errorCode: "RECIPIENT_INVALID" });
   }
@@ -179,7 +199,7 @@ async function sendInvitation(job: ClaimedInvitation) {
   } catch {
     return finishInvitation(job, "FAILED", { errorCode: "TOKEN_DECRYPT_FAILED" });
   }
-  const base = job.invitation_kind === "ORGANIZATION" ? customerBase : staffBase;
+  const base = job.invitation_kind === "ORGANIZATION" ? mailSettings.customerBase : mailSettings.staffBase;
   const route = job.invitation_kind === "ORGANIZATION" ? "/invitations/accept" : "/staff/invitations/accept";
   const link = `${new URL(route, base).toString()}#token=${encodeURIComponent(token)}`;
   const subject = job.invitation_kind === "ORGANIZATION" ? "You’re invited to GPHKM" : "GPHKM staff invitation";
@@ -190,11 +210,11 @@ async function sendInvitation(job: ClaimedInvitation) {
     response = await fetch("https://api.resend.com/emails", {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(10_000),
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${mailSettings.apiKey}`,
         "Content-Type": "application/json",
         "Idempotency-Key": `gphkm-invitation-${job.outbox_id}`,
       },
-      body: JSON.stringify({ from, to: [job.recipient_email], subject, text,
+      body: JSON.stringify({ from: mailSettings.from, to: [job.recipient_email], subject, text,
         tags: [{ name: "gphkm_invitation", value: job.outbox_id }] }),
     });
   } catch {
@@ -222,43 +242,73 @@ async function sendInvitation(job: ClaimedInvitation) {
   console.log(JSON.stringify({ event: "invitation_email_accepted", outboxId: job.outbox_id, providerReference: responseId }));
 }
 
+async function finishPrivateFileDelete(storageKey: string, succeeded: boolean) {
+  const result = await client.query<{ applied: boolean }>(
+    "select public.gphkm_finish_private_file_delete($1,$2,$3) as applied",
+    [storageKey, workerId, succeeded],
+  );
+  return result.rows[0]?.applied === true;
+}
+
+async function cleanupOnePrivateFile() {
+  const result = await client.query<ClaimedPrivateFile>(
+    "select * from public.gphkm_claim_private_file_deletes($1,$2)", [workerId, 1],
+  );
+  const file = result.rows[0];
+  if (!file) return false;
+
+  try {
+    await deletePrivateFile(file.storage_key);
+    await finishPrivateFileDelete(file.storage_key, true);
+    console.log(JSON.stringify({ event: "private_file_cleanup_completed" }));
+  } catch {
+    await finishPrivateFileDelete(file.storage_key, false).catch(() => false);
+    console.error(JSON.stringify({ event: "private_file_cleanup_retry_scheduled" }));
+  }
+  return true;
+}
+
 async function main() {
+  assertPrivateFileStorageConfigured();
   await client.connect();
-  await providerPreflight();
-  console.log(JSON.stringify({ event: "customer_notification_worker_started", workerId }));
+  if (mailSettings) await providerPreflight();
+  console.log(JSON.stringify({ event: "gphkm_worker_started", workerId, privateFileCleanup: true, notifications: mailSettings !== null }));
   while (running) {
-    const invitationResult = await client.query<ClaimedInvitation>(
-      "select 'INVITATION'::text as kind, * from public.gphkm_claim_invitation_emails($1,$2)", [workerId, 1],
-    );
-    const invitation = invitationResult.rows[0];
-    if (invitation) {
-      try { await sendInvitation(invitation); }
-      catch {
-        console.error(JSON.stringify({ event: "invitation_email_worker_state_error", outboxId: invitation.outbox_id }));
-        process.exitCode = 1;
-        break;
+    const privateFileWorked = await cleanupOnePrivateFile();
+    if (mailSettings) {
+      const invitationResult = await client.query<ClaimedInvitation>(
+        "select 'INVITATION'::text as kind, * from public.gphkm_claim_invitation_emails($1,$2)", [workerId, 1],
+      );
+      const invitation = invitationResult.rows[0];
+      if (invitation) {
+        try { await sendInvitation(invitation); }
+        catch {
+          console.error(JSON.stringify({ event: "invitation_email_worker_state_error", outboxId: invitation.outbox_id }));
+          process.exitCode = 1;
+          break;
+        }
+        continue;
       }
-      continue;
+      const result = await client.query<ClaimedEmail>(
+        "select 'CUSTOMER_NOTIFICATION'::text as kind, * from public.gphkm_claim_customer_notification_emails($1,$2)", [workerId, 1],
+      );
+      const job = result.rows[0];
+      if (job) {
+        try { await sendOne(job); }
+        catch {
+          // If the provider may have accepted the message, the lease expires into UNKNOWN and is never retried automatically.
+          console.error(JSON.stringify({ event: "customer_notification_worker_state_error", outboxId: job.outbox_id }));
+          process.exitCode = 1;
+          break;
+        }
+        continue;
+      }
     }
-    const result = await client.query<ClaimedEmail>(
-      "select 'CUSTOMER_NOTIFICATION'::text as kind, * from public.gphkm_claim_customer_notification_emails($1,$2)", [workerId, 1],
-    );
-    const job = result.rows[0];
-    if (!job) {
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-      continue;
-    }
-    try { await sendOne(job); }
-    catch {
-      // If the provider may have accepted the message, the lease expires into UNKNOWN and is never retried automatically.
-      console.error(JSON.stringify({ event: "customer_notification_worker_state_error", outboxId: job.outbox_id }));
-      process.exitCode = 1;
-      break;
-    }
+    if (!privateFileWorked) await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
 }
 
 main().catch(() => {
-  console.error("Customer notification worker stopped; check provider configuration and database health.");
+  console.error("GPHKM worker stopped; check private storage, notification provider settings, and database health.");
   process.exitCode = 1;
 }).finally(async () => { await client.end().catch(() => undefined); });

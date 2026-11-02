@@ -6,12 +6,13 @@ import { db } from "@/db";
 import { catalogImportApplyEvent, catalogImportBatch, catalogImportRow, catalogImportRowStatus, listing, listingSourcing, listingUrl, supplier, } from "@/db/catalog-schema";
 import { appendAuditEvent } from "@/server/audit/append";
 import { requireStaffAccess } from "@/server/auth/staff";
-import { applyPlatformCategoryOverride, buildImportMapping, fetchPublicSheetCsv, extractPublicSheetReference, getPersistableImportValues, IMPORT_LIMITS, parseCsv, parseInventoryFile, resolveDuplicate, stageImportRows, suggestImportMapping, toDraftListingInput, type ImportCandidate, type ImportField, type ImportMapping } from "@/modules/catalog/imports";
-import { normalizeWebsiteUrl, validateListingRelationships, validateListingTerms, type ListingTerms } from "@/modules/catalog/domain";
+import { applyPlatformCategoryOverride, buildImportMapping, fetchPublicSheetCsv, extractPublicSheetReference, getPersistableImportValues, IMPORT_LIMITS, listingWebsiteUrlLookupKeys, parseCsv, parseInventoryFile, resolveDuplicate, stageImportRows, suggestImportMapping, toDraftListingInput, type ImportCandidate, type ImportField, type ImportMapping } from "@/modules/catalog/imports";
+import { normalizeWebsiteUrl, normalizeWebsiteUrlLookupKey, validateListingRelationships, validateListingTerms, type ListingTerms } from "@/modules/catalog/domain";
 import { isValidListingCategorySelection } from "@/modules/catalog/taxonomy";
 import { formatUsdMinorUnits, parseUsdMinorUnits } from "@/modules/wallet/usd-amount";
 import { insertDraftListingInTransaction, staffTransaction, updateListingInTransaction } from "./admin";
-import { deletePrivateFile, readPrivateFile, savePrivateFile } from "@/server/storage/private-files";
+import { readPrivateFile, savePrivateFile } from "@/server/storage/private-files";
+import { linkPrivateFileUpload, preparePrivateFileUpload, queuePrivateFileDeleteOutsideTransaction } from "@/server/storage/private-file-lifecycle";
 
 const importSourceSupplier = alias(supplier, "import_source_supplier");
 const importFulfillmentSupplier = alias(supplier, "import_fulfillment_supplier");
@@ -67,7 +68,8 @@ export async function stageInventoryImport(headers: Headers, input: StageInvento
   const mapping = buildImportMapping(sheet.rows[headerRowNumber - 1] ?? [], suggestedMapping ?? {});
   const contentSha256 = createHash("sha256").update(content).digest("hex");
   const batchId = randomUUID();
-  const sourceObjectKey = await savePrivateFile(content);
+  const sourceObjectKey = await preparePrivateFileUpload();
+  await savePrivateFile(content, sourceObjectKey);
   const headerCells = sheet.rows[headerRowNumber - 1] ?? [];
   const headerLabels = Object.fromEntries(Object.entries(mapping).map(([field, column]) => {
     const rawHeader = headerCells[column];
@@ -80,8 +82,13 @@ export async function stageInventoryImport(headers: Headers, input: StageInvento
     const result = await staffTransaction(headers, "supplier.manage", async (tx, userId) => {
     const [supplierRow] = await tx.select({ id: supplier.id }).from(supplier).where(eq(supplier.id, input.supplierId)).limit(1);
     if (!supplierRow) throw new Error("Supplier unavailable");
-    const existingListings = await tx.select({ id: listingUrl.listingId, websiteUrl: listingUrl.websiteUrl }).from(listingUrl);
-    const candidates = stageImportRows({ rows: sheet.rows, mapping, existingListings, headerRowNumber });
+    let candidates = stageImportRows({ rows: sheet.rows, mapping, existingListings: [], headerRowNumber });
+    const websiteUrlKeys = listingWebsiteUrlLookupKeys(candidates.map((candidate) => candidate.values.websiteUrl));
+    if (websiteUrlKeys.length) {
+      const existingListings = await tx.select({ id: listingUrl.listingId, websiteUrl: listingUrl.websiteUrl }).from(listingUrl)
+        .where(sql`lower(rtrim(${listingUrl.websiteUrl}, '/')) = ANY(${sql.param(websiteUrlKeys)}::text[])`);
+      if (existingListings.length) candidates = stageImportRows({ rows: sheet.rows, mapping, existingListings, headerRowNumber });
+    }
     await tx.insert(catalogImportBatch).values({
       id: batchId, supplierId: input.supplierId, sourceType: input.sourceType, sourceReference,
       sourceFilename, sourceObjectKey, sourceBytes: content.byteLength, contentSha256,
@@ -100,15 +107,16 @@ export async function stageInventoryImport(headers: Headers, input: StageInvento
     for (let index = 0; index < stagedRows.length; index += 500) {
       await tx.insert(catalogImportRow).values(stagedRows.slice(index, index + 500));
     }
+    await linkPrivateFileUpload(tx, sourceObjectKey);
     await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_STAGED", targetType: "catalog_import_batch", targetId: batchId, metadata: { result: input.sourceType, itemCount: candidates.length } });
     transactionCallbackReturned = true;
     return { batchId, rowCount: candidates.length };
     });
     return result;
   } catch (error) {
-    // A lost commit acknowledgement is ambiguous. Keep the source once the
-    // callback completed so a committed batch never points at a deleted file.
-    if (!transactionCallbackReturned) await deletePrivateFile(sourceObjectKey).catch(() => undefined);
+    // A lost commit acknowledgement is ambiguous. Keep the upload intent so
+    // the cleanup worker can check whether the committed batch references it.
+    if (!transactionCallbackReturned) await queuePrivateFileDeleteOutsideTransaction(sourceObjectKey).catch(() => undefined);
     throw error;
   }
 }
@@ -306,8 +314,13 @@ export async function correctStagedImportRow(
     const headersRow = Array.from({ length: maxColumn + 1 }, (_, index) => `Column ${index}`);
     const sourceRow = Array.from({ length: maxColumn + 1 }, () => null as unknown);
     for (const [field, column] of Object.entries(safeMapping)) sourceRow[column] = original[field] ?? null;
-    const existingListings = await tx.select({ id: listingUrl.listingId, websiteUrl: listingUrl.websiteUrl }).from(listingUrl);
-    let candidate = stageImportRows({ rows: [headersRow, sourceRow], mapping: safeMapping, existingListings })[0];
+    let candidate = stageImportRows({ rows: [headersRow, sourceRow], mapping: safeMapping, existingListings: [] })[0];
+    const websiteUrlKeys = listingWebsiteUrlLookupKeys([candidate.values.websiteUrl]);
+    if (websiteUrlKeys.length) {
+      const existingListings = await tx.select({ id: listingUrl.listingId, websiteUrl: listingUrl.websiteUrl }).from(listingUrl)
+        .where(sql`lower(rtrim(${listingUrl.websiteUrl}, '/')) = ANY(${sql.param(websiteUrlKeys)}::text[])`);
+      if (existingListings.length) candidate = stageImportRows({ rows: [headersRow, sourceRow], mapping: safeMapping, existingListings })[0];
+    }
     candidate.rowNumber = row.rowNumber;
     const effectiveCategories = platformCategories.length ? platformCategories : null;
     if (effectiveCategories) candidate = applyPlatformCategoryOverride(candidate, effectiveCategories);
@@ -362,212 +375,238 @@ export async function correctStagedImportRow(
 export async function applyAllRemainingImportRows(headers: Headers, batchId: string) {
   if (!/^[0-9a-f-]{36}$/i.test(batchId)) throw new Error("Import selection invalid");
   const rowIds = await staffTransaction(headers, "supplier.manage", async (tx) => {
-    const batch = await lockImport(tx, batchId);
-    if (batch.status === "APPLIED" || batch.status === "REJECTED") throw new Error("Import is closed");
-    const rows = await tx.select({ id: catalogImportRow.id, status: catalogImportRow.status,
-      price: catalogImportRow.proposedRetailPriceCents, categories: catalogImportRow.platformCategoryOverride }).from(catalogImportRow)
-      .where(eq(catalogImportRow.batchId, batchId)).orderBy(asc(catalogImportRow.rowNumber));
-    const pending = rows.filter((row) => row.status !== "APPLIED" && row.status !== "REJECTED");
-    if (pending.some((row) => row.status !== "READY" || !row.categories?.length)) throw new Error("IMPORT_BATCH_ROWS_REQUIRE_REVIEW");
-    if (pending.some((row) => row.price === null)) throw new Error("IMPORT_RETAIL_PRICE_REQUIRED");
-    return pending.map((row) => row.id);
-  });
-  if (!rowIds.length) return { appliedCount: 0, skippedCount: 0, stoppedEarly: false };
-  let appliedCount = 0;
-  for (let offset = 0; offset < rowIds.length; offset += 50) {
-    try {
-      const chunk = await applySelectedImportRows(headers, batchId, rowIds.slice(offset, offset + 50).map((rowId) => ({ rowId })), true);
-      appliedCount += chunk.appliedCount;
-      if (chunk.skippedRows.length) return { appliedCount, skippedCount: chunk.skippedRows.length, stoppedEarly: true };
-    } catch (error) {
-      if (appliedCount > 0) return { appliedCount, skippedCount: 0, stoppedEarly: true };
-      throw error;
-    }
+  const batch = await lockImport(tx, batchId);
+  if (batch.status === "APPLIED" || batch.status === "REJECTED") throw new Error("Import is closed");
+  const rows = await tx.select({ id: catalogImportRow.id, status: catalogImportRow.status,
+    price: catalogImportRow.proposedRetailPriceCents, categories: catalogImportRow.platformCategoryOverride }).from(catalogImportRow)
+    .where(eq(catalogImportRow.batchId, batchId)).orderBy(asc(catalogImportRow.rowNumber));
+  const pending = rows.filter((row) => row.status !== "APPLIED" && row.status !== "REJECTED");
+  if (pending.some((row) => row.status !== "READY" || !row.categories?.length)) throw new Error("IMPORT_BATCH_ROWS_REQUIRE_REVIEW");
+  if (pending.some((row) => row.price === null)) throw new Error("IMPORT_RETAIL_PRICE_REQUIRED");
+  return pending.map((row) => row.id);
+});
+if (!rowIds.length) return { appliedCount: 0, skippedCount: 0, stoppedEarly: false };
+let appliedCount = 0;
+for (let offset = 0; offset < rowIds.length; offset += 50) {
+  try {
+    const chunk = await applySelectedImportRows(headers, batchId, rowIds.slice(offset, offset + 50).map((rowId) => ({ rowId })), true);
+    appliedCount += chunk.appliedCount;
+    if (chunk.skippedRows.length) return { appliedCount, skippedCount: chunk.skippedRows.length, stoppedEarly: true };
+  } catch (error) {
+    if (appliedCount > 0) return { appliedCount, skippedCount: 0, stoppedEarly: true };
+    throw error;
   }
-  return { appliedCount, skippedCount: 0, stoppedEarly: false };
+}
+return { appliedCount, skippedCount: 0, stoppedEarly: false };
 }
 
 export async function decideStagedDuplicate(headers: Headers, batchId: string, rowId: string, decision: "KEEP_SEPARATE" | "REJECT", reason: string) {
-  if (!/^[0-9a-f-]{36}$/i.test(batchId) || !/^[0-9a-f-]{36}$/i.test(rowId) || !reason.trim() || reason.length > 1_000) throw new Error("Duplicate decision invalid");
-  return staffTransaction(headers, "supplier.manage", async (tx, userId) => {
-    const batch = await lockImport(tx, batchId);
-    const [row] = await tx.select().from(catalogImportRow).where(and(eq(catalogImportRow.id, rowId), eq(catalogImportRow.batchId, batchId))).for("update").limit(1);
-    if (!row || row.status !== "DUPLICATE_REVIEW") throw new Error("Duplicate review unavailable");
-    const resolved = resolveDuplicate(rowCandidate({ ...row, values: row.stagedValues }), {
-      decision, staffUserId: userId, reason: reason.trim(), decidedAt: new Date().toISOString(),
-    });
-    await tx.update(catalogImportRow).set({
-      status: resolved.status, duplicateDecision: decision, duplicateReason: reason.trim(), duplicateDecidedByUserId: userId,
-      duplicateDecidedAt: new Date(), reviewedByUserId: userId, reviewedAt: new Date(), updatedAt: new Date(),
-    }).where(eq(catalogImportRow.id, rowId));
-    await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_DUPLICATE_DECIDED", targetType: "catalog_import_row", targetId: rowId,
-      reasonCode: decision === "KEEP_SEPARATE" ? "DUPLICATE_KEEP_SEPARATE" : "DUPLICATE_REJECTED", metadata: { result: resolved.status } });
-    await refreshBatchStatus(tx, batchId, batch.appliedAt);
-    return { rowId, status: resolved.status };
+if (!/^[0-9a-f-]{36}$/i.test(batchId) || !/^[0-9a-f-]{36}$/i.test(rowId) || !reason.trim() || reason.length > 1_000) throw new Error("Duplicate decision invalid");
+return staffTransaction(headers, "supplier.manage", async (tx, userId) => {
+  const batch = await lockImport(tx, batchId);
+  const [row] = await tx.select().from(catalogImportRow).where(and(eq(catalogImportRow.id, rowId), eq(catalogImportRow.batchId, batchId))).for("update").limit(1);
+  if (!row || row.status !== "DUPLICATE_REVIEW") throw new Error("Duplicate review unavailable");
+  const resolved = resolveDuplicate(rowCandidate({ ...row, values: row.stagedValues }), {
+    decision, staffUserId: userId, reason: reason.trim(), decidedAt: new Date().toISOString(),
   });
+  await tx.update(catalogImportRow).set({
+    status: resolved.status, duplicateDecision: decision, duplicateReason: reason.trim(), duplicateDecidedByUserId: userId,
+    duplicateDecidedAt: new Date(), reviewedByUserId: userId, reviewedAt: new Date(), updatedAt: new Date(),
+  }).where(eq(catalogImportRow.id, rowId));
+  await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_DUPLICATE_DECIDED", targetType: "catalog_import_row", targetId: rowId,
+    reasonCode: decision === "KEEP_SEPARATE" ? "DUPLICATE_KEEP_SEPARATE" : "DUPLICATE_REJECTED", metadata: { result: resolved.status } });
+  await refreshBatchStatus(tx, batchId, batch.appliedAt);
+  return { rowId, status: resolved.status };
+});
 }
 
 export async function rejectStagedImportRow(headers: Headers, batchId: string, rowId: string, reason: string) {
-  if (!/^[0-9a-f-]{36}$/i.test(batchId) || !/^[0-9a-f-]{36}$/i.test(rowId) || !["INVALID_SOURCE_DATA", "NO_LONGER_OFFERED", "OTHER"].includes(reason)) throw new Error("Reject reason required");
-  return staffTransaction(headers, "supplier.manage", async (tx, userId) => {
-    const batch = await lockImport(tx, batchId);
-    const [row] = await tx.select().from(catalogImportRow).where(and(eq(catalogImportRow.id, rowId), eq(catalogImportRow.batchId, batchId))).for("update").limit(1);
-    if (!row || row.status === "APPLIED" || row.status === "REJECTED") throw new Error("Import row cannot be rejected");
-    const isDuplicate = row.status === "DUPLICATE_REVIEW";
-    await tx.update(catalogImportRow).set({ status: "REJECTED", reviewedByUserId: userId, reviewedAt: new Date(), updatedAt: new Date(),
-      ...(isDuplicate ? { duplicateDecision: "REJECT", duplicateReason: reason.trim(), duplicateDecidedByUserId: userId, duplicateDecidedAt: new Date() } : {})
-    }).where(eq(catalogImportRow.id, rowId));
-    await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_REJECTED", targetType: "catalog_import_row", targetId: rowId,
-      reasonCode: reason });
-    await refreshBatchStatus(tx, batchId, batch.appliedAt);
-    return { rowId, status: "REJECTED" as const };
-  });
+if (!/^[0-9a-f-]{36}$/i.test(batchId) || !/^[0-9a-f-]{36}$/i.test(rowId) || !["INVALID_SOURCE_DATA", "NO_LONGER_OFFERED", "OTHER"].includes(reason)) throw new Error("Reject reason required");
+return staffTransaction(headers, "supplier.manage", async (tx, userId) => {
+  const batch = await lockImport(tx, batchId);
+  const [row] = await tx.select().from(catalogImportRow).where(and(eq(catalogImportRow.id, rowId), eq(catalogImportRow.batchId, batchId))).for("update").limit(1);
+  if (!row || row.status === "APPLIED" || row.status === "REJECTED") throw new Error("Import row cannot be rejected");
+  const isDuplicate = row.status === "DUPLICATE_REVIEW";
+  await tx.update(catalogImportRow).set({ status: "REJECTED", reviewedByUserId: userId, reviewedAt: new Date(), updatedAt: new Date(),
+    ...(isDuplicate ? { duplicateDecision: "REJECT", duplicateReason: reason.trim(), duplicateDecidedByUserId: userId, duplicateDecidedAt: new Date() } : {})
+  }).where(eq(catalogImportRow.id, rowId));
+  await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_REJECTED", targetType: "catalog_import_row", targetId: rowId,
+    reasonCode: reason });
+  await refreshBatchStatus(tx, batchId, batch.appliedAt);
+  return { rowId, status: "REJECTED" as const };
+});
+}
+
+function assertValidSelectedImportSelection(batchId: string, selections: Array<{ rowId: string }>) {
+  if (!/^[0-9a-f-]{36}$/i.test(batchId) || !Array.isArray(selections) || selections.length < 1 || selections.length > 50 ||
+      selections.some((selection) => !selection || typeof selection.rowId !== "string" || !/^[0-9a-f-]{36}$/i.test(selection.rowId)) ||
+      new Set(selections.map((selection) => selection.rowId)).size !== selections.length) {
+    throw new Error("Import selection invalid");
+  }
 }
 
 export async function applySelectedImportRows(headers: Headers, batchId: string, selections: Array<{ rowId: string }>, stopOnSkip = false) {
-  if (!/^[0-9a-f-]{36}$/i.test(batchId) || !Array.isArray(selections) || selections.length < 1 || selections.length > 50 ||
-    selections.some((selection) => !/^[0-9a-f-]{36}$/i.test(selection.rowId)) || new Set(selections.map((selection) => selection.rowId)).size !== selections.length) {
-    throw new Error("Import selection invalid");
+  assertValidSelectedImportSelection(batchId, selections);
+  return staffTransaction(headers, "supplier.manage", (tx, userId) =>
+    applySelectedImportRowsInTransaction(tx, userId, batchId, selections, stopOnSkip));
+}
+
+// Server-only transaction body for the authenticated command and local integration coverage.
+export async function applySelectedImportRowsInTransaction(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  userId: string,
+  batchId: string,
+  selections: Array<{ rowId: string }>,
+  stopOnSkip = false,
+) {
+  assertValidSelectedImportSelection(batchId, selections);
+  const batch = await lockImport(tx, batchId);
+  if (batch.status === "APPLIED" || batch.status === "REJECTED") throw new Error("Import is closed");
+  const rows = await tx.select().from(catalogImportRow).where(and(eq(catalogImportRow.batchId, batchId), inArray(catalogImportRow.id, selections.map((selection) => selection.rowId))))
+    .orderBy(asc(catalogImportRow.rowNumber)).for("update");
+  if (rows.length !== selections.length) throw new Error("Selected row unavailable");
+  if (rows.some((row) => row.status === "READY" && row.proposedRetailPriceCents === null)) throw new Error("IMPORT_RETAIL_PRICE_REQUIRED");
+  const domains = [...new Set(rows.filter((row) => row.status === "READY").map((row) => {
+    const value = (row.stagedValues as Record<string, unknown>).websiteUrl;
+    return typeof value === "string" ? normalizeWebsiteUrl(value) : null;
+  }).filter((url): url is string => url !== null).map((url) => new URL(url).hostname))].sort();
+  for (const domain of domains) await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${domain}, 0))`);
+  const websiteUrlKeys = listingWebsiteUrlLookupKeys(rows.filter((row) => row.status === "READY")
+    .map((row) => (row.stagedValues as Record<string, unknown>).websiteUrl));
+  const urls = websiteUrlKeys.length
+    ? await tx.select({ id: listingUrl.listingId, websiteUrl: listingUrl.websiteUrl }).from(listingUrl)
+      .where(sql`lower(rtrim(${listingUrl.websiteUrl}, '/')) = ANY(${sql.param(websiteUrlKeys)}::text[])`)
+    : [];
+  const urlsByKey = new Map<string, typeof urls>();
+  for (const url of urls) {
+    const key = normalizeWebsiteUrlLookupKey(url.websiteUrl);
+    if (key) urlsByKey.set(key, [...(urlsByKey.get(key) ?? []), url]);
   }
-  return staffTransaction(headers, "supplier.manage", async (tx, userId) => {
-    const batch = await lockImport(tx, batchId);
-    if (batch.status === "APPLIED" || batch.status === "REJECTED") throw new Error("Import is closed");
-    const rows = await tx.select().from(catalogImportRow).where(and(eq(catalogImportRow.batchId, batchId), inArray(catalogImportRow.id, selections.map((selection) => selection.rowId))))
-      .orderBy(asc(catalogImportRow.rowNumber)).for("update");
-    if (rows.length !== selections.length) throw new Error("Selected row unavailable");
-    if (rows.some((row) => row.status === "READY" && row.proposedRetailPriceCents === null)) throw new Error("IMPORT_RETAIL_PRICE_REQUIRED");
-    const domains = [...new Set(rows.filter((row) => row.status === "READY").map((row) => {
-      const value = (row.stagedValues as Record<string, unknown>).websiteUrl;
-      return typeof value === "string" ? normalizeWebsiteUrl(value) : null;
-    }).filter((url): url is string => url !== null).map((url) => new URL(url).hostname))].sort();
-    for (const domain of domains) await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${domain}, 0))`);
-    const urls = await tx.select({ id: listingUrl.listingId, websiteUrl: listingUrl.websiteUrl }).from(listingUrl);
-    const applied: string[] = [];
-    const appliedListings: Array<{ rowId: string; id: string; title: string; websiteUrl: string; status: "DRAFT"; retailPriceCents: number; revision: number }> = [];
-    const skippedRows: Array<{ rowId: string; status: string; errors: Array<{ field: string; code: string }>; warnings: string[]; duplicateOfRow: number | null;
-      duplicateOfListingIds: string[]; duplicateMatches?: Array<{ id: string; title: string; description: string; countryCode: string; primaryLanguage: string;
-        categories: string[]; retailPriceCents: string | number; linkType: string; linkValidity: string; turnaroundDays: number;
-        allowsSportsAndGaming: boolean | null; allowsPharmacy: boolean | null; allowsCrypto: boolean | null; allowsForeignLanguage: boolean | null;
-        sponsoredContentMarking: boolean; status: string; revision: number; websiteUrl: string; commercialSource: string;
-        sourceSupplierId: string | null; sourceSupplierName: string | null; fulfillmentSupplierName: string | null; updateEligible: boolean }>;
-      hiddenMatchCount?: number }> = [];
-    const attemptedRowIds: string[] = [];
-    const previouslyAppliedRows = await tx.select({ rowNumber: catalogImportRow.rowNumber, listingId: catalogImportRow.appliedListingId })
-      .from(catalogImportRow).where(and(eq(catalogImportRow.batchId, batchId), eq(catalogImportRow.status, "APPLIED")));
-    const appliedRows = new Map(previouslyAppliedRows.flatMap((row) => row.listingId ? [[row.rowNumber, row.listingId] as const] : []));
-    for (const row of rows) {
-      attemptedRowIds.push(row.id);
-      if (row.status === "READY" && !row.platformCategoryOverride?.length) {
-        const warnings = [...new Set([...row.warnings, "CATEGORY_ROW_MAPPING_REQUIRED"])];
-        await tx.update(catalogImportRow).set({ status: "NEEDS_REVIEW", warnings, updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
-        await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id,
-          reasonCode: "PLATFORM_CATEGORY_REQUIRED" });
-        skippedRows.push({ rowId: row.id, status: "NEEDS_REVIEW", errors: row.errors, warnings,
-          duplicateOfRow: row.duplicateOfRow, duplicateOfListingIds: row.duplicateOfListingIds });
-        if (stopOnSkip) break;
-        continue;
-      }
-      if (row.status !== "READY") {
-        await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id,
-          reasonCode: `ROW_${row.status}` });
-        skippedRows.push({ rowId: row.id, status: row.status, errors: row.errors, warnings: row.warnings,
-          duplicateOfRow: row.duplicateOfRow, duplicateOfListingIds: row.duplicateOfListingIds });
-        if (stopOnSkip) break;
-        continue;
-      }
-      const candidate = applyPlatformCategoryOverride(rowCandidate({ ...row, values: row.stagedValues }), row.platformCategoryOverride!);
-      if ((candidate.duplicateOfRow !== null || candidate.duplicateOfListingIds.length > 0) && row.duplicateDecision !== "KEEP_SEPARATE") {
-        await tx.update(catalogImportRow).set({ status: "DUPLICATE_REVIEW", updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
-        await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "DUPLICATE_REVIEW_REQUIRED" });
-        skippedRows.push({ rowId: row.id, status: "DUPLICATE_REVIEW", errors: row.errors, warnings: row.warnings,
-          duplicateOfRow: row.duplicateOfRow, duplicateOfListingIds: row.duplicateOfListingIds });
-        if (stopOnSkip) break;
-        continue;
-      }
-      let listingInput: ReturnType<typeof toDraftListingInput>;
-      try { listingInput = toDraftListingInput(candidate); }
-      catch {
-        await tx.update(catalogImportRow).set({ status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }], updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
-        await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "DRAFT_VALIDATION_FAILED" });
-        skippedRows.push({ rowId: row.id, status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }],
-          warnings: row.warnings, duplicateOfRow: row.duplicateOfRow, duplicateOfListingIds: row.duplicateOfListingIds });
-        if (stopOnSkip) break;
-        continue;
-      }
-      const price = row.proposedRetailPriceCents === null ? undefined : Number(row.proposedRetailPriceCents);
-      if (price === undefined || !Number.isSafeInteger(price) || price <= 0) throw new Error("IMPORT_RETAIL_PRICE_REQUIRED");
-      const expectedDuplicates = new Set(candidate.duplicateOfListingIds);
-      const normalizedUrl = normalizeWebsiteUrl(listingInput.websiteUrl);
-      if (!normalizedUrl) {
-        await tx.update(catalogImportRow).set({ status: "INVALID", errors: [{ field: "websiteUrl", code: "INVALID_HTTPS_ORIGIN" }], updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
-        await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "INVALID_WEBSITE_URL" });
-        skippedRows.push({ rowId: row.id, status: "INVALID", errors: [{ field: "websiteUrl", code: "INVALID_HTTPS_ORIGIN" }],
-          warnings: row.warnings, duplicateOfRow: row.duplicateOfRow, duplicateOfListingIds: row.duplicateOfListingIds });
-        if (stopOnSkip) break;
-        continue;
-      }
-      const currentDomain = new URL(normalizedUrl).hostname.toLowerCase();
-      const reviewedSameBatchDuplicate = row.duplicateDecision === "KEEP_SEPARATE" && candidate.duplicateOfRow !== null
-        ? appliedRows.get(candidate.duplicateOfRow) : undefined;
-      const newDuplicates = urls.filter((entry) => new URL(entry.websiteUrl).hostname.toLowerCase() === currentDomain &&
-        !expectedDuplicates.has(entry.id) && entry.id !== reviewedSameBatchDuplicate);
-      if (newDuplicates.length) {
-        const duplicateIds = [...new Set([...candidate.duplicateOfListingIds, ...newDuplicates.map((entry) => entry.id)])];
-        const currentMatches = await tx.select({
-          id: listing.id, title: listing.title, description: listing.description, countryCode: listing.countryCode,
-          primaryLanguage: listing.primaryLanguage, categories: listing.categories, retailPriceCents: listing.retailPriceCents,
-          linkType: listing.linkType, linkValidity: listing.linkValidity, turnaroundDays: listing.turnaroundDays,
-          allowsSportsAndGaming: listing.allowsSportsAndGaming, allowsPharmacy: listing.allowsPharmacy,
-          allowsCrypto: listing.allowsCrypto, allowsForeignLanguage: listing.allowsForeignLanguage,
-          sponsoredContentMarking: listing.sponsoredContentMarking, status: listing.status, revision: listing.revision,
-          websiteUrl: listingUrl.websiteUrl, commercialSource: listingSourcing.commercialSource,
-          sourceSupplierId: listingSourcing.supplierId, sourceSupplierName: importSourceSupplier.name, fulfillmentSupplierName: importFulfillmentSupplier.name,
-        }).from(listing).innerJoin(listingUrl, eq(listingUrl.listingId, listing.id))
-          .innerJoin(listingSourcing, eq(listingSourcing.listingId, listing.id))
-          .leftJoin(importSourceSupplier, eq(importSourceSupplier.id, listingSourcing.supplierId))
-          .leftJoin(importFulfillmentSupplier, eq(importFulfillmentSupplier.id, listingSourcing.fulfillmentSupplierId))
-          .where(inArray(listing.id, duplicateIds.slice(0, 3)));
-        const duplicateMatches = currentMatches.map((match) => ({ ...match,
-          updateEligible: duplicateIds.length === 1 && match.commercialSource === "SUPPLIER_SOURCED" && match.sourceSupplierId === batch.supplierId }));
-        await tx.update(catalogImportRow).set({ status: "DUPLICATE_REVIEW", duplicateOfListingIds: duplicateIds,
-          warnings: [...new Set([...candidate.warnings, "POSSIBLE_DUPLICATE_DOMAIN"])], duplicateDecision: null, duplicateReason: null,
-          duplicateDecidedByUserId: null, duplicateDecidedAt: null, updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
-        await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "NEW_DUPLICATE_FOUND" });
-        skippedRows.push({ rowId: row.id, status: "DUPLICATE_REVIEW", errors: candidate.errors, warnings: [...new Set([...candidate.warnings, "POSSIBLE_DUPLICATE_DOMAIN"])],
-          duplicateOfRow: candidate.duplicateOfRow, duplicateOfListingIds: duplicateIds, duplicateMatches,
-          hiddenMatchCount: Math.max(0, duplicateIds.length - duplicateMatches.length) });
-        if (stopOnSkip) break;
-        continue;
-      }
-      const terms = { ...listingInput, websiteUrl: normalizedUrl, retailPriceCents: Number(price) } as ListingTerms;
-      if (validateListingTerms(terms).length || validateListingRelationships("SUPPLIER_SOURCED", batch.supplierId, batch.supplierId).length) {
-        await tx.update(catalogImportRow).set({ status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }], updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
-        await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "DRAFT_VALIDATION_FAILED" });
-        skippedRows.push({ rowId: row.id, status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }],
-          warnings: candidate.warnings, duplicateOfRow: candidate.duplicateOfRow, duplicateOfListingIds: candidate.duplicateOfListingIds });
-        if (stopOnSkip) break;
-        continue;
-      }
-      const created = await insertDraftListingInTransaction(tx, userId, {
-        terms, commercialSource: "SUPPLIER_SOURCED", supplierId: batch.supplierId, fulfillmentSupplierId: batch.supplierId, urlVisibleWithoutRecharge: false,
-      });
-      urls.push({ id: created.id, websiteUrl: terms.websiteUrl });
-      await tx.update(catalogImportRow).set({ status: "APPLIED", appliedListingId: created.id, reviewedByUserId: userId,
-        reviewedAt: new Date(), updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
-      appliedRows.set(row.rowNumber, created.id);
-      applied.push(created.id);
-      appliedListings.push({ rowId: row.id, id: created.id, title: terms.title, websiteUrl: terms.websiteUrl, status: "DRAFT",
-        retailPriceCents: Number(price), revision: 1 });
-      await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLIED", targetType: "catalog_import_row", targetId: row.id,
-        metadata: { result: "DRAFT_CREATED", version: 1 } });
+  const applied: string[] = [];
+  const appliedListings: Array<{ rowId: string; id: string; title: string; websiteUrl: string; status: "DRAFT"; retailPriceCents: number; revision: number }> = [];
+  const skippedRows: Array<{ rowId: string; status: string; errors: Array<{ field: string; code: string }>; warnings: string[]; duplicateOfRow: number | null;
+    duplicateOfListingIds: string[]; duplicateMatches?: Array<{ id: string; title: string; description: string; countryCode: string; primaryLanguage: string;
+      categories: string[]; retailPriceCents: string | number; linkType: string; linkValidity: string; turnaroundDays: number;
+      allowsSportsAndGaming: boolean | null; allowsPharmacy: boolean | null; allowsCrypto: boolean | null; allowsForeignLanguage: boolean | null;
+      sponsoredContentMarking: boolean; status: string; revision: number; websiteUrl: string; commercialSource: string;
+      sourceSupplierId: string | null; sourceSupplierName: string | null; fulfillmentSupplierName: string | null; updateEligible: boolean }>;
+    hiddenMatchCount?: number }> = [];
+  const attemptedRowIds: string[] = [];
+  const previouslyAppliedRows = await tx.select({ rowNumber: catalogImportRow.rowNumber, listingId: catalogImportRow.appliedListingId })
+    .from(catalogImportRow).where(and(eq(catalogImportRow.batchId, batchId), eq(catalogImportRow.status, "APPLIED")));
+  const appliedRows = new Map(previouslyAppliedRows.flatMap((row) => row.listingId ? [[row.rowNumber, row.listingId] as const] : []));
+  for (const row of rows) {
+    attemptedRowIds.push(row.id);
+    if (row.status === "READY" && !row.platformCategoryOverride?.length) {
+      const warnings = [...new Set([...row.warnings, "CATEGORY_ROW_MAPPING_REQUIRED"])];
+      await tx.update(catalogImportRow).set({ status: "NEEDS_REVIEW", warnings, updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
+      await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id,
+        reasonCode: "PLATFORM_CATEGORY_REQUIRED" });
+      skippedRows.push({ rowId: row.id, status: "NEEDS_REVIEW", errors: row.errors, warnings,
+        duplicateOfRow: row.duplicateOfRow, duplicateOfListingIds: row.duplicateOfListingIds });
+      if (stopOnSkip) break;
+      continue;
     }
-    await tx.insert(catalogImportApplyEvent).values({ id: randomUUID(), batchId, actorUserId: userId,
-      selectedRowIds: attemptedRowIds, appliedListingIds: applied });
-    const status = await refreshBatchStatus(tx, batchId, batch.appliedAt);
-    await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_BATCH_APPLY_FINISHED", targetType: "catalog_import_batch", targetId: batchId,
-      metadata: { itemCount: attemptedRowIds.length, result: `${applied.length}_DRAFTS_CREATED` } });
-    return { appliedCount: applied.length, batchStatus: status, appliedListings, skippedRows };
-  });
+    if (row.status !== "READY") {
+      await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id,
+        reasonCode: `ROW_${row.status}` });
+      skippedRows.push({ rowId: row.id, status: row.status, errors: row.errors, warnings: row.warnings,
+        duplicateOfRow: row.duplicateOfRow, duplicateOfListingIds: row.duplicateOfListingIds });
+      if (stopOnSkip) break;
+      continue;
+    }
+    const candidate = applyPlatformCategoryOverride(rowCandidate({ ...row, values: row.stagedValues }), row.platformCategoryOverride!);
+    if ((candidate.duplicateOfRow !== null || candidate.duplicateOfListingIds.length > 0) && row.duplicateDecision !== "KEEP_SEPARATE") {
+      await tx.update(catalogImportRow).set({ status: "DUPLICATE_REVIEW", updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
+      await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "DUPLICATE_REVIEW_REQUIRED" });
+      skippedRows.push({ rowId: row.id, status: "DUPLICATE_REVIEW", errors: row.errors, warnings: row.warnings,
+        duplicateOfRow: row.duplicateOfRow, duplicateOfListingIds: row.duplicateOfListingIds });
+      if (stopOnSkip) break;
+      continue;
+    }
+    let listingInput: ReturnType<typeof toDraftListingInput>;
+    try { listingInput = toDraftListingInput(candidate); }
+    catch {
+      await tx.update(catalogImportRow).set({ status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }], updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
+      await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "DRAFT_VALIDATION_FAILED" });
+      skippedRows.push({ rowId: row.id, status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }],
+        warnings: row.warnings, duplicateOfRow: row.duplicateOfRow, duplicateOfListingIds: row.duplicateOfListingIds });
+      if (stopOnSkip) break;
+      continue;
+    }
+    const price = row.proposedRetailPriceCents === null ? undefined : Number(row.proposedRetailPriceCents);
+    if (price === undefined || !Number.isSafeInteger(price) || price <= 0) throw new Error("IMPORT_RETAIL_PRICE_REQUIRED");
+    const expectedDuplicates = new Set(candidate.duplicateOfListingIds);
+    const normalizedUrl = normalizeWebsiteUrl(listingInput.websiteUrl);
+    if (!normalizedUrl) {
+      await tx.update(catalogImportRow).set({ status: "INVALID", errors: [{ field: "websiteUrl", code: "INVALID_HTTPS_ORIGIN" }], updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
+      await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "INVALID_WEBSITE_URL" });
+      skippedRows.push({ rowId: row.id, status: "INVALID", errors: [{ field: "websiteUrl", code: "INVALID_HTTPS_ORIGIN" }],
+        warnings: row.warnings, duplicateOfRow: row.duplicateOfRow, duplicateOfListingIds: row.duplicateOfListingIds });
+      if (stopOnSkip) break;
+      continue;
+    }
+    const currentUrlKey = normalizeWebsiteUrlLookupKey(normalizedUrl)!;
+    const reviewedSameBatchDuplicate = row.duplicateDecision === "KEEP_SEPARATE" && candidate.duplicateOfRow !== null
+      ? appliedRows.get(candidate.duplicateOfRow) : undefined;
+    const newDuplicates = (urlsByKey.get(currentUrlKey) ?? []).filter((entry) =>
+      !expectedDuplicates.has(entry.id) && entry.id !== reviewedSameBatchDuplicate);
+    if (newDuplicates.length) {
+      const duplicateIds = [...new Set([...candidate.duplicateOfListingIds, ...newDuplicates.map((entry) => entry.id)])];
+      const currentMatches = await tx.select({
+        id: listing.id, title: listing.title, description: listing.description, countryCode: listing.countryCode,
+        primaryLanguage: listing.primaryLanguage, categories: listing.categories, retailPriceCents: listing.retailPriceCents,
+        linkType: listing.linkType, linkValidity: listing.linkValidity, turnaroundDays: listing.turnaroundDays,
+        allowsSportsAndGaming: listing.allowsSportsAndGaming, allowsPharmacy: listing.allowsPharmacy,
+        allowsCrypto: listing.allowsCrypto, allowsForeignLanguage: listing.allowsForeignLanguage,
+        sponsoredContentMarking: listing.sponsoredContentMarking, status: listing.status, revision: listing.revision,
+        websiteUrl: listingUrl.websiteUrl, commercialSource: listingSourcing.commercialSource,
+        sourceSupplierId: listingSourcing.supplierId, sourceSupplierName: importSourceSupplier.name, fulfillmentSupplierName: importFulfillmentSupplier.name,
+      }).from(listing).innerJoin(listingUrl, eq(listingUrl.listingId, listing.id))
+        .innerJoin(listingSourcing, eq(listingSourcing.listingId, listing.id))
+        .leftJoin(importSourceSupplier, eq(importSourceSupplier.id, listingSourcing.supplierId))
+        .leftJoin(importFulfillmentSupplier, eq(importFulfillmentSupplier.id, listingSourcing.fulfillmentSupplierId))
+        .where(inArray(listing.id, duplicateIds.slice(0, 3)));
+      const duplicateMatches = currentMatches.map((match) => ({ ...match,
+        updateEligible: duplicateIds.length === 1 && match.commercialSource === "SUPPLIER_SOURCED" && match.sourceSupplierId === batch.supplierId }));
+      await tx.update(catalogImportRow).set({ status: "DUPLICATE_REVIEW", duplicateOfListingIds: duplicateIds,
+        warnings: [...new Set([...candidate.warnings, "POSSIBLE_DUPLICATE_DOMAIN"])], duplicateDecision: null, duplicateReason: null,
+        duplicateDecidedByUserId: null, duplicateDecidedAt: null, updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
+      await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "NEW_DUPLICATE_FOUND" });
+      skippedRows.push({ rowId: row.id, status: "DUPLICATE_REVIEW", errors: candidate.errors, warnings: [...new Set([...candidate.warnings, "POSSIBLE_DUPLICATE_DOMAIN"])],
+        duplicateOfRow: candidate.duplicateOfRow, duplicateOfListingIds: duplicateIds, duplicateMatches,
+        hiddenMatchCount: Math.max(0, duplicateIds.length - duplicateMatches.length) });
+      if (stopOnSkip) break;
+      continue;
+    }
+    const terms = { ...listingInput, websiteUrl: normalizedUrl, retailPriceCents: Number(price) } as ListingTerms;
+    if (validateListingTerms(terms).length || validateListingRelationships("SUPPLIER_SOURCED", batch.supplierId, batch.supplierId).length) {
+      await tx.update(catalogImportRow).set({ status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }], updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
+      await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "DRAFT_VALIDATION_FAILED" });
+      skippedRows.push({ rowId: row.id, status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }],
+        warnings: candidate.warnings, duplicateOfRow: candidate.duplicateOfRow, duplicateOfListingIds: candidate.duplicateOfListingIds });
+      if (stopOnSkip) break;
+      continue;
+    }
+    const created = await insertDraftListingInTransaction(tx, userId, {
+      terms, commercialSource: "SUPPLIER_SOURCED", supplierId: batch.supplierId, fulfillmentSupplierId: batch.supplierId, urlVisibleWithoutRecharge: false,
+    });
+    urlsByKey.set(currentUrlKey, [...(urlsByKey.get(currentUrlKey) ?? []), { id: created.id, websiteUrl: terms.websiteUrl }]);
+    await tx.update(catalogImportRow).set({ status: "APPLIED", appliedListingId: created.id, reviewedByUserId: userId,
+      reviewedAt: new Date(), updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
+    appliedRows.set(row.rowNumber, created.id);
+    applied.push(created.id);
+    appliedListings.push({ rowId: row.id, id: created.id, title: terms.title, websiteUrl: terms.websiteUrl, status: "DRAFT",
+      retailPriceCents: Number(price), revision: 1 });
+    await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLIED", targetType: "catalog_import_row", targetId: row.id,
+      metadata: { result: "DRAFT_CREATED", version: 1 } });
+  }
+  await tx.insert(catalogImportApplyEvent).values({ id: randomUUID(), batchId, actorUserId: userId,
+    selectedRowIds: attemptedRowIds, appliedListingIds: applied });
+  const status = await refreshBatchStatus(tx, batchId, batch.appliedAt);
+  await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_BATCH_APPLY_FINISHED", targetType: "catalog_import_batch", targetId: batchId,
+    metadata: { itemCount: attemptedRowIds.length, result: `${applied.length}_DRAFTS_CREATED` } });
+  return { appliedCount: applied.length, batchStatus: status, appliedListings, skippedRows };
 }
 
 export async function applyStagedImportUpdate(

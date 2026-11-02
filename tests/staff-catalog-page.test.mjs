@@ -6,6 +6,7 @@ test("staff catalog exposes real website links and announces listing action feed
   const page = await readFile(new URL("../src/app/staff/(console)/catalog/page.tsx", import.meta.url), "utf8");
   const action = await readFile(new URL("../src/app/staff/(console)/catalog/actions.ts", import.meta.url), "utf8");
   const actionForm = await readFile(new URL("../src/app/staff/(console)/catalog/listing-status-action-form.tsx", import.meta.url), "utf8");
+  const actionState = await readFile(new URL("../src/app/staff/(console)/catalog/listing-status-action-state.ts", import.meta.url), "utf8");
   const catalogAdmin = await readFile(new URL("../src/server/catalog/admin.ts", import.meta.url), "utf8");
   const styles = await readFile(new URL("../src/app/staff/(console)/catalog/catalog.module.css", import.meta.url), "utf8");
   assert.match(page, /item\.websiteUrl \? <a className=\{styles\.websiteLink\} href=\{item\.websiteUrl\} target="_blank" rel="noopener noreferrer">/);
@@ -19,6 +20,15 @@ test("staff catalog exposes real website links and announces listing action feed
   assert.match(page, /failedListingId && params\.error !== "listing-unavailable"/);
   assert.match(action, /logSafeFailure\("catalog_listing_status_transition_failed"/);
   assert.match(action, /validStatuses: ListingStatus\[\] = \["DRAFT", "REVIEW", "LIVE", "PAUSED", "ARCHIVED"\]/);
+  assert.match(action, /revalidatePath\("\/staff\/catalog"\)/);
+  assert.doesNotMatch(action, /export async function transitionListingAction[\s\S]*?redirect\("\/staff"\)/);
+  assert.match(action, /return \{ result: "success", message: successMessage \}/);
+  assert.match(actionForm, /useActionState\(action, initialState\)/);
+  assert.match(actionForm, /state\.result === "error" \? "alert" : "status"/);
+  assert.match(actionForm, /useFormStatus\(\)/);
+  assert.match(actionForm, /disabled=\{pending\}/);
+  assert.match(actionForm, /ListingStatusActionForm must be inside ListingStatusFeedback/);
+  assert.match(actionState, /result: "success" \| "error" \| null/);
   assert.match(catalogAdmin, /if \(row\.status === next\) return \{ id, status: next, unchanged: true \}/);
   assert.match(page, /error\.message === "Unauthorized"\) redirect\("\/staff\/sign-in"\)/);
   assert.match(page, /name="q" defaultValue=\{result\.query\}/);
@@ -36,4 +46,7 @@ test("staff catalog exposes real website links and announces listing action feed
   assert.match(styles, /\.cellLabel \{ display:block/);
   assert.match(styles, /\.button:focus-visible \{[^}]*outline:2px solid var\(--focus\)/);
   assert.doesNotMatch(styles, /\.button:focus-visible[^}]*outline:2px solid transparent/);
+  assert.match(page, /ARCHIVED: \["DRAFT"\]/);
+  assert.match(page, /currentStatus === "ARCHIVED" && status === "DRAFT"\) return "Unarchive"/);
+  assert.match(page, /currentStatus === "PAUSED" && status === "LIVE"\) return "Resume"/);
 });

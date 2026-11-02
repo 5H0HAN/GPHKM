@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { Client } from "pg";
 
 const databaseUrl = process.env.MIGRATION_DATABASE_URL;
@@ -49,7 +50,9 @@ async function expectCheckConstraint(client: Client, name: string, run: () => Pr
     await run();
     assert.fail(`${name} unexpectedly succeeded`);
   } catch (error) {
-    assert.equal(typeof error === "object" && error !== null && "code" in error ? error.code : null, "23514", `${name} must fail with a check-constraint violation`);
+    const code = typeof error === "object" && error !== null && "code" in error ? error.code : null;
+    const message = typeof error === "object" && error !== null && "message" in error ? error.message : "unknown error";
+    assert.equal(code, "23514", `${name} must fail with a check-constraint violation; received ${String(message)}`);
   } finally {
     await client.query("ROLLBACK TO SAVEPOINT expected_constraint_failure");
     await client.query("RELEASE SAVEPOINT expected_constraint_failure");
@@ -79,6 +82,19 @@ async function expectUniqueViolation(client: Client, name: string, run: () => Pr
   } finally {
     await client.query("ROLLBACK TO SAVEPOINT expected_unique_failure");
     await client.query("RELEASE SAVEPOINT expected_unique_failure");
+  }
+}
+
+async function expectSqlState(client: Client, name: string, code: string, run: () => Promise<unknown>) {
+  await client.query("SAVEPOINT expected_sql_state_failure");
+  try {
+    await run();
+    assert.fail(`${name} unexpectedly succeeded`);
+  } catch (error) {
+    assert.equal(typeof error === "object" && error !== null && "code" in error ? error.code : null, code, `${name} must fail with SQLSTATE ${code}`);
+  } finally {
+    await client.query("ROLLBACK TO SAVEPOINT expected_sql_state_failure");
+    await client.query("RELEASE SAVEPOINT expected_sql_state_failure");
   }
 }
 
@@ -479,6 +495,262 @@ try {
        ($12, $9, $10, $13, repeat('d', 64), 1000, 500, 1500, 'rls-smoke-v1', 'gphkm-content-policy-v1', now())`,
     [ownerOrderA, organizationA, userA, `owner-a-${suffix}`, memberOrderA, memberA, `member-a-${suffix}`, ownerOrderB, organizationB, userB, `owner-b-${suffix}`, cancellationOrder, `cancel-${suffix}`],
   );
+
+  phase = "checking staff customer directory and account commands as gphkm_runtime";
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminA]);
+  const directoryCount = await migration.query<{ total: string }>(
+    "select public.gphkm_staff_customer_search_count($1, 'ALL')::text as total", [suffix],
+  );
+  assert.equal(directoryCount.rows[0]?.total, "3", "Admin search returns only the three synthetic customers, not similarly named staff");
+  const directoryRows = await migration.query(
+    "select * from public.gphkm_staff_customer_search($1, 'ALL', 50, 0)", [suffix],
+  );
+  assert.deepEqual(directoryRows.rows.map((row) => row.customer_id).sort(), [userA, userB, memberA].sort(),
+    "directory results include customer members and exclude Admin, Finance, and Super Admin identities");
+  await expectSqlState(migration, "customer directory offset above the supported range", "22023", () => migration.query(
+    "select * from public.gphkm_staff_customer_search($1, 'ALL', 50, 100000)", [suffix],
+  ));
+  assert.deepEqual(Object.keys(directoryRows.rows[0]!).sort(), [
+    "customer_id", "customer_name", "customer_email", "email_verified", "joined_at", "account_state",
+    "organization_count", "active_organization_count", "paid_order_count", "open_support_count",
+  ].sort(), "directory search returns only its allowlisted columns");
+  const directoryDetail = await migration.query<{ detail: Record<string, unknown> | null }>(
+    "select public.gphkm_staff_customer_detail($1) as detail", [userA],
+  );
+  assert.deepEqual(Object.keys(directoryDetail.rows[0]?.detail ?? {}).sort(),
+    ["customer", "memberships", "orders", "supportCases", "closureRequests"].sort(),
+    "customer detail returns only its allowlisted sections");
+  assert.deepEqual(Object.keys((directoryDetail.rows[0]?.detail?.customer ?? {}) as object).sort(),
+    ["id", "name", "email", "emailVerified", "joinedAt", "accountState", "reasonCode", "changedAt"].sort(),
+    "customer identity projection excludes private billing, supplier, and payment data");
+  const adminWallet = await migration.query<{ balances: Array<Record<string, unknown>> }>(
+    "select public.gphkm_staff_customer_wallet_balance_projection($1) as balances", [userA],
+  );
+  assert.deepEqual(adminWallet.rows[0]?.balances, [{
+    organizationId: organizationA, organizationName: "RLS Fixture A", balanceMinor: "5000", currency: "USD",
+  }], "Admin may see the current balance only for the customer's active, open organization");
+  const staffDetail = await migration.query<{ detail: unknown }>(
+    "select public.gphkm_staff_customer_detail($1) as detail", [adminA],
+  );
+  assert.equal(staffDetail.rows[0]?.detail, null, "staff identity is not a customer directory record");
+  const staffWallet = await migration.query<{ balances: unknown[] }>(
+    "select public.gphkm_staff_customer_wallet_balance_projection($1) as balances", [adminA],
+  );
+  assert.deepEqual(staffWallet.rows[0]?.balances, [], "wallet projection excludes staff identities");
+
+  phase = "checking literal customer-directory search and search indexes";
+  await migration.query("RESET ROLE");
+  const escapedLike = await migration.query<{ escaped: string }>(
+    "select public.gphkm_escape_like_search($1) as escaped", ["50%_\\ target"],
+  );
+  assert.equal(escapedLike.rows[0]?.escaped, "50\\%\\_\\\\ target",
+    "LIKE helper escapes percent, underscore, and backslash as literal characters");
+  const searchToken = `lit${randomUUID().replaceAll("-", "").toLowerCase()}`;
+  const organizationSearchToken = `org${randomUUID().replaceAll("-", "").toLowerCase()}`;
+  const literalUser = randomUUID();
+  const wildcardControlUser = randomUUID();
+  const literalOrganization = randomUUID();
+  const wildcardControlOrganization = randomUUID();
+  await migration.query(
+    `insert into auth_user (id, name, email, email_verified) values
+       ($1, $2, $3, true), ($4, $5, $6, true)`,
+    [literalUser, `F03 ${searchToken}% ${searchToken}_ ${searchToken}\\ target ${searchToken}%_\\`,
+      `f03-literal-${searchToken}@example.invalid`, wildcardControlUser,
+      `F03 control ${searchToken}X ${searchToken}X ${searchToken} target ${searchToken}XY target`,
+      `f03-control-${searchToken}@example.invalid`],
+  );
+  await migration.query(
+    `insert into organization (id, name, created_by) values
+       ($1, $2, $3), ($4, $5, $6)`,
+    [literalOrganization, `${organizationSearchToken}%_\\ target`, literalUser,
+      wildcardControlOrganization, `${organizationSearchToken}XY target`, wildcardControlUser],
+  );
+  await migration.query(
+    `insert into organization_member (id, organization_id, user_id, role, active) values
+       ($1, $2, $3, 'OWNER', true), ($4, $5, $6, 'OWNER', true)`,
+    [randomUUID(), literalOrganization, literalUser, randomUUID(), wildcardControlOrganization, wildcardControlUser],
+  );
+  const trgmExtension = await migration.query<{ installed: boolean }>(
+    "select exists (select 1 from pg_extension where extname = 'pg_trgm') as installed",
+  );
+  assert.equal(trgmExtension.rows[0]?.installed, true, "pg_trgm is installed for indexed literal customer search");
+  const searchIndexes = await migration.query<{ indexname: string; indexdef: string }>(
+    `select indexname, indexdef from pg_indexes
+       where schemaname = 'public' and indexname = any($1::text[])`,
+    [["organization_name_lower_trgm_idx", "auth_user_name_lower_trgm_idx", "auth_user_email_lower_trgm_idx"]],
+  );
+  assert.deepEqual(searchIndexes.rows.map((row) => row.indexname).sort(), [
+    "auth_user_email_lower_trgm_idx", "auth_user_name_lower_trgm_idx", "organization_name_lower_trgm_idx",
+  ], "all three customer-directory trigram indexes are present");
+  assert(searchIndexes.rows.every((row) => row.indexdef.includes("USING gin") && row.indexdef.includes("gin_trgm_ops")),
+    "customer-directory trigram indexes use GIN with gin_trgm_ops");
+
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminA]);
+  for (const term of [`${searchToken}%`, `${searchToken}_`, `${searchToken}\\ target`, `${searchToken}%_\\`]) {
+    const count = await migration.query<{ total: string }>(
+      "select public.gphkm_staff_customer_search_count($1, 'ALL')::text as total", [term],
+    );
+    const rows = await migration.query<{ customer_id: string }>(
+      "select customer_id from public.gphkm_staff_customer_search($1, 'ALL', 10, 0)", [term],
+    );
+    assert.equal(count.rows[0]?.total, "1", `literal search count matches only the customer for ${JSON.stringify(term)}`);
+    assert.deepEqual(rows.rows.map((row) => row.customer_id), [literalUser],
+      `literal search results exclude wildcard-like control text for ${JSON.stringify(term)}`);
+  }
+  const organizationTerm = `${organizationSearchToken}%_\\ target`;
+  const organizationCount = await migration.query<{ total: string }>(
+    "select public.gphkm_staff_customer_search_count($1, 'ALL')::text as total", [organizationTerm],
+  );
+  const organizationRows = await migration.query<{ customer_id: string }>(
+    "select customer_id from public.gphkm_staff_customer_search($1, 'ALL', 10, 0)", [organizationTerm],
+  );
+  assert.equal(organizationCount.rows[0]?.total, "1", "literal organization-name lookup count excludes wildcard controls");
+  assert.deepEqual(organizationRows.rows.map((row) => row.customer_id), [literalUser],
+    "customer-directory search matches literal special characters in organization names");
+
+  await migration.query("select set_config('app.user_id', $1, true)", [superAdminA]);
+  const superAdminCount = await migration.query<{ total: string }>(
+    "select public.gphkm_staff_customer_search_count($1, 'ALL')::text as total", [suffix],
+  );
+  assert.equal(superAdminCount.rows[0]?.total, "3", "Super Admin may use the directory projection");
+
+  await migration.query("select set_config('app.user_id', $1, true)", [financeA]);
+  await expectPermissionDenied(migration, "Finance customer directory count", () => migration.query(
+    "select public.gphkm_staff_customer_search_count($1, 'ALL')", [suffix],
+  ));
+  await expectPermissionDenied(migration, "Finance customer directory search", () => migration.query(
+    "select * from public.gphkm_staff_customer_search($1, 'ALL', 10, 0)", [suffix],
+  ));
+  await expectPermissionDenied(migration, "Finance customer detail", () => migration.query(
+    "select public.gphkm_staff_customer_detail($1)", [userA],
+  ));
+  await expectPermissionDenied(migration, "Finance customer wallet projection", () => migration.query(
+    "select public.gphkm_staff_customer_wallet_balance_projection($1)", [userA],
+  ));
+  await expectPermissionDenied(migration, "Finance customer suspension", () => migration.query(
+    "select public.gphkm_staff_set_customer_account_state($1, 'ACTIVE', 'SUSPENDED', 'SECURITY_REVIEW')", [userB],
+  ));
+  await expectPermissionDenied(migration, "Finance customer membership change", () => migration.query(
+    "select public.gphkm_staff_update_customer_membership($1, $2, 'OWNER', true, 'MEMBER', true, 'SUPPORT_REVIEW')",
+    [organizationA, userA],
+  ));
+  await expectPermissionDenied(migration, "Finance customer suspension projection", () => migration.query(
+    "select public.gphkm_customer_account_is_suspended($1)", [userA],
+  ));
+  await migration.query("RESET ROLE");
+
+  phase = "checking customer membership controls, suspension, and audit evidence";
+  const directorySession = randomUUID();
+  await migration.query(
+    "insert into auth_session (id, token, user_id, expires_at) values ($1, $2, $3, now() + interval '1 hour')",
+    [directorySession, `rls-directory-session-${suffix}`, userB],
+  );
+  const onlyActiveOwner = await migration.query<{ role: string; active: boolean }>(
+    "select role, active from organization_member where organization_id = $1 and user_id = $2",
+    [organizationA, userA],
+  );
+  assert.deepEqual(onlyActiveOwner.rows[0], { role: "OWNER", active: true }, "last-owner fixture has the expected role and state");
+  const remainingOwnersBefore = await migration.query<{ count: string }>(
+    "select count(*)::text as count from organization_member where organization_id = $1 and role = 'OWNER' and active",
+    [organizationA],
+  );
+  assert.equal(remainingOwnersBefore.rows[0]?.count, "1", "last-owner fixture contains exactly one active Owner");
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminA]);
+  await expectCheckConstraint(migration, "demoting the last active Owner", () => migration.query(
+    "select public.gphkm_staff_update_customer_membership($1, $2, 'OWNER', true, 'MEMBER', true, 'SUPPORT_REVIEW')",
+    [organizationA, userA],
+  ));
+  const promoteMember = await migration.query<{ changed: boolean }>(
+    "select public.gphkm_staff_update_customer_membership($1, $2, 'MEMBER', true, 'OWNER', true, 'SUPPORT_REVIEW') as changed",
+    [organizationB, memberA],
+  );
+  assert.equal(promoteMember.rows[0]?.changed, true, "Admin may promote a member when another active Owner remains");
+  await expectSqlState(migration, "stale customer membership state", "40001", () => migration.query(
+    "select public.gphkm_staff_update_customer_membership($1, $2, 'MEMBER', true, 'OWNER', true, 'SUPPORT_REVIEW')",
+    [organizationB, memberA],
+  ));
+  const restoreMember = await migration.query<{ changed: boolean }>(
+    "select public.gphkm_staff_update_customer_membership($1, $2, 'OWNER', true, 'MEMBER', true, 'CORRECTION') as changed",
+    [organizationB, memberA],
+  );
+  assert.equal(restoreMember.rows[0]?.changed, true, "Admin may restore a member role with current expected state");
+  const unchangedMember = await migration.query<{ changed: boolean }>(
+    "select public.gphkm_staff_update_customer_membership($1, $2, 'MEMBER', true, 'MEMBER', true, 'CORRECTION') as changed",
+    [organizationB, memberA],
+  );
+  assert.equal(unchangedMember.rows[0]?.changed, false, "an unchanged membership is an idempotent no-op");
+
+  const suspendCustomer = await migration.query<{ changed: boolean }>(
+    "select public.gphkm_staff_set_customer_account_state($1, 'ACTIVE', 'SUSPENDED', 'SECURITY_REVIEW') as changed",
+    [userB],
+  );
+  assert.equal(suspendCustomer.rows[0]?.changed, true, "Admin may suspend an active customer");
+  await expectSqlState(migration, "stale customer account state", "40001", () => migration.query(
+    "select public.gphkm_staff_set_customer_account_state($1, 'ACTIVE', 'SUSPENDED', 'SECURITY_REVIEW')", [userB],
+  ));
+  await migration.query("select set_config('app.user_id', $1, true)", [userB]);
+  const suspendedForCustomer = await migration.query<{ suspended: boolean }>(
+    "select public.gphkm_customer_account_is_suspended($1) as suspended", [userB],
+  );
+  assert.equal(suspendedForCustomer.rows[0]?.suspended, true, "customer account-state projection blocks a suspended customer");
+  await migration.query("select set_config('app.user_id', $1, true)", [adminA]);
+  const suspendedDirectory = await migration.query<{ customer_id: string }>(
+    "select customer_id from public.gphkm_staff_customer_search($1, 'SUSPENDED', 10, 0)", [suffix],
+  );
+  assert.deepEqual(suspendedDirectory.rows.map((row) => row.customer_id), [userB], "suspended-state filtering reflects the committed command state");
+  await migration.query("RESET ROLE");
+  const remainingSessions = await migration.query<{ count: string }>(
+    "select count(*)::text as count from auth_session where user_id = $1", [userB],
+  );
+  assert.equal(remainingSessions.rows[0]?.count, "0", "suspension revokes existing customer sessions in the same transaction");
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true)", [adminA]);
+  const reactivateCustomer = await migration.query<{ changed: boolean }>(
+    "select public.gphkm_staff_set_customer_account_state($1, 'SUSPENDED', 'ACTIVE', 'CUSTOMER_REQUEST') as changed",
+    [userB],
+  );
+  assert.equal(reactivateCustomer.rows[0]?.changed, true, "Admin may reactivate with the current expected state");
+  const unchangedAccount = await migration.query<{ changed: boolean }>(
+    "select public.gphkm_staff_set_customer_account_state($1, 'ACTIVE', 'ACTIVE', 'CUSTOMER_REQUEST') as changed",
+    [userB],
+  );
+  assert.equal(unchangedAccount.rows[0]?.changed, false, "an unchanged account state is an idempotent no-op");
+  await migration.query("RESET ROLE");
+
+  const membershipAudit = await migration.query<{ count: string; states: string[] }>(
+    `select count(*)::text as count, array_agg((metadata->>'fromState') || '>' || (metadata->>'toState')) as states
+       from audit_event where organization_id = $1 and actor_user_id = $2 and action = 'customer.organization_membership_changed'`,
+    [organizationB, adminA],
+  );
+  assert.equal(membershipAudit.rows[0]?.count, "2", "successful membership changes append exactly one audit event each; failed and no-op commands do not");
+  assert.deepEqual(membershipAudit.rows[0]?.states.sort(), ["MEMBER:true>OWNER:true", "OWNER:true>MEMBER:true"].sort(),
+    "membership audit records both exact state changes");
+  const accountAudit = await migration.query<{ count: string; states: string[]; reasons: string[] }>(
+    `select count(*)::text as count,
+       array_agg((metadata->>'fromState') || '>' || (metadata->>'toState')) as states,
+       array_agg(reason_code) as reasons
+       from audit_event where target_id = $1 and actor_user_id = $2 and action = 'customer.account_state_changed'`,
+    [userB, adminA],
+  );
+  assert.equal(accountAudit.rows[0]?.count, "2", "suspend/reactivate each append exactly one audit event");
+  assert.deepEqual(accountAudit.rows[0]?.states.sort(), ["ACTIVE>SUSPENDED", "SUSPENDED>ACTIVE"].sort(),
+    "account audit records both exact state changes");
+  assert.deepEqual(accountAudit.rows[0]?.reasons.sort(), ["SECURITY_REVIEW", "CUSTOMER_REQUEST"].sort(),
+    "account audit records each transition reason");
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true)", [adminA]);
+  await expectWriteDenied(migration, "direct customer account-state insert", () => migration.query(
+    `insert into customer_account_control (user_id, state, reason_code, changed_by_user_id)
+     values ($1, 'SUSPENDED', 'SECURITY_REVIEW', $2)`, [userA, adminA],
+  ));
+  await expectWriteDenied(migration, "direct customer account-state update", () => migration.query(
+    "update customer_account_control set state = 'SUSPENDED' where user_id = $1", [userB],
+  ));
+  await migration.query("RESET ROLE");
+
   phase = "requiring content-policy acceptance for runtime order creation";
   await migration.query("SET LOCAL ROLE gphkm_runtime");
   await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
@@ -524,6 +796,166 @@ try {
     "insert into marketplace_listing_url (listing_id, website_url) values ($1, 'https://blog.fixture.example/')",
     [listingFixture],
   );
+  phase = "checking category migration, staged-import permissions, discard, and applied-history protection";
+  const discardBatchId = randomUUID();
+  const discardRowId = randomUUID();
+  const discardCostId = randomUUID();
+  const discardSourceKey = randomUUID();
+  const appliedImportBatchId = randomUUID();
+  const appliedImportRowId = randomUUID();
+  const applyHistoryBatchId = randomUUID();
+  const applyHistoryRowId = randomUUID();
+  const applyHistoryEventId = randomUUID();
+  const legacyCategoryBatchId = randomUUID();
+  const legacyCategoryRowId = randomUUID();
+
+  await migration.query(
+    `insert into catalog_import_batch (id, supplier_id, source_type, content_sha256, mapping, created_by_user_id)
+     values ($1, $2, 'CSV', repeat('c', 64), '{"__categoryMappings":{"General":"Business"}}'::jsonb, $3)`,
+    [legacyCategoryBatchId, supplierFixture, adminA],
+  );
+  await migration.query(
+    `insert into catalog_import_row (id, batch_id, row_number, original_values, staged_values, warnings, status)
+     values ($1, $2, 2, '{"category":"General"}'::jsonb, '{"title":"Legacy","categories":"Business"}'::jsonb,
+       '["CATEGORY_MAPPING_CONFIRMATION_REQUIRED"]'::jsonb, 'READY')`,
+    [legacyCategoryRowId, legacyCategoryBatchId],
+  );
+  const categoryMigration = await readFile(new URL("../src/db/migrations/0143_import_categories_are_row_scoped.sql", import.meta.url), "utf8");
+  await migration.query(categoryMigration.replaceAll("--> statement-breakpoint", "\n"));
+  const migratedCategory = await migration.query<{
+    has_batch_mapping: boolean; has_staged_categories: boolean; row_status: string; warnings: string[];
+  }>(
+    `select b.mapping ? '__categoryMappings' as has_batch_mapping,
+       r.staged_values ? 'categories' as has_staged_categories, r.status::text as row_status,
+       array(select jsonb_array_elements_text(r.warnings)) as warnings
+     from catalog_import_batch b join catalog_import_row r on r.batch_id = b.id
+     where b.id = $1 and r.id = $2`,
+    [legacyCategoryBatchId, legacyCategoryRowId],
+  );
+  assert.deepEqual(migratedCategory.rows[0], {
+    has_batch_mapping: false, has_staged_categories: false, row_status: "NEEDS_REVIEW",
+    warnings: ["CATEGORY_ROW_MAPPING_REQUIRED"],
+  }, "category migration keeps legacy source labels while requiring row-specific platform review");
+
+  await migration.query(
+    `insert into catalog_import_batch (id, supplier_id, source_type, source_reference, source_filename,
+       source_object_key, source_bytes, content_sha256, mapping, created_by_user_id)
+     values ($1, $2, 'CSV', 'RLS smoke fixture', 'fixture.csv', $3, 42, repeat('a', 64), '{}'::jsonb, $4)`,
+    [discardBatchId, supplierFixture, discardSourceKey, adminA],
+  );
+  await migration.query(
+    `insert into catalog_import_row (id, batch_id, row_number, original_values, staged_values)
+     values ($1, $2, 2, '{"title":"Staged"}'::jsonb, '{"title":"Staged"}'::jsonb)`,
+    [discardRowId, discardBatchId],
+  );
+  await migration.query(
+    `insert into catalog_import_cost (id, batch_id, row_number, source_cost_cents, actor_user_id)
+     values ($1, $2, 2, 1250, $3)`,
+    [discardCostId, discardBatchId, financeA],
+  );
+  await migration.query(
+    `insert into catalog_import_batch (id, supplier_id, source_type, content_sha256, mapping,
+       status, created_by_user_id, applied_at)
+     values ($1, $2, 'CSV', repeat('b', 64), '{}'::jsonb, 'PARTIALLY_APPLIED', $3, now())`,
+    [appliedImportBatchId, supplierFixture, adminA],
+  );
+  await migration.query(
+    `insert into catalog_import_row (id, batch_id, row_number, original_values, staged_values,
+       status, applied_listing_id)
+     values ($1, $2, 2, '{"title":"Applied"}'::jsonb, '{"title":"Applied"}'::jsonb, 'APPLIED', $3)`,
+    [appliedImportRowId, appliedImportBatchId, listingFixture],
+  );
+  await migration.query(
+    `insert into catalog_import_batch (id, supplier_id, source_type, content_sha256, mapping,
+       status, created_by_user_id)
+     values ($1, $2, 'CSV', repeat('e', 64), '{}'::jsonb, 'REJECTED', $3)`,
+    [applyHistoryBatchId, supplierFixture, adminA],
+  );
+  await migration.query(
+    `insert into catalog_import_row (id, batch_id, row_number, original_values, staged_values, status)
+     values ($1, $2, 2, '{"title":"Rejected"}'::jsonb, '{"title":"Rejected"}'::jsonb, 'REJECTED')`,
+    [applyHistoryRowId, applyHistoryBatchId],
+  );
+  await migration.query(
+    `insert into catalog_import_apply_event (id, batch_id, actor_user_id, selected_row_ids, applied_listing_ids)
+     values ($1, $2, $3, jsonb_build_array($4::text), '[]'::jsonb)`,
+    [applyHistoryEventId, applyHistoryBatchId, adminA, applyHistoryRowId],
+  );
+
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [financeA]);
+  const financeRows = await migration.query("select id from catalog_import_row where batch_id = $1", [discardBatchId]);
+  assert.equal(financeRows.rowCount, 0, "Finance cannot read staged import rows");
+  await expectPermissionDenied(migration, "Finance staged batch discard", () => migration.query(
+    "select public.gphkm_discard_catalog_import_batch($1, 'reviewed source')", [discardBatchId],
+  ));
+  await expectWriteDenied(migration, "Finance staged import apply event insert", () => migration.query(
+    `insert into catalog_import_apply_event (id, batch_id, actor_user_id, selected_row_ids, applied_listing_ids)
+     values ($1, $2, $3, '[]'::jsonb, '[]'::jsonb)`, [randomUUID(), discardBatchId, financeA],
+  ));
+  await migration.query("select set_config('app.user_id', $1, true)", [adminA]);
+  await expectWriteDenied(migration, "direct staged batch delete", () => migration.query(
+    "delete from catalog_import_batch where id = $1", [discardBatchId],
+  ));
+  await expectWriteDenied(migration, "applied import row update", () => migration.query(
+    "update catalog_import_row set status = 'REJECTED', applied_listing_id = null where id = $1", [appliedImportRowId],
+  ));
+  await expectWriteDenied(migration, "applied import row delete", () => migration.query(
+    "delete from catalog_import_row where id = $1", [appliedImportRowId],
+  ));
+  await expectWriteDenied(migration, "apply event update", () => migration.query(
+    "update catalog_import_apply_event set applied_listing_ids = '[]'::jsonb where id = $1", [applyHistoryEventId],
+  ));
+  await expectWriteDenied(migration, "apply event delete", () => migration.query(
+    "delete from catalog_import_apply_event where id = $1", [applyHistoryEventId],
+  ));
+  const discardedBatch = await migration.query<{ result: Record<string, unknown> }>(
+    "select public.gphkm_discard_catalog_import_batch($1, '  duplicate source batch  ') as result", [discardBatchId],
+  );
+  assert.deepEqual(discardedBatch.rows[0]?.result, {
+    batchId: discardBatchId, rowCount: 1, costRowCount: 1, applyEventCount: 0, sourceObjectKey: discardSourceKey,
+  }, "Admin discard returns the staged row count and private source key for cleanup");
+  await expectCheckConstraint(migration, "discarding a batch with applied rows", () => migration.query(
+    "select public.gphkm_discard_catalog_import_batch($1, 'duplicate source batch')", [appliedImportBatchId],
+  ));
+  await expectCheckConstraint(migration, "discarding a batch with apply history", () => migration.query(
+    "select public.gphkm_discard_catalog_import_batch($1, 'duplicate source batch')", [applyHistoryBatchId],
+  ));
+  const stillStaged = await migration.query<{ batch_count: string; row_count: string; cost_row_count: string }>(
+    `select (select count(*)::text from catalog_import_batch where id = $1) as batch_count,
+       (select count(*)::text from catalog_import_row where id = $2) as row_count,
+       (select count(*)::text from catalog_import_cost where batch_id = $1) as cost_row_count`,
+    [discardBatchId, discardRowId],
+  );
+  assert.deepEqual(stillStaged.rows[0], { batch_count: "0", row_count: "0", cost_row_count: "0" },
+    "successful discard removes the batch, staged rows, and costs atomically");
+  await migration.query("RESET ROLE");
+  const discardedAudit = await migration.query<{ count: string; reason: string | null; row_count: string | null }>(
+    `select count(*)::text as count, min(metadata->>'reason') as reason, min(metadata->>'rowCount') as row_count
+       from audit_event where actor_user_id = $1 and action = 'CATALOG_IMPORT_BATCH_DISCARDED' and target_id = $2`,
+    [adminA, discardBatchId],
+  );
+  assert.deepEqual(discardedAudit.rows[0], { count: "1", reason: "duplicate source batch", row_count: "1" },
+    "successful discard writes one trimmed-reason audit event in the same transaction");
+  const retainedAppliedBatch = await migration.query<{ batch_count: string; row_count: string; row_status: string; audit_count: string }>(
+    `select (select count(*)::text from catalog_import_batch where id = $1) as batch_count,
+       (select count(*)::text from catalog_import_row where id = $2) as row_count,
+       (select status::text from catalog_import_row where id = $2) as row_status,
+       (select count(*)::text from audit_event where action = 'CATALOG_IMPORT_BATCH_DISCARDED' and target_id = $1) as audit_count`,
+    [appliedImportBatchId, appliedImportRowId],
+  );
+  assert.deepEqual(retainedAppliedBatch.rows[0], { batch_count: "1", row_count: "1", row_status: "APPLIED", audit_count: "0" },
+    "a rejected applied-batch discard preserves the applied row and adds no misleading audit event");
+  const retainedApplyHistory = await migration.query<{ batch_count: string; row_count: string; event_count: string; discard_audit_count: string }>(
+    `select (select count(*)::text from catalog_import_batch where id = $1) as batch_count,
+       (select count(*)::text from catalog_import_row where id = $2) as row_count,
+       (select count(*)::text from catalog_import_apply_event where id = $3) as event_count,
+       (select count(*)::text from audit_event where action = 'CATALOG_IMPORT_BATCH_DISCARDED' and target_id = $1) as discard_audit_count`,
+    [applyHistoryBatchId, applyHistoryRowId, applyHistoryEventId],
+  );
+  assert.deepEqual(retainedApplyHistory.rows[0], {
+    batch_count: "1", row_count: "1", event_count: "1", discard_audit_count: "0",
+  }, "apply-history protection leaves rejected rows and immutable event evidence intact");
   phase = "checking Super Admin metric redistribution attestation and customer gate";
   const metricObservation = randomUUID();
   const hostMetricObservation = randomUUID();
@@ -2078,7 +2510,7 @@ try {
   await resendWebhook.connect();
   const actualResendRole = await resendWebhook.query<{ user: string }>("select current_user as user");
   assert.equal(actualResendRole.rows[0]?.user, "gphkm_resend_webhook", "RESEND_WEBHOOK_DATABASE_URL must authenticate as the isolated Resend role");
-  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, atomic two-item checkout with exact debit and idempotent replay, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, exact writing-inclusive refund, decision idempotency, manual handoff evidence/acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, and denied direct wallet writes.");
+  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, atomic two-item checkout with exact debit and idempotent replay, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence/acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, and denied direct wallet writes.");
 } catch (error) {
   console.error(`Local RLS smoke failed while ${phase}; any open synthetic-data transaction will be rolled back.`);
   if (error instanceof Error) console.error(error.message);

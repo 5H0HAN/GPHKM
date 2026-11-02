@@ -127,14 +127,12 @@ export async function discardImportBatchAction(_previousState: ImportActionState
   const reason = safeId(form.get("reason"));
   const confirmation = safeId(form.get("confirmation"));
   if (confirmation !== "DISCARD") return redirectResult(`/staff/suppliers/imports/${encodeURIComponent(batchId)}?error=discard`);
-  let sourceFileDeleted: boolean;
   try {
-    const result = await discardStagedImportBatch(await headers(), batchId, reason);
-    sourceFileDeleted = result.sourceFileDeleted;
+    await discardStagedImportBatch(await headers(), batchId, reason);
   } catch {
     return redirectResult(`/staff/suppliers/imports/${encodeURIComponent(batchId)}?error=discard`);
   }
-  return redirectResult(`/staff/suppliers/imports?error=${sourceFileDeleted ? "discarded" : "cleanup"}`);
+  return redirectResult("/staff/suppliers/imports?error=discarded");
 }
 
 export async function refreshGoogleSheetAction(_previousState: ImportActionState, form: FormData): Promise<ImportActionState> {

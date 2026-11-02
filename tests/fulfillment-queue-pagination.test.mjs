@@ -49,12 +49,17 @@ test("queue query paginates the selected view inside existing staff authorizatio
 
 test("queue navigation preserves the selected view and clearly labels total versus active counts", () => {
   const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/page.tsx", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../src/app/staff/(console)/fulfillment/fulfillment.module.css", import.meta.url), "utf8");
   assert.match(page, /listFulfillmentQueue\(await headers\(\), params.page, params.view\)/);
-  assert.match(page, /pagination.total\} \{view === "all" \? "total" : "active"\} items/);
+  assert.match(page, /pagination.total === 1 \? "item" : "items"/);
   assert.match(page, /overdueCount\} active overdue update/);
   assert.match(page, /href="\/staff\/fulfillment\?view=all"/);
   assert.match(page, /const pageHref = \(page: number\) => `\/staff\/fulfillment\?page=\$\{page\}\$\{view === "all" \? "&view=all" : ""\}`/);
   assert.match(page, /aria-label="Fulfillment queue pages"/);
   assert.match(page, /pagination.page > 1[\s\S]*?href=\{pageHref\(pagination.page - 1\)\}/);
   assert.match(page, /pagination.page < pagination.pageCount[\s\S]*?href=\{pageHref\(pagination.page \+ 1\)\}/);
+  assert.match(styles, /\.assignLine \{ display: grid; grid-template-columns: minmax\(0, 1fr\)/);
+  assert.match(styles, /\.assignLine select, \.form select, \.form input, \.evidenceForm input \{[^}]*min-height: 44px/);
+  assert.match(styles, /\.assignLine button, \.form button, \.evidenceForm button \{ min-height: 44px/);
+  assert.match(styles, /@media \(max-width: 800px\)[\s\S]*?\.row \{ grid-template-columns: 1fr/);
 });

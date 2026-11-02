@@ -1,7 +1,7 @@
 import "server-only";
 import { sql } from "drizzle-orm";
 import { staffTransaction } from "@/server/catalog/admin";
-import { deletePrivateFile } from "@/server/storage/private-files";
+import { queuePrivateFileDelete } from "@/server/storage/private-file-lifecycle";
 
 type DiscardResult = {
   batchId: string;
@@ -26,31 +26,15 @@ export async function discardStagedImportBatch(headers: Headers, batchId: string
     if (!result || result.batchId !== batchId || typeof result.sourceObjectKey !== "string" && result.sourceObjectKey !== null) {
       throw new Error("Import discard failed");
     }
+    if (result.sourceObjectKey !== null) await queuePrivateFileDelete(tx, result.sourceObjectKey);
     return result;
   });
-
-  let sourceFileDeleted = discarded.sourceObjectKey === null;
-  if (discarded.sourceObjectKey !== null) {
-    try {
-      await deletePrivateFile(discarded.sourceObjectKey);
-      sourceFileDeleted = true;
-    } catch {
-      // The DB record is already gone. Log the failed cleanup without exposing
-      // the storage key or source contents; the retained object is unreachable
-      // through application routes and needs operational cleanup.
-      console.error(JSON.stringify({
-        level: "error",
-        event: "catalog_import_source_cleanup_failed",
-        batchId: discarded.batchId,
-      }));
-    }
-  }
 
   return {
     batchId: discarded.batchId,
     rowCount: Number(discarded.rowCount),
     costRowCount: Number(discarded.costRowCount),
     applyEventCount: Number(discarded.applyEventCount),
-    sourceFileDeleted,
+    sourceFileCleanupQueued: discarded.sourceObjectKey !== null,
   };
 }

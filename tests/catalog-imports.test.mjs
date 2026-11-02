@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
 import { strToU8, zipSync } from "fflate";
 
 const imports = await import("../src/modules/catalog/imports.ts");
 const importReview = await import("../src/modules/catalog/import-review.ts");
+const catalogDomain = await import("../src/modules/catalog/domain.ts");
 
 function xlsxBuffer({ formula = false, external = false, macro = false, extra = {} } = {}) {
   const cells = formula
@@ -49,17 +49,12 @@ test("XLSX parsing admits one worker at a time and releases capacity after compl
   assert.equal((await first)[0].name, "Inventory");
   await assert.rejects(imports.parseXlsx(Buffer.from("not a zip"), "invalid.xlsx"), /XLSX_INVALID/);
   assert.equal((await imports.parseXlsx(xlsxBuffer(), "third.xlsx"))[0].name, "Inventory");
-
-  const route = await readFile(new URL("../src/app/api/staff/catalog/import/route.ts", import.meta.url), "utf8");
-  const page = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/page.tsx", import.meta.url), "utf8");
-  assert.match(route, /IMPORT_XLSX_PARSER_BUSY[\s\S]*error=busy/);
-  assert.match(page, /An XLSX file is already being parsed/);
 });
 
-test("XLSX archive inspection and parsing run with worker time and memory bounds", () => {
+test("thin wiring guard: XLSX archive inspection precedes parsing and worker resources stay bounded", async () => {
   assert.equal(imports.IMPORT_LIMITS.xlsxParseMilliseconds, 10_000);
   assert.equal(imports.IMPORT_LIMITS.xlsxParserMemoryMb, 128);
-  const source = readFileSync(new URL("../src/modules/catalog/imports.ts", import.meta.url), "utf8");
+  const source = await readFile(new URL("../src/modules/catalog/imports.ts", import.meta.url), "utf8");
   assert.match(source, /inspectXlsxArchive\(buffer\);[\s\S]*readXlsxFile\(buffer, \{ trim: false \}\)/);
   assert.match(source, /resourceLimits:[\s\S]*maxOldGenerationSizeMb: IMPORT_LIMITS\.xlsxParserMemoryMb/);
   assert.match(source, /xlsxParseMilliseconds[\s\S]*worker\.terminate\(\)/);
@@ -95,6 +90,35 @@ test("mapping and staging validate listing fields and duplicate review while rej
   assert.equal(applied[0].listing.status, "DRAFT");
   assert.equal("retailPriceCents" in applied[0].listing, false);
   assert.throws(() => imports.prepareSelectedRowsForApply(candidates, [2], "FINANCE"), /FORBIDDEN/);
+});
+
+test("import URL lookup shares canonicalization and preserves every stored duplicate", () => {
+  assert.equal(catalogDomain.normalizeWebsiteUrlLookupKey("HTTPS://Example.COM"), "https://example.com");
+  assert.equal(catalogDomain.normalizeWebsiteUrlLookupKey("https://example.com:443/"), "https://example.com");
+  assert.equal(catalogDomain.normalizeWebsiteUrlLookupKey("https://www.example.com/"), "https://www.example.com");
+  assert.equal(catalogDomain.normalizeWebsiteUrlLookupKey("https://example.com:8443/"), null);
+  assert.equal(catalogDomain.normalizeWebsiteUrlLookupKey("https://example.com/path/"), null);
+
+  const candidates = imports.stageImportRows({
+    rows: [["website"], ["HTTPS://EXAMPLE.COM"], ["example.com"], ["www.example.com"]],
+    mapping: { websiteUrl: 0 },
+    existingListings: [
+      { id: "upper-slashless", websiteUrl: "https://Example.com" },
+      { id: "lower-with-slash", websiteUrl: "https://example.com/" },
+      { id: "www-distinct", websiteUrl: "https://www.example.com/" },
+      { id: "invalid-path", websiteUrl: "https://example.com/path/" },
+    ],
+  });
+
+  assert.equal(candidates[0].values.websiteUrl, "https://example.com/");
+  assert.deepEqual(candidates[0].duplicateOfListingIds.sort(), ["lower-with-slash", "upper-slashless"]);
+  assert.equal(candidates[0].status, "DUPLICATE_REVIEW");
+  assert.deepEqual(candidates[1].duplicateOfListingIds.sort(), ["lower-with-slash", "upper-slashless"]);
+  assert.equal(candidates[1].duplicateOfRow, 2);
+  assert.deepEqual(candidates[2].duplicateOfListingIds, ["www-distinct"]);
+  assert.deepEqual(imports.listingWebsiteUrlLookupKeys(candidates.map((candidate) => candidate.values.websiteUrl)), [
+    "https://example.com", "https://www.example.com",
+  ]);
 });
 
 test("imports can map a later header row and safely normalize bare domains", () => {
@@ -153,111 +177,80 @@ test("row review items name the fields to fix and open the right review action",
   assert.match(duplicate.at(-1).message, /row 14/);
 });
 
-test("supplier imports preserve the supplier as fulfillment contact", async () => {
-  const apply = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
-  const migration = await readFile(new URL("../src/db/migrations/0103_require_supplier_fulfillment.sql", import.meta.url), "utf8");
-  assert.match(apply, /validateListingRelationships\("SUPPLIER_SOURCED", batch\.supplierId, batch\.supplierId\)/);
-  assert.match(apply, /commercialSource: "SUPPLIER_SOURCED", supplierId: batch\.supplierId, fulfillmentSupplierId: batch\.supplierId/);
-  assert.match(migration, /UPDATE public\.marketplace_listing_sourcing[\s\S]*SET fulfillment_supplier_id = supplier_id[\s\S]*commercial_source = 'SUPPLIER_SOURCED'/);
-  assert.match(migration, /CHECK \(supplier_id IS NULL OR \(fulfillment_supplier_id IS NOT NULL AND supplier_id = fulfillment_supplier_id\)\)/);
+test("staging exposes website matches as review decisions and keeps source-only columns out of listing values", () => {
+  const rows = [
+    ["website", "title", "description", "country", "language", "category", "link type", "term", "turnaround", "sponsored", "cost"],
+    ["Example.com", "Example", "A reviewed placement", "US", "English", "Business", "DOFOLLOW", "PERMANENT", "10", "yes", "$40"],
+  ];
+  const mapping = {
+    websiteUrl: 0, title: 1, description: 2, countryCode: 3, primaryLanguage: 4,
+    categories: 5, linkType: 6, linkValidity: 7, turnaroundDays: 8, sponsoredContentMarking: 9,
+  };
+  const [candidate] = imports.stageImportRows({
+    rows, mapping, existingListings: [
+      { id: "listing-one", websiteUrl: "https://example.com/" },
+      { id: "listing-two", websiteUrl: "https://EXAMPLE.com/" },
+    ],
+  });
+  assert.equal(candidate.status, "DUPLICATE_REVIEW");
+  assert.deepEqual(candidate.duplicateOfListingIds, ["listing-one", "listing-two"]);
+  const saved = imports.getPersistableImportValues(candidate, rows[1], mapping);
+  assert.equal(saved.originalValues.websiteUrl, "Example.com");
+  assert.equal("cost" in saved.originalValues, false);
+  assert.equal("sourceCostCents" in saved.stagedValues, false);
+  const review = importReview.buildImportReviewItems({
+    status: candidate.status, values: candidate.values, errors: candidate.errors, warnings: candidate.warnings,
+    platformCategories: [], retailPriceSaved: false, duplicateOfRow: candidate.duplicateOfRow,
+  });
+  assert.ok(review.some((item) => item.section === "decisions" && item.label === "Possible website match"));
+  assert.ok(review.some((item) => item.field === "proposedRetailPriceUsd"));
 });
 
-test("import review compares bounded existing listing snapshots without source costs", async () => {
-  const server = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
-  const rowView = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/import-row.tsx", import.meta.url), "utf8");
-  assert.match(server, /duplicateOfListingIds\.slice\(0, 3\)/);
-  assert.match(server, /listing\.retailPriceCents/);
-  assert.match(server, /listing\.revision/);
-  assert.match(server, /listingSourcing\.commercialSource/);
-  assert.match(server, /sourceSupplierName: importSourceSupplier\.name/);
-  assert.match(server, /fulfillmentSupplierName: importFulfillmentSupplier\.name/);
-  assert.match(rowView, /Current listing/);
-  assert.match(rowView, /Imported value/);
-  assert.match(rowView, /Internal source:/);
-  assert.match(rowView, /match\.sourceSupplierId !== supplierId/);
-  assert.match(rowView, /Supplier conflict:/);
-  assert.match(rowView, /website match found/);
-  assert.match(rowView, /rowActionDialogRef/);
-  assert.match(rowView, /<dialog[\s\S]*?Review row \{row\.rowNumber\}/);
-  assert.match(rowView, /Review and edit row/);
-  assert.match(rowView, /setRowActionsOpen\(true\)/);
-  assert.match(rowView, /Import review never changes an existing listing/);
-  assert.doesNotMatch(server.slice(server.indexOf("const matches ="), server.indexOf("const matchesById")), /sourceCost|supplierContact/);
-});
+test("import apply preparation admits only ready rows after category and duplicate review", () => {
+  const rows = [
+    ["website", "title", "description", "country", "language", "category", "link type", "term", "turnaround", "sponsored"],
+    ["ready.example", "Ready", "Ready placement", "US", "English", "Business", "DOFOLLOW", "PERMANENT", "10", "yes"],
+    ["ready.example", "Separate", "Distinct supplier offer", "US", "English", "Business", "DOFOLLOW", "ONE_YEAR", "14", "no"],
+    ["review.example", "Incomplete", "", "US", "English", "Business", "DOFOLLOW", "PERMANENT", "10", "yes"],
+  ];
+  const mapping = {
+    websiteUrl: 0, title: 1, description: 2, countryCode: 3, primaryLanguage: 4,
+    categories: 5, linkType: 6, linkValidity: 7, turnaroundDays: 8, sponsoredContentMarking: 9,
+  };
+  const candidates = imports.stageImportRows({ rows, mapping, existingListings: [] });
+  const ready = imports.applyPlatformCategoryOverride(candidates[0], ["Business"]);
+  const duplicateNeedsCategoryReview = candidates[1];
+  assert.equal(duplicateNeedsCategoryReview.status, "DUPLICATE_REVIEW");
+  assert.equal(duplicateNeedsCategoryReview.duplicateOfRow, 2);
+  const duplicateWithCategory = imports.applyPlatformCategoryOverride(duplicateNeedsCategoryReview, ["Business"]);
+  const separate = imports.resolveDuplicate(duplicateWithCategory, {
+    decision: "KEEP_SEPARATE", staffUserId: "staff-1", reason: "Distinct placement terms",
+    decidedAt: "2026-10-28T00:00:00.000Z",
+  });
+  const rejected = imports.resolveDuplicate(duplicateWithCategory, {
+    decision: "REJECT", staffUserId: "staff-1", reason: "Duplicate offer",
+    decidedAt: "2026-10-28T00:00:00.000Z",
+  });
+  const incomplete = imports.applyPlatformCategoryOverride(candidates[2], ["Business"]);
 
-test("staged imports support one ready row without applying other selected rows", async () => {
-  const page = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/page.tsx", import.meta.url), "utf8");
-  const actions = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/actions.ts", import.meta.url), "utf8");
-  const rowView = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/import-row.tsx", import.meta.url), "utf8");
-  const server = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
-  assert.match(page, /action=\{applySelectedImportAction\}/);
-  assert.match(rowView, /Import row to inventory/);
-  assert.match(rowView, /buildImportReviewItems/);
-  assert.match(rowView, /Open correction/);
-  assert.doesNotMatch(rowView, /error\.code|warnings\.join/);
-  assert.match(rowView, /disabled=\{!canCreateDraft \|\| applying\}/);
-  assert.match(rowView, /name="proposedRetailPriceUsd"/);
-  assert.match(page, /action=\{applyAllImportRowsAction\}/);
-  assert.match(rowView, /Supplier category/);
-  assert.match(rowView, /GPHKM categories/);
-  assert.match(page, /Source columns and mapping/);
-  assert.match(page, /Detected fields/);
-  assert.match(page, /Next row needing attention/);
-  assert.match(rowView, /id=\{`import-row-\$\{row\.id\}`\}/);
-  assert.doesNotMatch(page, /Map supplier categories|categorySources|saveImportCategoryMappings/);
-  assert.match(server, /if \(!row\.platformCategoryOverride\?\.length\) throw new Error\("IMPORT_CATEGORY_SELECTION_REQUIRED"\)/);
-  assert.match(rowView, /useActionState\(applySingleImportRowAction, null\)/);
-  assert.match(actions, /applySelectedImportRows\(await headers\(\), batchId, \[\{ rowId \}\]\)/);
-  assert.match(actions, /applySelectedImportRows\(await headers\(\), batchId, selections\)/);
-  assert.match(server, /proposedRetailPriceCents/);
-  assert.match(server, /appliedListings\.push\(\{ rowId: row\.id, id: created\.id, title: terms\.title, websiteUrl: terms\.websiteUrl/);
-  assert.match(rowView, /Created as an unpublished supplier draft/);
-  assert.match(rowView, /Open listing details/);
-});
-
-test("older staged batch category mappings cannot bypass row-level category review", async () => {
-  const migration = await readFile(new URL("../src/db/migrations/0143_import_categories_are_row_scoped.sql", import.meta.url), "utf8");
-  const server = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
-  assert.match(migration, /mapping = mapping - '__categoryMappings'/);
-  assert.match(migration, /staged_values = staged_values - 'categories'/);
-  assert.match(migration, /THEN 'NEEDS_REVIEW'/);
-  assert.match(server, /row\.platformCategoryOverride\?\.length/);
-});
-
-test("staged import corrections stay in the edited row and preserve other row inputs", async () => {
-  const page = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/page.tsx", import.meta.url), "utf8");
-  const rowView = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/import-row.tsx", import.meta.url), "utf8");
-  const actions = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/actions.ts", import.meta.url), "utf8");
-  const server = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
-  assert.match(rowView, /useActionState\(correctImportRowAction, null\)/);
-  assert.match(rowView, /Row saved\. It is ready to import as an unpublished draft/);
-  assert.match(page, /<ImportStagedRow key=\{row\.id\}/);
-  assert.doesNotMatch(page, /query\.corrected|query\.single/);
-  assert.match(actions, /kind: "saved", row: await correctStagedImportRow/);
-  assert.match(actions, /row: previousState\?\.kind === "saved" \? previousState\.row : undefined/);
-  assert.match(rowView, /const correction = correctionState\?\.kind === "saved" \? correctionState\.row\s*: correctionState\?\.kind === "error" \? correctionState\.row \?\? null : null/);
-  assert.match(rowView, /const rowMessage = correctionSaved && correction/);
-  assert.doesNotMatch(actions.slice(actions.indexOf("export async function correctImportRowAction"), actions.indexOf("export async function applySingleImportRowAction")), /redirectResult|target\(/);
-  assert.match(actions, /selectedCategories, retailPriceUsd/);
-  assert.match(server, /const effectiveCategories = platformCategories\.length \? platformCategories : null/);
-  assert.match(server, /platformCategoryOverride: effectiveCategories/);
-});
-
-test("applied staged rows retain the created website and listing details", async () => {
-  const server = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
-  const rowView = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/[batchId]/import-row.tsx", import.meta.url), "utf8");
-  assert.match(server, /appliedListingId: catalogImportRow\.appliedListingId/);
-  assert.match(server, /appliedListing: applied \? \{ id: applied\.id, title: applied\.title, websiteUrl: applied\.websiteUrl/);
-  assert.match(rowView, /appliedListing\.websiteUrl/);
-  assert.match(rowView, /appliedListing\.title/);
-});
-
-test("recent staged batch removal also returns through the staff-hosted action form", async () => {
-  const page = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/page.tsx", import.meta.url), "utf8");
-  const action = await readFile(new URL("../src/app/staff/(console)/suppliers/imports/recent-actions.ts", import.meta.url), "utf8");
-  assert.match(page, /ImportActionForm action=\{discardRecentImportBatchAction\}/);
-  assert.match(action, /return \{ redirectTo: destination\(/);
-  assert.doesNotMatch(action, /from "next\/navigation"|\bredirect\(/);
+  assert.equal(ready.status, "READY");
+  assert.equal(separate.status, "READY", "a confirmed duplicate decision returns the row to apply review");
+  assert.equal(rejected.status, "REJECTED");
+  assert.equal(incomplete.status, "NEEDS_REVIEW");
+  assert.equal(candidates[0].status, "NEEDS_REVIEW", "preparation does not mutate the saved source candidate");
+  const selected = imports.prepareSelectedRowsForApply([ready, separate, incomplete], [2, 3, 4, 5], "ADMIN");
+  assert.deepEqual(selected.map((row) => row.rowNumber), [2, 3], "review-only and rejected rows are skipped while confirmed rows are prepared");
+  assert.equal(selected[0].listing.status, "DRAFT");
+  assert.equal(selected[0].listing.websiteUrl, "https://ready.example/");
+  assert.equal(selected[0].listing.sourceCostCents, null);
+  assert.equal(selected[0].listing.writingEnabled, false);
+  assert.equal("retailPriceCents" in selected[0].listing, false, "retail price stays in the explicit review/apply input");
+  assert.throws(() => imports.toDraftListingInput(incomplete), /IMPORT_ROW_INCOMPLETE/);
+  assert.deepEqual(imports.prepareSelectedRowsForApply([ready, rejected], [2, 3], "ADMIN").map((row) => row.rowNumber), [2],
+    "an explicit duplicate rejection is excluded from draft creation");
+  assert.deepEqual(imports.prepareSelectedRowsForApply([ready], [2], "SUPER_ADMIN").map((row) => row.rowNumber), [2]);
+  assert.throws(() => imports.prepareSelectedRowsForApply([ready], [2], "FINANCE"), /FORBIDDEN/);
+  assert.throws(() => imports.prepareSelectedRowsForApply([ready], [2, 2], "ADMIN"), /SELECTION_INVALID/);
 });
 
 test("manual column mapping accepts bounded zero-based indexes only", () => {
@@ -305,9 +298,26 @@ test("public Sheets fetch follows only approved Google redirects and rejects uns
   }
 });
 
-test("inventory source files survive an ambiguous commit acknowledgement", () => {
-  const source = readFileSync(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
+test("thin wiring guard: ambiguous import commit leaves its upload registered for reference-aware cleanup", async () => {
+  const source = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
   assert.match(source, /let transactionCallbackReturned = false/);
   assert.match(source, /transactionCallbackReturned = true;\s*return \{ batchId, rowCount/);
-  assert.match(source, /if \(!transactionCallbackReturned\) await deletePrivateFile\(sourceObjectKey\)/);
+  assert.match(source, /linkPrivateFileUpload\(tx, sourceObjectKey\)/);
+  assert.match(source, /if \(!transactionCallbackReturned\) await queuePrivateFileDeleteOutsideTransaction\(sourceObjectKey\)/);
+});
+
+test("thin wiring guard: selected-row apply keeps supplier authorization around the transaction helper", async () => {
+  const source = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
+  const wrapper = source.match(/export async function applySelectedImportRows\([\s\S]*?\n}\n/);
+  assert.ok(wrapper, "authenticated apply command remains present");
+  assert.match(wrapper[0], /staffTransaction\(headers, "supplier\.manage"/);
+  assert.match(wrapper[0], /applySelectedImportRowsInTransaction\(tx, userId, batchId, selections, stopOnSkip\)/);
+});
+
+test("thin wiring guard: import URL lookups bind key lists as PostgreSQL arrays", async () => {
+  const source = await readFile(new URL("../src/server/catalog/imports.ts", import.meta.url), "utf8");
+  assert.equal((source.match(/ANY\(\$\{sql\.param\(websiteUrlKeys\)\}::text\[\]\)/g) ?? []).length, 3,
+    "staging, correction, and apply lookups must pass the whole URL key list as one text array");
+  assert.doesNotMatch(source, /ANY\(\$\{websiteUrlKeys/,
+    "interpolating a JavaScript array directly expands it into SQL chunks instead of binding a PostgreSQL array");
 });

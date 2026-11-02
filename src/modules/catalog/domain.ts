@@ -92,6 +92,10 @@ export function normalizeWebsiteUrl(value: unknown): string | null {
   }
 }
 
+export function normalizeWebsiteUrlLookupKey(value: unknown): string | null {
+  return normalizeWebsiteUrl(value)?.slice(0, -1) ?? null;
+}
+
 export function validateListingTerms(input: unknown): ListingValidationError[] {
   if (!input || typeof input !== "object" || Array.isArray(input)) return [{ field: "", code: "OBJECT_REQUIRED" }];
   const terms = input as Record<string, unknown>;
@@ -197,7 +201,7 @@ export function canTransitionListing(from: ListingStatus, to: ListingStatus, rol
     REVIEW: ["DRAFT", "LIVE", "ARCHIVED"],
     LIVE: ["PAUSED", "ARCHIVED"],
     PAUSED: ["LIVE", "ARCHIVED"],
-    ARCHIVED: [],
+    ARCHIVED: ["DRAFT"],
   };
   return allowed[from].includes(to);
 }

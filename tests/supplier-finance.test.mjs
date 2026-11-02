@@ -119,9 +119,11 @@ test("supplier transfer receipts are mandatory, private, immutable, and Finance-
   assert.match(migration, /supplier_transfer_requires_evidence[\s\S]*DEFERRABLE INITIALLY DEFERRED/);
   assert.match(migration, /supplier_transfer_evidence_finance_read[\s\S]*'FINANCE'[\s\S]*'SUPER_ADMIN'/);
   assert.match(migration, /REVOKE UPDATE, DELETE, TRUNCATE ON public\.supplier_transfer_evidence FROM gphkm_runtime/);
-  assert.match(service, /savePrivateFile\(evidence\.bytes\)/);
+  assert.match(service, /preparePrivateFileUpload\(\)[\s\S]*savePrivateFile\(evidence\.bytes, storageKey\)/);
+  assert.match(service, /queuePrivateFileDelete\(tx, storageKey\)/);
+  assert.match(service, /linkPrivateFileUpload\(tx, storageKey\)/);
   assert.match(service, /requestHash[\s\S]*evidenceSha256/);
-  assert.match(service, /if \(!transactionCallbackReturned\) await deletePrivateFile\(storageKey\)/);
+  assert.match(service, /if \(!transactionCallbackReturned\) await queuePrivateFileDeleteOutsideTransaction\(storageKey\)/);
   assert.match(service, /readPrivateFile\(row\.storageKey, 5 \* 1024 \* 1024\)/);
   assert.match(upload, /new URL\(origin\)\.origin !== new URL\(staffOrigin\)\.origin/);
   assert.match(upload, /MAX_REQUEST_BYTES/);
