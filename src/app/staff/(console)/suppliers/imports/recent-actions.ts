@@ -19,13 +19,11 @@ export async function discardRecentImportBatchAction(_previousState: ImportActio
     return { redirectTo: destination("/staff/suppliers/imports?error=discard-failed") };
   }
 
-  let sourceFileDeleted: boolean;
   try {
-    const result = await discardStagedImportBatch(await headers(), batchId, reason);
-    sourceFileDeleted = result.sourceFileDeleted;
+    await discardStagedImportBatch(await headers(), batchId, reason);
   } catch {
     return { redirectTo: destination("/staff/suppliers/imports?error=discard-failed") };
   }
 
-  return { redirectTo: destination(`/staff/suppliers/imports?error=${sourceFileDeleted ? "discarded" : "cleanup"}`) };
+  return { redirectTo: destination("/staff/suppliers/imports?error=discarded") };
 }

@@ -12,15 +12,19 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:check-rls:local": "node --env-file=.env scripts/check-local-rls.ts",
+    "db:check-import-apply:local": "node --conditions=react-server --env-file=.env --import tsx scripts/check-catalog-import-apply-local.ts",
+    "db:check-private-files:local": "node --env-file=.env scripts/check-local-private-files.ts",
     "db:check-content-race:local": "node --env-file=.env scripts/check-content-handoff-race-local.ts",
     "db:check-session-guard:local": "NODE_ENV=development node --env-file=.env scripts/check-customer-session-revocation-local.ts",
     "db:check-staff-mfa:local": "NODE_ENV=development node --env-file=.env scripts/check-staff-mfa-local.ts",
     "auth:bootstrap:local": "NODE_ENV=development node --env-file=.env scripts/bootstrap-local-admin.ts",
     "worker:provision-local": "node --env-file=.env scripts/provision-local-notification-worker.ts",
     "roles:provision-local": "node --env-file=.env scripts/provision-local-restricted-roles.ts",
-    "worker:notifications": "node --env-file=.env scripts/customer-notification-worker.ts"
+    "worker": "node --conditions=react-server --env-file=.env scripts/customer-notification-worker.ts",
+    "worker:notifications": "npm run worker"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1161.0",
     "@stripe/react-stripe-js": "7.0.1",
     "@stripe/stripe-js": "10.2.0",
     "better-auth": "1.7.14",
@@ -46,6 +50,7 @@
     "eslint": "10.14.0",
     "eslint-plugin-react-a11y": "2.6.0",
     "eslint-plugin-react-hooks": "7.1.1",
+    "tsx": "4.23.15",
     "typescript": "6.0.3",
     "typescript-eslint": "8.72.1"
   },

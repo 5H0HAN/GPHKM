@@ -38,6 +38,10 @@ export function proxy(request: NextRequest) {
     return new NextResponse("Customer and staff hostnames are not configured", { status: 404 });
   }
 
+  // Container-local readiness probes do not carry either configured public Host.
+  // Keep this after origin validation so broken deployment configuration fails closed.
+  if (request.nextUrl.pathname === "/api/health") return NextResponse.next();
+
   const host = request.headers.get("host");
   const surface = host ? authSurfaceForHost(host, origins) : null;
   if (!surface) {

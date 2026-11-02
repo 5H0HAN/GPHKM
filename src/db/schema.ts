@@ -10,7 +10,11 @@ export const user = pgTable("auth_user", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
   twoFactorEnabled: boolean("two_factor_enabled").notNull().default(false),
-});
+}, (table) => [
+  index("auth_user_created_id_idx").on(table.createdAt.desc(), table.id),
+  index("auth_user_name_lower_trgm_idx").using("gin", sql`lower(${table.name}) gin_trgm_ops`),
+  index("auth_user_email_lower_trgm_idx").using("gin", sql`lower(${table.email}) gin_trgm_ops`),
+]);
 
 export const session = pgTable("auth_session", {
   id: text("id").primaryKey(),
@@ -93,7 +97,9 @@ export const organization = pgTable("organization", {
   createdBy: text("created_by").notNull().unique().references(() => user.id),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   closedAt: timestamp("closed_at", { withTimezone: true }),
-}).enableRLS();
+}, (table) => [
+  index("organization_name_lower_trgm_idx").using("gin", sql`lower(${table.name}) gin_trgm_ops`),
+]).enableRLS();
 
 export const organizationMember = pgTable("organization_member", {
   id: text("id").primaryKey(),
@@ -104,6 +110,7 @@ export const organizationMember = pgTable("organization_member", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => [
   unique("organization_member_unique").on(table.organizationId, table.userId),
+  index("organization_member_user_org_active_idx").on(table.userId, table.organizationId, table.active),
   check("organization_member_role_valid", sql`${table.role} in ('OWNER', 'MEMBER')`),
 ]).enableRLS();
 

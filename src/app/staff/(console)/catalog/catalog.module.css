@@ -62,6 +62,7 @@
 .actionForm { margin:0; }
 .catalogActions button { min-height:40px; padding:0 9px; border:1px solid var(--border-strong); border-radius:4px; color:var(--text-secondary); background:var(--surface-2); font-size:12px; font-weight:550; cursor:pointer; }
 .catalogActions button:hover { border-color:var(--accent-text); color:var(--text-primary); }
+.catalogActions button:disabled { opacity:.6; cursor:wait; }
 .catalogActions .primaryAction { border-color:var(--accent); color:var(--accent-contrast); background:var(--primary-button); font-weight:650; }
 .catalogActions .primaryAction:hover { border-color:var(--primary-button-hover); background:var(--primary-button-hover); }
 .catalogActions .archiveAction { border-color:var(--border); color:var(--text-muted); background:transparent; }

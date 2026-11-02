@@ -3,7 +3,7 @@ import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { appendAuditEvent, type DbTransaction } from "@/server/audit/append";
 import { requireStaffAccess, type StaffActor } from "@/server/auth/staff";
-import { staffCatalogPagination } from "@/modules/catalog/pagination";
+import { staffCustomerDirectoryPagination } from "@/modules/identity/customer-directory-pagination";
 
 const CUSTOMER_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const ACCOUNT_REASONS = ["CUSTOMER_REQUEST", "POLICY_REVIEW", "SECURITY_REVIEW", "OTHER_OPERATIONAL"] as const;
@@ -70,7 +70,7 @@ export async function listStaffCustomers(headers: Headers, requestedPage: unknow
   return staffTx(headers, "customer.directory.read", async (tx, actor) => {
     const countResult = await tx.execute(sql`select public.gphkm_staff_customer_search_count(${search}, ${state}) as total`);
     const total = (countResult as unknown as { rows?: Array<{ total: number }> }).rows?.[0]?.total ?? 0;
-    const pagination = staffCatalogPagination(requestedPage, Number(total));
+    const pagination = staffCustomerDirectoryPagination(requestedPage, Number(total));
     const result = await tx.execute(sql`
       select * from public.gphkm_staff_customer_search(${search}, ${state}, ${pagination.limit}, ${pagination.offset})
     `);

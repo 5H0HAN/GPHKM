@@ -10,7 +10,7 @@ import {
   type ListingLinkType,
   type ListingLinkValidity,
 } from "./taxonomy.ts";
-import { normalizeWebsiteUrl, type ListingTerms, type StaffRole } from "./domain.ts";
+import { normalizeWebsiteUrl, normalizeWebsiteUrlLookupKey, type ListingTerms, type StaffRole } from "./domain.ts";
 
 export const IMPORT_LIMITS = Object.freeze({
   fileBytes: 10 * 1024 * 1024,
@@ -46,6 +46,13 @@ export type ImportCandidate = {
   status: "NEEDS_REVIEW" | "INVALID" | "DUPLICATE_REVIEW" | "READY" | "APPLIED" | "REJECTED";
   duplicateResolution: { decision: "KEEP_SEPARATE" | "REJECT"; staffUserId: string; reason: string; decidedAt: string } | null;
 };
+
+export function listingWebsiteUrlLookupKeys(values: readonly unknown[]): string[] {
+  return [...new Set(values.flatMap((value) => {
+    const key = normalizeWebsiteUrlLookupKey(value);
+    return key ? [key] : [];
+  }))].sort();
+}
 
 export function getPersistableImportValues(candidate: ImportCandidate, row: unknown[], mapping: ImportMapping) {
   const originalValues: Record<string, string | number | boolean | null> = {};
@@ -508,13 +515,13 @@ export function stageImportRows(options: {
   if (!headers || dataRows.length > IMPORT_LIMITS.rowsPerSheet) throw new Error("IMPORT_HEADER_AND_ROWS_REQUIRED");
   const mapping = buildImportMapping(headers, options.mapping);
   const rowDomain = new Map<string, number>();
-  const existingByDomain = new Map<string, string[]>();
+  const existingByUrlKey = new Map<string, string[]>();
   for (const listing of options.existingListings) {
-    const normalized = normalizeWebsiteUrl(listing.websiteUrl);
-    if (!normalized) continue;
-    const current = existingByDomain.get(normalized) ?? [];
+    const lookupKey = normalizeWebsiteUrlLookupKey(listing.websiteUrl);
+    if (!lookupKey) continue;
+    const current = existingByUrlKey.get(lookupKey) ?? [];
     current.push(listing.id);
-    existingByDomain.set(normalized, current);
+    existingByUrlKey.set(lookupKey, current);
   }
   return dataRows.map((row, index) => ({ row, rowNumber: index + headerRowNumber + 1 }))
     .filter(({ row }) => row.some((value) => value !== null && value !== undefined && String(value).trim() !== ""))
@@ -603,7 +610,8 @@ export function stageImportRows(options: {
     const domain = websiteUrl ? new URL(websiteUrl).hostname : null;
     const previousRow = domain ? rowDomain.get(domain) ?? null : null;
     if (domain && previousRow === null) rowDomain.set(domain, rowNumber);
-    const existingIds = websiteUrl ? existingByDomain.get(websiteUrl) ?? [] : [];
+    const lookupKey = websiteUrl ? normalizeWebsiteUrlLookupKey(websiteUrl) : null;
+    const existingIds = lookupKey ? existingByUrlKey.get(lookupKey) ?? [] : [];
     if (existingIds.length || previousRow !== null) warnings.push("POSSIBLE_DUPLICATE_DOMAIN");
     const missing = (["title", "description", "countryCode", "primaryLanguage", "categories", "linkType", "linkValidity", "turnaroundDays", "sponsoredContentMarking"] as const)
       .filter((field) => values[field] === undefined);

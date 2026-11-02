@@ -1023,6 +1023,55 @@
       "when": 1793462377723,
       "tag": "0145_staff_customer_wallet_balance_projection",
       "breakpoints": true
+    },
+    {
+      "idx": 146,
+      "version": "7",
+      "when": 1793565426132,
+      "tag": "0146_customer_search_performance",
+      "breakpoints": true
+    },
+    {
+      "idx": 147,
+      "version": "7",
+      "when": 1793565656000,
+      "tag": "0147_fix_customer_membership_role_lookup",
+      "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1793565918529,
+      "tag": "0148_customer_search_union_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 149,
+      "version": "7",
+      "when": 1793567242197,
+      "tag": "0149_private_file_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 150,
+      "version": "7",
+      "when": 1793567430793,
+      "tag": "0150_private_file_lookup_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 151,
+      "version": "7",
+      "when": 1793614404011,
+      "tag": "0151_customer_directory_offset_cap",
+      "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1793615116895,
+      "tag": "0152_private_file_delete_lock_order",
+      "breakpoints": true
     }
   ]
 }

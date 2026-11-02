@@ -28,8 +28,7 @@ function errorMessage(code?: string) {
     case "file": return "Choose a non-empty CSV/XLSX file within the 10 MB limit.";
     case "size": return "The import is larger than the allowed request or row limits.";
     case "source": return "Paste a Google Sheets link with the tab you want to import selected.";
-    case "discarded": return "The unapplied staging batch was removed along with its stored source file.";
-    case "cleanup": return "The staging batch was discarded. Its private source file needs operational cleanup.";
+    case "discarded": return "The unapplied batch was removed. Its private source file, if present, is queued for secure deletion.";
     case "discard": return "This batch has apply history or applied listings, so it must remain available for audit.";
     case "discard-failed": return "The batch could not be removed. It may have apply history; open it to review the batch status.";
     default: return code ? "The import could not be staged. Check the source access, supplier, and field mapping." : null;
@@ -52,9 +51,8 @@ export default async function ImportsPage({ searchParams }: { searchParams: Prom
       <div><h1>Import supplier inventory</h1><p className={styles.lede}>Take a source snapshot, review the mapped rows, and choose which listings to create or update.</p></div>
       <Link className={styles.backLink} href="/staff/suppliers">Back to suppliers</Link>
     </header>
-    {query.error && message && query.error !== "discarded" && query.error !== "cleanup" && <p className={styles.error} role="alert">{message}</p>}
+    {query.error && message && query.error !== "discarded" && <p className={styles.error} role="alert">{message}</p>}
     {query.error === "discarded" && <p className={styles.success} role="status">{message}</p>}
-    {query.error === "cleanup" && <p className={styles.error} role="status">{message}</p>}
     {suppliers.length === 0 ? <section className={styles.empty}><strong>Add a supplier first</strong><p>Each import belongs to an internal supplier record.</p><Link href="/staff/suppliers">Open suppliers</Link></section> : <form action="/api/staff/catalog/import" method="post" encType="multipart/form-data" className={styles.listingForm}>
       <fieldset>
         <legend>Choose a source</legend>
@@ -88,29 +86,62 @@ export default async function ImportsPage({ searchParams }: { searchParams: Prom
       <button className={styles.button} type="submit">Fetch and stage snapshot</button>
     </form>}
 
-    <section className={styles.history}>
-      <h2>Recent import batches</h2>
-      {batches.length === 0 ? <p className={styles.hint}>No imports staged yet.</p> : <div className={`${styles.tableWrap} ${layout.historyTable}`}><table><thead><tr><th>Supplier</th><th>Source</th><th>Status</th><th>Rows</th><th>Staged / actions</th></tr></thead><tbody>{batches.map((batch) => <tr key={batch.id}>
-        <td>{batch.supplierName}</td>
-        <td>{batch.sourceType === "GOOGLE_SHEETS" ? "Google Sheet" : batch.sourceFilename ?? batch.sourceType}</td>
-        <td><span className={layout.batchStatus}>{statusLabel(batch.status)}</span></td>
-        <td><div className={layout.rowCounts}><span>{batch.readyCount} ready</span><span>{batch.reviewCount} review</span><span>{batch.duplicateCount} duplicates</span><span>{batch.invalidCount} invalid</span>{batch.appliedCount > 0 && <span>{batch.appliedCount} applied</span>}</div></td>
-        <td><div className={layout.historyRowActions}>
-          <Link href={`/staff/suppliers/imports/${batch.id}`}>{new Date(batch.createdAt).toLocaleString()}</Link>
-          {batch.canDiscard ? <>
-          <button type="button" className={layout.historyRemoveTrigger} popoverTarget={`discard-${batch.id}`}>Remove staged batch</button>
-          <div id={`discard-${batch.id}`} popover="auto" className={layout.historyRemove}>
-          <ImportActionForm action={discardRecentImportBatchAction} className={layout.historyRemoveForm}>
-            <input type="hidden" name="batchId" value={batch.id} />
-            <p>This removes the staged rows and saved source snapshot. Apply history is never removed.</p>
-            <label>Reason<input name="reason" required minLength={5} maxLength={1000} /></label>
-            <label>Type DISCARD to confirm<input name="confirmation" required pattern="DISCARD" autoComplete="off" /></label>
-            <button type="submit">Remove batch</button>
-          </ImportActionForm>
-          </div>
-          </> : <span className={layout.retainedBatch} title="Batches with apply history are retained for audit">Retained</span>}
-        </div></td>
-      </tr>)}</tbody></table></div>}
+    <section className={styles.history} aria-labelledby="import-batch-history-title">
+      <header className={layout.historyHeading}>
+        <div>
+          <h2 id="import-batch-history-title">Recent import batches</h2>
+          <p className={layout.historyIntro}>Open a batch to review staged rows and apply eligible listings.</p>
+        </div>
+        {batches.length > 0 && <p className={layout.historyCount}>{batches.length} {batches.length === 1 ? "batch" : "batches"}</p>}
+      </header>
+      {batches.length === 0 ? <p className={styles.hint}>No imports staged yet.</p> : <ul className={layout.historyList}>
+        {batches.map((batch) => {
+          const stagedAt = new Date(batch.createdAt);
+          const stagedAtLabel = stagedAt.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+          const sourceLabel = batch.sourceType === "GOOGLE_SHEETS" ? "Google Sheet" : batch.sourceFilename ?? batch.sourceType;
+          return <li key={batch.id} className={layout.historyItem}>
+            <div className={layout.historyTopline}>
+              <div className={layout.historyIdentity}>
+                <h3>{batch.supplierName}</h3>
+                <p>{sourceLabel}</p>
+              </div>
+              <span className={layout.historyStatus}>{statusLabel(batch.status)}</span>
+            </div>
+            <dl className={layout.rowCounts} aria-label="Rows in this batch">
+              <div><dt>Ready</dt><dd>{batch.readyCount}</dd></div>
+              <div><dt>Review</dt><dd>{batch.reviewCount}</dd></div>
+              <div><dt>Duplicates</dt><dd>{batch.duplicateCount}</dd></div>
+              <div><dt>Invalid</dt><dd>{batch.invalidCount}</dd></div>
+              {batch.appliedCount > 0 && <div><dt>Applied</dt><dd>{batch.appliedCount}</dd></div>}
+              {batch.rejectedCount > 0 && <div><dt>Rejected</dt><dd>{batch.rejectedCount}</dd></div>}
+            </dl>
+            <div className={layout.historyFooter}>
+              <time className={layout.historyDate} dateTime={stagedAt.toISOString()}>Staged {stagedAtLabel}</time>
+              <div className={layout.historyActions}>
+                <Link className={layout.historyReviewLink} href={`/staff/suppliers/imports/${batch.id}`}>Review batch</Link>
+                {batch.canDiscard ? <>
+                  <button
+                    type="button"
+                    className={layout.historyRemoveTrigger}
+                    popoverTarget={`discard-${batch.id}`}
+                    aria-label={`Remove staged batch for ${batch.supplierName} from ${stagedAtLabel}`}
+                  >Remove staged batch</button>
+                  <div id={`discard-${batch.id}`} popover="auto" className={layout.historyRemove} role="group" aria-labelledby={`discard-heading-${batch.id}`}>
+                    <ImportActionForm action={discardRecentImportBatchAction} className={layout.historyRemoveForm}>
+                      <input type="hidden" name="batchId" value={batch.id} />
+                      <h3 id={`discard-heading-${batch.id}`}>Remove staged batch?</h3>
+                      <p>This removes the staged rows and queues the private source snapshot for secure deletion. Apply history stays available for audit.</p>
+                      <label>Reason<input name="reason" required minLength={5} maxLength={1000} /></label>
+                      <label>Type DISCARD to confirm<input name="confirmation" required pattern="DISCARD" autoComplete="off" /></label>
+                      <button type="submit">Remove batch</button>
+                    </ImportActionForm>
+                  </div>
+                </> : <span className={layout.retainedBatch} title="Batches with apply history are retained for audit">Retained for audit</span>}
+              </div>
+            </div>
+          </li>;
+        })}
+      </ul>}
     </section>
   </>;
 }

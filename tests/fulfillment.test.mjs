@@ -238,8 +238,10 @@ test("manual handoff preserves uploaded evidence when transaction commit outcome
   const service = await readFile(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
   const manualHandoff = service.slice(service.indexOf("export async function recordManualSupplierHandoff"), service.indexOf("export async function reconcileManualSupplierHandoffUnsent"));
   assert.match(manualHandoff, /let transactionCallbackReturned = false;/);
+  assert.match(manualHandoff, /preparePrivateFileUpload\(\)[\s\S]*savePrivateFile\(file\.bytes, storageKey\)/);
+  assert.match(manualHandoff, /linkPrivateFileUpload\(tx, storageKey\)/);
   assert.match(manualHandoff, /transactionCallbackReturned = true;[\s\S]*return \{ attemptId: attempt\.id, state: "MANUAL_SENT"/);
-  assert.match(manualHandoff, /if \(storageKey && !transactionCallbackReturned\) await deletePrivateFile\(storageKey\)/);
+  assert.match(manualHandoff, /if \(storageKey && !transactionCallbackReturned\) await queuePrivateFileDeleteOutsideTransaction\(storageKey\)/);
 });
 
 test("packet replacement supersedes prior versions and all send/export commands enforce packet state", async () => {

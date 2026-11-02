@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { listStaffListings } from "@/server/catalog/admin";
 import { LISTING_STATUSES, type ListingStatus } from "@/modules/catalog/domain";
 import { transitionListingAction } from "./actions";
-import { ListingStatusActionForm } from "./listing-status-action-form";
+import { ListingStatusActionForm, ListingStatusFeedback } from "./listing-status-action-form";
 import styles from "./catalog.module.css";
 
 const actionsByStatus: Record<ListingStatus, ListingStatus[]> = {
@@ -12,10 +12,12 @@ const actionsByStatus: Record<ListingStatus, ListingStatus[]> = {
   REVIEW: ["LIVE", "DRAFT", "ARCHIVED"],
   LIVE: ["PAUSED", "ARCHIVED"],
   PAUSED: ["LIVE", "ARCHIVED"],
-  ARCHIVED: [],
+  ARCHIVED: ["DRAFT"],
 };
 
-function actionLabel(status: ListingStatus) {
+function actionLabel(status: ListingStatus, currentStatus: ListingStatus) {
+  if (currentStatus === "ARCHIVED" && status === "DRAFT") return "Unarchive";
+  if (currentStatus === "PAUSED" && status === "LIVE") return "Resume";
   return status === "LIVE" ? "Publish"
     : status === "REVIEW" ? "Send to review"
       : status === "PAUSED" ? "Pause"
@@ -62,7 +64,7 @@ export default async function CatalogPage({ searchParams }: { searchParams: Prom
       <Link className={styles.createButton} href="/staff/catalog/new">Create listing</Link>
     </header>
     {params.created && <p role="status" className={styles.success}>Draft listing created.</p>}
-    {params.updated && <p role="status" className={styles.success}>Listing status updated.</p>}
+    {params.updated && <p role="status" className={styles.success}>Listing updated.</p>}
     {params.error && <p role="alert" className={styles.error}>{errorMessage}{failedListingId && params.error !== "listing-unavailable" && <> <Link href={`/staff/catalog/${failedListingId}/edit`}>Open this listing</Link>.</>}</p>}
     <section className={styles.filterPanel} aria-labelledby="catalog-filter-heading">
       <div className={styles.filterIntro}>
@@ -77,6 +79,7 @@ export default async function CatalogPage({ searchParams }: { searchParams: Prom
       </form>
     </section>
     <section className={styles.catalogResults} aria-label="Catalog results">
+      <ListingStatusFeedback action={transitionListingAction}>
       <div className={styles.resultsBar}>
         <p className={styles.resultSummary} aria-live="polite">Showing <strong>{rangeStart}–{rangeEnd}</strong> of <strong>{result.total}</strong> listings</p>
         {result.totalPages > 1 && <nav className={styles.catalogPagination} aria-label="Catalog pages">
@@ -108,12 +111,11 @@ export default async function CatalogPage({ searchParams }: { searchParams: Prom
               <span className={styles.listingStatus}>{item.status.replaceAll("_", " ")}</span>
               <div className={styles.catalogActions}>
                 {actionsByStatus[item.status].map((nextStatus) => <ListingStatusActionForm
-                  action={transitionListingAction}
                   key={nextStatus}
                   listingId={item.id}
                   listingTitle={item.title}
                   nextStatus={nextStatus}
-                  label={actionLabel(nextStatus)}
+                  label={actionLabel(nextStatus, item.status)}
                   primary={nextStatus === "LIVE" || nextStatus === "REVIEW"}
                 />)}
               </div>
@@ -121,6 +123,7 @@ export default async function CatalogPage({ searchParams }: { searchParams: Prom
           </tr>)}</tbody>
         </table>
       </div>}
+      </ListingStatusFeedback>
     </section>
   </>;
 }

@@ -113,6 +113,7 @@ export const listingUrl = pgTable("marketplace_listing_url", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
+  index("marketplace_listing_url_lookup_key_idx").on(sql`lower(rtrim(${t.websiteUrl}, '/'))`),
   check("marketplace_listing_website_url", sql`${t.websiteUrl} ~ '^https://([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?/?$' and ${t.websiteUrl} !~ '^https://([0-9]{1,3}\\.){3}[0-9]{1,3}/?$'`),
 ]).enableRLS();
 
@@ -197,6 +198,7 @@ export const catalogImportBatch = pgTable("catalog_import_batch", {
   appliedAt: timestamp("applied_at", { withTimezone: true }),
 }, (t) => [
   index("catalog_import_batch_supplier_created_idx").on(t.supplierId, t.createdAt),
+  index("catalog_import_batch_source_object_key_idx").on(t.sourceObjectKey).where(sql`${t.sourceObjectKey} is not null`),
   check("catalog_import_source_type", sql`${t.sourceType} in ('CSV', 'XLSX', 'GOOGLE_SHEETS')`),
   check("catalog_import_sha256", sql`${t.contentSha256} ~ '^[0-9a-f]{64}$'`),
   check("catalog_import_filename_length", sql`${t.sourceFilename} is null or length(${t.sourceFilename}) <= 255`),

@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { logSafeFailure } from "@/server/observability/safe-log";
@@ -9,6 +10,7 @@ import { LISTING_CATEGORY_NAMES, LISTING_LANGUAGES, LISTING_LINK_TYPES, LISTING_
 import type { ListingTerms } from "@/modules/catalog/domain";
 import { createDraftListing, transitionListing, updateListing } from "@/server/catalog/admin";
 import type { ListingStatus } from "@/modules/catalog/domain";
+import type { ListingStatusActionState } from "./listing-status-action-state";
 
 function value(form: FormData, key: string): string {
   const entry = form.get(key);
@@ -97,24 +99,37 @@ export async function editListingAction(form: FormData) {
   redirect(`/staff/catalog?updated=1`);
 }
 
-export async function transitionListingAction(form: FormData) {
+export async function transitionListingAction(_state: ListingStatusActionState, form: FormData): Promise<ListingStatusActionState> {
   const id = form.get("id");
   const status = form.get("status");
   const validStatuses: ListingStatus[] = ["DRAFT", "REVIEW", "LIVE", "PAUSED", "ARCHIVED"];
   if (typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id) || typeof status !== "string" || !validStatuses.includes(status as ListingStatus)) {
-    redirect("/staff/catalog?error=invalid-request");
+    return { result: "error", message: "That status request was invalid. Refresh the catalog and try again." };
   }
   try {
     await transitionListing(await headers(), id, status as ListingStatus);
   } catch (error) {
     if (error instanceof Error && error.message === "Unauthorized") redirect("/staff/sign-in");
-    if (error instanceof Error && error.message === "Forbidden") redirect("/staff");
+    if (error instanceof Error && error.message === "Forbidden") {
+      return { result: "error", message: "You do not have permission to change listing statuses." };
+    }
     const reason = error instanceof Error && error.message === "Listing is not ready to publish" ? "publish-requirements"
       : error instanceof Error && error.message === "Invalid listing transition" ? "invalid-transition"
         : error instanceof Error && error.message === "Listing is incomplete" ? "listing-incomplete"
           : error instanceof Error && error.message === "Listing unavailable" ? "listing-unavailable" : "transition-failed";
     logSafeFailure("catalog_listing_status_transition_failed", error, randomUUID(), { reasonCode: reason });
-    redirect(`/staff/catalog?error=${reason}&listing=${encodeURIComponent(id)}`);
+    const message = reason === "publish-requirements" ? "Review the listing requirements before publishing."
+      : reason === "invalid-transition" ? "The listing status changed before this action completed. Refresh and try again."
+        : reason === "listing-incomplete" ? "This listing needs its website or sourcing details completed first."
+          : reason === "listing-unavailable" ? "This listing is no longer available. Refresh the catalog."
+            : "The listing status could not be changed. Refresh and try again.";
+    return { result: "error", message };
   }
-  redirect("/staff/catalog?updated=1");
+  revalidatePath("/staff/catalog");
+  const successMessage = status === "ARCHIVED" ? "Listing archived. You can unarchive it from this page."
+    : status === "DRAFT" ? "Listing is in Draft. Review it before publishing."
+      : status === "REVIEW" ? "Listing sent to review."
+        : status === "PAUSED" ? "Listing paused."
+          : "Listing is live.";
+  return { result: "success", message: successMessage };
 }

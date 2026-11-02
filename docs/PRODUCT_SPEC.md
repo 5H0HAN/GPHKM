@@ -69,7 +69,7 @@ Admin or Super Admin may discard a staged batch only before any apply event or a
 
 ### Listing lifecycle
 
-Listings move through draft, review, live, paused, and archived states. Publishing, pausing, and material changes are permission-checked and audited. Price, service terms, content/link requirements, fulfillment assignment, and placement term changes create a revision. Existing orders retain the purchased snapshot.
+Listings move through draft, review, live, paused, and archived states. Publishing, pausing, and material changes are permission-checked and audited. An archived listing can be restored only to draft and must be reviewed before publishing again. Price, service terms, content/link requirements, fulfillment assignment, and placement term changes create a revision. Existing orders retain the purchased snapshot.
 
 ### Metrics
 
