@@ -212,7 +212,8 @@ export async function listMetricRedistributionCandidates(headers: Headers, reque
           SELECT count(*)::int AS total
           FROM (
             SELECT DISTINCT ON (m.listing_id, m.provider, m.metric_scope)
-              m.listing_id, m.provider, m.metric_scope, m.requested_target, m.metric_target
+              m.listing_id, m.provider, m.metric_scope, m.requested_target, m.metric_target,
+              m.refreshed_at
               FROM public.listing_metric_observation m
              ORDER BY m.listing_id, m.provider, m.metric_scope, m.refreshed_at DESC, m.id DESC
           ) current_metric

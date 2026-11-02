@@ -130,6 +130,8 @@ test("metric review clamps pages and handles refresh/review results in place", a
   const actions = await readFile(new URL("../src/app/staff/(console)/metrics/actions.ts", import.meta.url), "utf8");
   const controls = await readFile(new URL("../src/app/staff/(console)/metrics/metric-controls.tsx", import.meta.url), "utf8");
   assert.match(service, /if \(rows\.length === 0 && currentPage > 1\)[\s\S]*Math\.ceil\(total \/ pageSize\)[\s\S]*loadPage\(currentPage\)/);
+  assert.match(service, /SELECT DISTINCT ON \(m\.listing_id, m\.provider, m\.metric_scope\)\s+m\.listing_id, m\.provider, m\.metric_scope, m\.requested_target, m\.metric_target,\s+m\.refreshed_at\s+FROM public\.listing_metric_observation m/,
+    "pagination fallback projects every column used by its outer query");
   assert.match(page, /metricsHref\(refreshData\.page, approvals\.page \+ 1\)/);
   assert.match(actions, /revalidatePath\("\/staff\/metrics"\)/);
   assert.doesNotMatch(actions, /redirect\(/);
