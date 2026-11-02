@@ -5,7 +5,10 @@ import { domainToASCII } from "node:url";
 const ENDPOINT = "https://openpagerank.keywordseverywhere.com/v1/domains/bulk";
 const MAX_RESPONSE_BYTES = 256 * 1024;
 const API_KEY_PATTERN = /^[\x21-\x7e]{1,512}$/;
-const RESERVED_TEST_TLDS = new Set(["example", "invalid", "localhost", "test", "local"]);
+const RESERVED_OR_LOCAL_TLDS = new Set([
+  "alt", "arpa", "corp", "example", "home", "internal", "intranet", "invalid", "lan",
+  "local", "localdomain", "localhost", "onion", "private", "test",
+]);
 
 export function isOpenPageRankKeyValid(value: string | undefined): boolean {
   return typeof value === "string" && API_KEY_PATTERN.test(value);
@@ -34,8 +37,22 @@ export function normalizeMetricDomain(input: string): string {
 }
 
 export function isMetricDomainRefreshable(input: string): boolean {
-  const domain = normalizeMetricDomain(input);
-  return !RESERVED_TEST_TLDS.has(domain.split(".").at(-1)!);
+  try {
+    const domain = normalizeMetricDomain(input);
+    return !RESERVED_OR_LOCAL_TLDS.has(domain.split(".").at(-1)!);
+  } catch {
+    return false;
+  }
+}
+
+export function metricHostnameFromUrl(input: string): string | null {
+  try {
+    const url = new URL(input);
+    if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) return null;
+    return normalizeMetricDomain(url.hostname);
+  } catch {
+    return null;
+  }
 }
 
 export type OpenPageRankObservation = {

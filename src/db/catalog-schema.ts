@@ -154,7 +154,7 @@ export const listingMetricObservation = pgTable("listing_metric_observation", {
   attributionText: text("attribution_text"),
   requestId: text("request_id"),
 }, (t) => [
-  index("listing_metric_listing_provider_date_idx").on(t.listingId, t.provider, t.refreshedAt),
+  index("listing_metric_listing_provider_date_idx").on(t.listingId, t.provider, t.metricScope, t.refreshedAt.desc(), t.id.desc()),
   check("listing_metric_scope_valid", sql`${t.metricScope} in ('REGISTERED_DOMAIN', 'DOMAIN', 'HOST')`),
   check("listing_metric_target_valid", sql`${t.metricTarget} is null or ${t.metricTarget} ~ '^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$'`),
   check("listing_metric_requested_target_valid", sql`${t.requestedTarget} is null or ${t.requestedTarget} ~ '^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$'`),

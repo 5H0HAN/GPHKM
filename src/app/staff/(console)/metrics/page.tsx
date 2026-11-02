@@ -1,68 +1,158 @@
 import Link from "next/link";
 import { headers } from "next/headers";
 import { listMetricRedistributionCandidates, listMetricRefreshCandidates } from "@/server/catalog/metrics";
-import { isMetricDomainRefreshable, isOpenPageRankConfigured } from "@/server/metrics/open-page-rank";
-import { refreshOpenPageRankAction, setMetricRedistributionApprovalAction } from "./actions";
-import styles from "../catalog/catalog.module.css";
+import { isOpenPageRankConfigured } from "@/server/metrics/open-page-rank";
+import { MetricApprovalForm, MetricRefreshForm } from "./metric-controls";
+import styles from "./metrics.module.css";
 
-export default async function MetricsPage({ searchParams }: { searchParams: Promise<{ refreshed?: string; error?: string; approvalError?: string; approvalSaved?: string; approvalPage?: string; page?: string | string[] }> }) {
+type SearchParams = {
+  page?: string | string[];
+  approvalPage?: string | string[];
+};
+
+function first(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function metricsHref(page: number, approvalPage: number) {
+  const params = new URLSearchParams({ page: String(page), approvalPage: String(approvalPage) });
+  return `/staff/metrics?${params.toString()}`;
+}
+
+function displayDate(value: Date | string | null | undefined) {
+  const text = value instanceof Date
+    ? Number.isFinite(value.getTime()) ? value.toISOString().slice(0, 10) : null
+    : typeof value === "string" ? value.slice(0, 10) : null;
+  if (!text || !/^\d{4}-\d{2}-\d{2}$/.test(text)) return "—";
+  const parsed = Date.parse(`${text}T00:00:00.000Z`);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === text ? text : "—";
+}
+
+export default async function MetricsPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const [requestHeaders, query] = await Promise.all([headers(), searchParams]);
-  const requestedPage = Array.isArray(query.page) ? query.page[0] : query.page;
-  const refreshData = await listMetricRefreshCandidates(requestHeaders, requestedPage);
-  const items = refreshData.items;
-  const approvals = refreshData.canApprove ? await listMetricRedistributionCandidates(requestHeaders, Number(query.approvalPage ?? "1")) : null;
+  const refreshPage = first(query.page) ?? "1";
+  const approvalPage = first(query.approvalPage) ?? "1";
+  const refreshData = await listMetricRefreshCandidates(requestHeaders, refreshPage);
+  const approvals = refreshData.canApprove
+    ? await listMetricRedistributionCandidates(requestHeaders, Number(approvalPage))
+    : null;
   const providerConfigured = isOpenPageRankConfigured();
-  return <>
-    <header className={styles.header}><div><p className={styles.eyebrow}>INTERNAL DATA</p><h1>Domain metrics</h1><p className={styles.lede}>Refresh Open PageRank for selected catalog listings. Super Admin may record an internal redistribution attestation with attribution and rights-review evidence.</p></div></header>
-    <p role="note">An internal attestation does not establish provider licensing or legal rights. L-05 remains a hard customer-display gate until external licensing, attribution, redistribution, API access, and cost review is complete. Do not enable customer display before that review.</p>
-    {query.refreshed && <p className={styles.success}>Refreshed {query.refreshed} listing observations.</p>}
-    {query.error === "no-selection" && <p role="alert" className={styles.error}>Select at least one listing before refreshing metrics. No provider request was sent.</p>}
-    {query.error === "daily-limit" && <p role="alert" className={styles.error}>You have reached the limit of five metric refresh batches in 24 hours. Try again after the limit window resets.</p>}
-    {query.error === "non-public-domain" && <p role="alert" className={styles.error}>One or more selected listings use a reserved demo hostname (.example, .test, or similar). Replace it with the real public website URL before refreshing.</p>}
-    {query.error === "refresh-failed" && <p role="alert" className={styles.error}>The metric refresh did not complete. No observations were saved. Demo .example listings are placeholders and cannot be queried; use a real public site URL. For other listings, check the Open PageRank server key and provider availability.</p>}
-    {!providerConfigured && <p role="status" className={styles.error}>Metric refresh is unavailable because the Open PageRank server key is missing or invalid. Configure OPEN_PAGE_RANK_API_KEY in the server environment; the key is never shown here.</p>}
-    {query.approvalSaved && <p className={styles.success}>The internal metric attestation was recorded in the append-only audit history.</p>}
-    {query.approvalError && <p className={styles.error}>The review could not be saved. Confirm the observation is still current and complete all required review fields.</p>}
-    <section className={styles.formPanel}>
-      <h2>Open PageRank refresh</h2>
-      <p>Choose up to 100 public listings per batch. Demo hostnames cannot be queried. Each staff account may run up to five batches in a rolling 24-hour period.</p>
-      {items.length === 0 ? <p>No listings are available to refresh.</p> : <form action={refreshOpenPageRankAction}>
-        <input type="hidden" name="page" value={refreshData.page} />
-        <div className={styles.tableWrap}><table><thead><tr><th>Select</th><th>Listing</th><th>Domain</th><th>State</th><th>Latest OPR</th><th>Observed</th></tr></thead><tbody>
-        {items.map((item) => {
-          const refreshable = isMetricDomainRefreshable(new URL(item.websiteUrl).hostname);
-          return <tr key={item.id}><td><input type="checkbox" name="listingId" value={item.id} aria-label={`Refresh ${item.title}`} disabled={!refreshable} /></td><td>{item.title}</td><td><code>{new URL(item.websiteUrl).hostname}</code></td><td>{item.status}{!refreshable && " · Demo only"}</td><td>{item.metric?.status === "AVAILABLE" ? `${item.metric.value} (${item.metric.metricScope.toLowerCase().replaceAll("_", " ")})` : item.metric?.status ?? "Not refreshed"}</td><td>{item.metric?.observedOn?.toISOString().slice(0, 10) ?? "—"}</td></tr>;
-        })}
-        </tbody></table></div>
-        {refreshData.totalPages > 1 && <nav aria-label="Metric refresh pages">
-          {refreshData.page > 1 && <Link href={`/staff/metrics?page=${refreshData.page - 1}`}>Previous</Link>}{" "}
-          <span>Page {refreshData.page} of {refreshData.totalPages} · {refreshData.total} listings</span>{" "}
-          {refreshData.page < refreshData.totalPages && <Link href={`/staff/metrics?page=${refreshData.page + 1}`}>Next</Link>}
-        </nav>}
-        <button className={styles.button} type="submit" disabled={!providerConfigured || !items.some((item) => isMetricDomainRefreshable(new URL(item.websiteUrl).hostname))}>Refresh selected metrics</button>
-      </form>}
+
+  return <div className={styles.page}>
+    <header className={styles.header}>
+      <div>
+        <h1>Domain metrics</h1>
+        <p>Refresh catalog domain observations and manage the internal rights review for customer redistribution.</p>
+      </div>
+      <p className={styles.accessScope}>Refresh: Admin and Super Admin<br />Rights review: Super Admin only</p>
+    </header>
+
+    <nav className={styles.sectionNav} aria-label="Domain metrics sections">
+      <a href="#refresh">Refresh data</a>
+      {approvals && <a href="#review">Customer redistribution review</a>}
+    </nav>
+
+    <aside className={styles.gateNotice} aria-labelledby="l05-heading">
+      <strong id="l05-heading">Customer display remains disabled</strong>
+      <p>Recording an internal attestation does not establish provider licensing or redistribution rights. L-05 must be completed separately before any metric can appear in the customer catalog.</p>
+    </aside>
+
+    <section className={styles.section} id="refresh" aria-labelledby="refresh-heading">
+      <div className={styles.sectionHeading}>
+        <div>
+          <h2 id="refresh-heading">Refresh Open PageRank</h2>
+          <p>Choose up to 100 listings. Only each selected hostname is sent to the provider; URL paths and customer data are not included.</p>
+        </div>
+        <p className={styles.limitNote}>5 batches per staff account in 24 hours</p>
+      </div>
+
+      {!providerConfigured && <p role="status" className={styles.error}>Refresh is unavailable because the server provider key is not configured. The key is never shown in this page.</p>}
+
+      {refreshData.items.length === 0 ? <p className={styles.empty}>No catalog listings are available to refresh.</p> :
+        <MetricRefreshForm page={refreshData.page} canRefresh={providerConfigured && refreshData.items.some((item) => item.refreshable)}>
+          <div className={styles.refreshTableWrap}>
+            <table className={styles.refreshTable}>
+              <thead><tr><th scope="col">Select</th><th scope="col">Listing and domain</th><th scope="col">Listing state</th><th scope="col">Latest PageRank</th><th scope="col">Observed</th></tr></thead>
+              <tbody>{refreshData.items.map((item) => {
+                const metricValue = item.metric?.status === "AVAILABLE" ? item.metric.value : null;
+                const metricDescription = !item.refreshable && item.metric?.status === "STALE"
+                  ? "Stored value hidden · non-public hostname"
+                  : item.metric?.status === "AVAILABLE"
+                  ? `${metricValue ?? "—"} · ${item.metric.metricScope.toLowerCase().replaceAll("_", " ")}`
+                  : item.metric?.status === "STALE" ? "Stale · refresh needed" : item.metric?.status ?? "Not refreshed";
+                return <tr key={item.id}>
+                  <td data-label="Select">
+                    <label className={styles.selectControl}>
+                      <input type="checkbox" name="listingId" value={item.id} aria-label={`Refresh ${item.title}`}
+                        aria-describedby={!item.refreshable ? `refresh-availability-${item.id}` : undefined}
+                        disabled={!item.refreshable} />
+                    </label>
+                  </td>
+                  <td data-label="Listing and domain">
+                    <strong>{item.title}</strong>
+                    <code>{item.hostname ?? "Unsupported website URL"}</code>
+                  </td>
+                  <td data-label="Listing state">
+                    <span className={styles.stateTag}>{item.status}</span>
+                    {!item.refreshable && <span className={styles.secondaryText} id={`refresh-availability-${item.id}`}>
+                      {item.hostname ? "Reserved or local-only hostname · not sent" : "Unsupported website URL · not sent"}
+                    </span>}
+                  </td>
+                  <td data-label="Latest PageRank">{metricDescription}</td>
+                  <td data-label="Observed">{displayDate(item.metric?.observedOn)}</td>
+                </tr>;
+              })}</tbody>
+            </table>
+          </div>
+          {refreshData.totalPages > 1 && <nav className={styles.pagination} aria-label="Metric refresh pages">
+            {refreshData.page > 1 && <Link href={metricsHref(refreshData.page - 1, approvals?.page ?? 1)}>Previous listings</Link>}
+            <span>Page {refreshData.page} of {refreshData.totalPages} · {refreshData.total} listings</span>
+            {refreshData.page < refreshData.totalPages && <Link href={metricsHref(refreshData.page + 1, approvals?.page ?? 1)}>Next listings</Link>}
+          </nav>}
+        </MetricRefreshForm>}
     </section>
-    {refreshData.canApprove && <section className={styles.formPanel}>
-      <h2>Customer redistribution review</h2>
-      <p>Only current observations are eligible. A later refresh becomes the current observation and remains hidden until separately reviewed. Evidence reference and review reason are required for approval and revocation.</p>
-      {approvals?.total === 0 ? <p>No metric observations are available for review.</p> : <><div className={styles.tableWrap}><table><thead><tr><th>Listing</th><th>Provider</th><th>Value/state</th><th>Current decision</th><th>Review</th></tr></thead><tbody>
-          {approvals?.items.map((item) => <tr key={item.observationId}><td>{item.title}<br /><code>{new URL(item.websiteUrl).hostname}</code></td><td>{item.provider} ({item.metricScope.toLowerCase().replaceAll("_", " ")})<br /><code>{item.metricTarget}</code></td><td>{item.value ?? "—"} / {item.status}</td><td>{item.decision ?? "Not reviewed"}</td><td>
-          <form action={setMetricRedistributionApprovalAction}>
-            <input type="hidden" name="approvalPage" value={approvals?.page ?? 1} />
-            <input type="hidden" name="observationId" value={item.observationId} />
-            <label>Attribution text<input name="attributionText" defaultValue={item.attributionText ?? ""} maxLength={300} required /></label>
-            <label>Rights evidence reference<input name="evidenceReference" defaultValue={item.evidenceReference ?? ""} maxLength={500} minLength={5} required placeholder="Ticket, contract, or review record ID" /></label>
-            <label>Review reason<textarea name="reason" defaultValue={item.reviewReason ?? ""} maxLength={1000} minLength={5} required /></label>
-            {item.status === "AVAILABLE" && <button className={styles.button} name="decision" value="APPROVED" type="submit">Record attestation</button>}
-            {item.decision === "APPROVED" && <button className={styles.button} name="decision" value="REVOKED" type="submit">Revoke attestation</button>}
-          </form>
-        </td></tr>)}
-      </tbody></table></div>
-      {approvals && approvals.pageCount > 1 && <nav aria-label="Metric review pages">
-        {approvals.page > 1 && <a href={`?approvalPage=${approvals.page - 1}`}>Previous</a>}
-        <span>Page {approvals.page} of {approvals.pageCount} ({approvals.total} observations)</span>
-        {approvals.page < approvals.pageCount && <a href={`?approvalPage=${approvals.page + 1}`}>Next</a>}
-      </nav>}</>}
+
+    {approvals && <section className={styles.section} id="review" aria-labelledby="review-heading">
+      <div className={styles.sectionHeading}>
+        <div>
+          <h2 id="review-heading">Customer redistribution review</h2>
+          <p>Review applies only to the latest observation for the listing’s current hostname. A newer refresh must be reviewed again.</p>
+        </div>
+        <p className={styles.limitNote}>Internal attestation · Super Admin</p>
+      </div>
+
+      {approvals.total === 0 ? <p className={styles.empty}>No current metric observations are eligible for review. Refresh an available public listing first.</p> : <>
+        <p className={styles.resultCount}>Showing {approvals.items.length} of {approvals.total} current observations</p>
+        <div className={styles.reviewList}>
+          {approvals.items.map((item) => <article className={styles.reviewItem} key={item.observationId}>
+            <header className={styles.reviewHeader}>
+              <div><h3>{item.title}</h3><code>{item.hostname ?? "Unsupported website URL"}</code></div>
+              <span className={styles.stateTag}>{item.decision ?? "Not reviewed"}</span>
+            </header>
+            <dl className={styles.observationDetails}>
+              <div><dt>Provider</dt><dd>{item.provider}</dd></div>
+              <div><dt>Measurement</dt><dd>{item.value ?? "—"} · {item.metricScope.toLowerCase().replaceAll("_", " ")}</dd></div>
+              <div><dt>Metric target</dt><dd><code>{item.metricTarget ?? "—"}</code></dd></div>
+              <div><dt>Observed</dt><dd>{displayDate(item.observedOn)}</dd></div>
+              <div><dt>Refresh date</dt><dd>{displayDate(item.refreshedAt)}</dd></div>
+            </dl>
+            {item.status === "AVAILABLE" ? <MetricApprovalForm
+              observationId={item.observationId}
+              attributionText={item.attributionText}
+              evidenceReference={item.evidenceReference}
+              reason={item.reviewReason}
+              reviewVersion={item.reviewVersion ?? "unreviewed"}
+              canApprove
+              canRevoke={item.decision === "APPROVED"}
+            /> : <p className={styles.unavailable}>This observation has no available value, so it cannot be approved.</p>}
+          </article>)}
+        </div>
+        {approvals.pageCount > 1 && <nav className={styles.pagination} aria-label="Metric review pages">
+          {approvals.page > 1 && <Link href={metricsHref(refreshData.page, approvals.page - 1)}>Previous reviews</Link>}
+          <span>Page {approvals.page} of {approvals.pageCount} · {approvals.total} observations</span>
+          {approvals.page < approvals.pageCount && <Link href={metricsHref(refreshData.page, approvals.page + 1)}>Next reviews</Link>}
+        </nav>}
+      </>}
     </section>}
-  </>;
+  </div>;
 }

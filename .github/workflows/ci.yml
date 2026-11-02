@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 permissions:
@@ -78,11 +80,30 @@ jobs:
             --env GPHKM_MFA_PROOF_PASSWORD="${mfa_proof_password}" \
             --volume "$PWD/infrastructure/docker/postgres/01-runtime-role.sh:/docker-entrypoint-initdb.d/01-runtime-role.sh:ro" \
             postgres:17-alpine
+          initialized=false
           for attempt in $(seq 1 60); do
-            if docker exec gphkm-ci-postgres pg_isready -U gphkm_migration -d gphkm; then break; fi
+            if docker logs gphkm-ci-postgres 2>&1 | grep -F "PostgreSQL init process complete; ready for start up." >/dev/null; then
+              initialized=true
+              break
+            fi
             sleep 1
           done
-          docker exec gphkm-ci-postgres pg_isready -U gphkm_migration -d gphkm
+          if [ "$initialized" != true ]; then
+            docker logs gphkm-ci-postgres
+            exit 1
+          fi
+          database_ready=false
+          for attempt in $(seq 1 60); do
+            if docker exec gphkm-ci-postgres pg_isready --host=127.0.0.1 -U gphkm_migration -d gphkm; then
+              database_ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$database_ready" != true ]; then
+            docker logs gphkm-ci-postgres
+            exit 1
+          fi
       - name: Apply migrations and verify PostgreSQL RLS
         run: |
           npm run db:migrate

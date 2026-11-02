@@ -18,6 +18,16 @@ test("staff catalog pagination reaches every listing and clamps untrusted page i
   }
 });
 
+test("pagination supports the provider's 100-item maximum without changing the default", () => {
+  assert.equal(staffCatalogPagination(1, 201).limit, 50);
+  assert.deepEqual(staffCatalogPagination(2, 201, 100), {
+    page: 2, totalPages: 3, total: 201, limit: 100, offset: 100,
+  });
+  assert.equal(staffCatalogPagination(99, 201, 100).page, 3);
+  assert.equal(staffCatalogPagination(1, 201, 0).limit, 50);
+  assert.equal(staffCatalogPagination(1, 201, 1001).limit, 50);
+});
+
 test("staff listing and supplier directory queries use total counts, stable order, and bounded page size", () => {
   const server = readFileSync(new URL("../src/server/catalog/admin.ts", import.meta.url), "utf8");
   for (const name of ["listStaffListings", "listStaffSuppliersPage"]) {
@@ -69,10 +79,13 @@ test("metric refresh candidates paginate across the entire catalog and preserve 
   const service = readFileSync(new URL("../src/server/catalog/metrics.ts", import.meta.url), "utf8");
   const page = readFileSync(new URL("../src/app/staff/(console)/metrics/page.tsx", import.meta.url), "utf8");
   const actions = readFileSync(new URL("../src/app/staff/(console)/metrics/actions.ts", import.meta.url), "utf8");
-  assert.match(service, /staffCatalogPagination\(requestedPage, count\?\.total \?\? 0\)/);
+  assert.match(service, /staffCatalogPagination\(requestedPage, count\?\.total \?\? 0, METRIC_REFRESH_PAGE_SIZE\)/);
   assert.match(service, /orderBy\(desc\(listing\.updatedAt\), desc\(listing\.id\)\)\.limit\(pagination\.limit\)\.offset\(pagination\.offset\)/);
-  assert.match(page, /listMetricRefreshCandidates\(requestHeaders, requestedPage\)/);
+  assert.match(page, /listMetricRefreshCandidates\(requestHeaders, refreshPage\)/);
   assert.match(page, /aria-label="Metric refresh pages"/);
-  assert.match(page, /name="page" value=\{refreshData\.page\}/);
-  assert.match(actions, /staff\/metrics\?page=\$\{page\}&refreshed=/);
+  const controls = readFileSync(new URL("../src/app/staff/(console)/metrics/metric-controls.tsx", import.meta.url), "utf8");
+  assert.match(controls, /name="page" value=\{page\}/);
+  assert.match(page, /new URLSearchParams\(\{ page: String\(page\), approvalPage: String\(approvalPage\) \}\)/);
+  assert.match(actions, /revalidatePath\("\/staff\/metrics"\)/);
+  assert.doesNotMatch(actions, /redirect\(/);
 });

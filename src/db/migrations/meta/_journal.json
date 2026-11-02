@@ -1072,6 +1072,34 @@
       "when": 1793615116895,
       "tag": "0152_private_file_delete_lock_order",
       "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1793647595442,
+      "tag": "0153_metrics_latest_and_refresh_quota_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 154,
+      "version": "7",
+      "when": 1793648225702,
+      "tag": "0154_metric_public_domain_gate",
+      "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1793648860090,
+      "tag": "0155_metric_url_change_invalidation",
+      "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "7",
+      "when": 1793649186686,
+      "tag": "0156_metric_approval_url_lock",
+      "breakpoints": true
     }
   ]
 }
