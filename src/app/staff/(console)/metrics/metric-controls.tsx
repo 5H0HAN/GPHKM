@@ -21,7 +21,7 @@ export function MetricRefreshForm({
     setSelectedCount(event.currentTarget.querySelectorAll<HTMLInputElement>('input[name="listingId"]:checked').length);
   };
 
-  return <form action={formAction} onChange={updateSelectedCount} aria-busy={pending}>
+  return <form action={formAction} onChange={updateSelectedCount} onReset={() => setSelectedCount(0)} aria-busy={pending}>
     <input type="hidden" name="page" value={page} />
     {children}
     <div className={styles.refreshActions}>

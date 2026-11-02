@@ -137,6 +137,8 @@ test("metric review clamps pages and handles refresh/review results in place", a
   assert.doesNotMatch(actions, /redirect\(/);
   assert.match(controls, /useActionState\(refreshOpenPageRankAction/);
   assert.match(controls, /disabled=\{!canRefresh \|\| pending \|\| selectedCount === 0\}/);
+  assert.match(controls, /onReset=\{\(\) => setSelectedCount\(0\)\}/,
+    "selected listing count stays in sync when React resets the server-action form");
   assert.match(controls, /useActionState\(setMetricRedistributionApprovalAction/);
   assert.match(service, /latest\.event_sequence::text AS "reviewVersion"/);
   assert.match(page, /reviewVersion=\{item\.reviewVersion \?\? "unreviewed"\}/);
