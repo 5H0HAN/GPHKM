@@ -32,10 +32,12 @@ export const supplierPacketItem = pgTable("supplier_packet_item", {
   consentNoticeVersion: text("consent_notice_version").notNull(),
   consentedAt: timestamp("consented_at", { withTimezone: true }).notNull(),
   consentContentHash: text("consent_content_hash").notNull(),
+  routeGeneration: integer("route_generation").notNull().default(1),
 }, (t) => [
   unique("supplier_packet_item_uq").on(t.packetId, t.orderItemId),
   index("supplier_packet_item_order_item_idx").on(t.orderItemId),
   check("supplier_packet_item_consent_hash_valid", sql`${t.consentContentHash} ~ '^[0-9a-f]{64}$'`),
+  check("supplier_packet_item_route_generation_positive", sql`${t.routeGeneration} > 0`),
 ]).enableRLS();
 
 export const supplierPacketAttempt = pgTable("supplier_packet_attempt", {

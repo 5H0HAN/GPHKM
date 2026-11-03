@@ -34,7 +34,7 @@ export async function requestPostHandoffRefundAction(form: FormData) {
     const amountMinor = parseUsdMinor(field(form, "amount"));
     if (!amountMinor) throw new Error("Invalid refund amount");
     await requestPostHandoffRefund(await headers(), {
-      caseId, idempotencyKey: field(form, "idempotencyKey"), amountMinor, reason: field(form, "reason"),
+      caseId, orderItemId: field(form, "orderItemId"), idempotencyKey: field(form, "idempotencyKey"), amountMinor, reason: field(form, "reason"),
     });
   } catch { redirect(`${path}?error=1`); }
   redirect(`${path}?refundRequested=1`);
@@ -62,7 +62,7 @@ export async function prepareSupplierItemNoticeAction(form: FormData) {
   try {
     const type = field(form, "type");
     if (type !== "WITHDRAWAL" && type !== "CORRECTION") throw new Error("Invalid notice type");
-    const result = await prepareSupplierItemNotice(await headers(), { caseId, type, reason: field(form, "reason") });
+    const result = await prepareSupplierItemNotice(await headers(), { caseId, orderItemId: field(form, "orderItemId"), type, reason: field(form, "reason") });
     noticeId = result.noticeId;
   } catch { redirect(`/staff/support/${encodeURIComponent(caseId)}?error=notice`); }
   redirect(`/staff/support/${encodeURIComponent(caseId)}?noticePrepared=${encodeURIComponent(noticeId)}`);

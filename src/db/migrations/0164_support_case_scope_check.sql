@@ -1,0 +1,1 @@
+ALTER TABLE "support_case" ADD CONSTRAINT "support_case_order_item_shape" CHECK (("support_case"."order_id" is not null or "support_case"."order_item_id" is null) and ("support_case"."merged_into_case_id" is null or "support_case"."merged_into_case_id" <> "support_case"."id"));

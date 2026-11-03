@@ -48,6 +48,7 @@ export async function recordSupplierAcknowledgementAction(form: FormData) {
 
 export async function reconcilePacketAttemptAction(form: FormData) {
   const packetId = get(form, "packetId");
+  if (get(form, "deliveryIssue") === "1" && get(form, "confirmNotDelivered") !== "on") redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?error=reconcile`);
   try { await reconcileSupplierPacketAttempt(await headers(), { attemptId: get(form, "attemptId"), outcome: get(form, "outcome") as "ACCEPTED" | "DELIVERY_ISSUE" | "RECONCILED_FAILED", providerReference: get(form, "providerReference"), acceptedAt: get(form, "acceptedAt"), reason: get(form, "reason") }); }
   catch { redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?error=reconcile`); }
   redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?reconciled=1`);

@@ -117,6 +117,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
           </div>
           <div className={styles.orderTotal}><span>Order total</span><strong>{dollars(order.totalMinor)}</strong></div>
         </header>
+        <p className={styles.orderSupportLink}><Link href={`/customer/support?organizationId=${encodeURIComponent(organizationId)}&orderId=${encodeURIComponent(order.id)}`}>Open this order’s Support conversation</Link></p>
 
         <div className={styles.placementList}>
           {order.items.map((item) => {
@@ -160,7 +161,6 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
               </div>
 
               <div className={styles.placementActions}>
-                <Link href={`/customer/support?organizationId=${encodeURIComponent(organizationId)}&itemId=${item.id}`}>Ask about this placement</Link>
                 {writingNeedsReview && <a href={`#writing-${item.id}`}>Review your draft</a>}
               </div>
 

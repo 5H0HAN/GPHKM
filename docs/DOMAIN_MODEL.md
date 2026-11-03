@@ -14,7 +14,7 @@
 - An Order contains one or more Order Items. Each item snapshots a listing revision, customer requirements, retail amount, fulfillment assignment, and publication terms.
 - An Order Item has explicit fulfillment events and allowed transitions, an immutable purchased-listing and checkout financial snapshot, and a separate current fulfillment route. Customer-accepted equivalent routes are retained as evidence; they do not rewrite purchase facts. The item also has a separate customer-safe status projection and append-only milestone/next-update history, content change requests/versions and consent, publication evidence/correction history, per-supplier placement cost records plus one internal writing-cost chain, separate placement/writing price components, and item-level refund references.
 - A Writing Fee Stage records the listing's disclosed amount and whether the first draft or final draft after the included revision was delivered. Approval of the first draft without a requested revision completes both stages. Only undelivered stage amounts are refundable under the item policy.
-- A Support Case belongs to an organization and links to an order/item where applicable. It records requester, assigned Admin, reason, customer-visible messages, private staff notes, evidence references, status history, and any Finance/Super Admin refund decision.
+- A Support Case belongs to an organization and is either the active customer conversation for one order or a standalone case with no order link. An order may have only one active conversation; customer messages and item-specific supplier-failure outcomes join that conversation. Resolved or closed cases are terminal, and a later issue opens a new case. Each case records requester, assigned Admin, customer-visible messages, private staff notes, evidence references, status history, and any Finance/Super Admin refund decision. The case may cover several order items, while each item's fulfillment actions and content remain assignment-scoped.
 - An Order Item Assignment determines which Admin may access its article, supplier packet, and manual handoff evidence. Assignment changes are audited.
 - A Staff Membership grants Admin, Finance, or Super Admin permissions.
 - A Customer Account Control records the current staff-imposed active/suspended state for a customer identity; suspension revokes customer sessions and every transition is audited. Organization membership remains a separate per-organization role/access relation.
@@ -37,7 +37,7 @@
 | Listing metric observation | Provider-specific registered-domain or host metric with provenance and explicit missing/available status |
 | Order | One multi-item checkout and total wallet debit |
 | Order item | One placement with independent status, article/brief, cost, fulfillment, publication evidence, and refund |
-| Support case | Organization and optional order/item link, customer-safe messages, private staff notes, status history, evidence references, and refund decision |
+| Support case | Organization plus one order-level active conversation or an unlinked standalone case; customer-safe messages, private staff notes, status history, evidence references, and refund decision |
 | Organization closure | Owner-requested Support workflow with append-only customer/internal events and database-guarded finalization |
 | Writing fee stages | Per-listing disclosed allocation for first draft and final draft after the included revision |
 | Order-item assignment | Current Admin authority to access one item's order content and handoff evidence |
@@ -63,7 +63,7 @@
 | Supplier packet and attempts | Order item / supplier record | Customer-safe milestones only | Assigned Admin and Super Admin |
 | Handoff packet content and recipient | Order item / supplier record | No | Assigned Admin; Super Admin |
 | Handoff transport/reconciliation metadata | Platform security boundary | No | Assigned Admin; Finance reconciliation metadata only, never content; Super Admin |
-| Support case | Organization/order item | Owner: all org cases; Member: cases opened by them or tied to their orders | Assigned Admin investigates; Finance/Super Admin access decision fields as needed |
+| Support case | Organization; one order conversation or standalone | Owner: all org cases; Member: cases opened by them or tied to their orders | Admin may view an order case when assigned to any item in that order, and standalone cases under Support access; item content/actions remain assigned-item scoped. Finance/Super Admin access is limited to decision fields as needed / audited broad access |
 | Organization closure request | Organization | Owner submits and reviews; access ends on final closure | Admin/Super Admin; Finance has no closure authority |
 | Internal reports/export | Platform | None | Internal JSON export is Super Admin-only |
 

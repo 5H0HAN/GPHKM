@@ -1,9 +1,11 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { postHandoffRefundRequest } from "@/db/post-handoff-refund-schema";
+import { supportCase } from "@/db/support-schema";
+import { orderItemFulfillment } from "@/db/order-schema";
 import type { DbTransaction } from "@/server/audit/append";
 import { requireStaffAccess, type StaffActor } from "@/server/auth/staff";
 import { validatePostHandoffRefundDecision, validatePostHandoffRefundRequest } from "@/modules/support/post-handoff-refunds";
@@ -20,7 +22,7 @@ async function staffTx<T>(headers: Headers, permission: "audit.read" | "fulfillm
 }
 
 export async function requestPostHandoffRefund(headers: Headers, input: {
-  caseId: string; idempotencyKey: string; amountMinor: string; reason: string;
+  caseId: string; orderItemId: string; idempotencyKey: string; amountMinor: string; reason: string;
 }) {
   const request = validatePostHandoffRefundRequest(input);
   return staffTx(headers, "fulfillment.manage", async (tx, actor) => {
@@ -28,7 +30,7 @@ export async function requestPostHandoffRefund(headers: Headers, input: {
     const requestId = randomUUID();
     const requestHash = digest(request);
     const result = await tx.execute(sql`select * from public.gphkm_request_post_handoff_refund(
-      ${requestId}, ${request.caseId}, ${request.idempotencyKey}, ${requestHash}, ${request.amountMinor}, ${request.reason}
+      ${requestId}, ${request.caseId}, ${request.orderItemId}, ${request.idempotencyKey}, ${requestHash}, ${request.amountMinor}, ${request.reason}
     )`);
     const row = (result as unknown as { rows?: Array<{ request_id: string; state: string; requested_amount_minor: string; organization_id: string; order_item_id: string; applied: boolean }> }).rows?.[0];
     if (!row) throw new Error("Refund request requires reconciliation");
@@ -53,7 +55,10 @@ export async function decidePostHandoffRefund(headers: Headers, input: {
 
 export async function listPostHandoffRefundsForCase(headers: Headers, caseId: string) {
   if (!UUID.test(caseId)) throw new Error("Support case unavailable");
-  return staffTx(headers, "audit.read", async (tx) => tx.select({
+  return staffTx(headers, "audit.read", async (tx, actor) => {
+    const merged = await tx.select({ id: supportCase.id }).from(supportCase).where(eq(supportCase.mergedIntoCaseId, caseId));
+    const caseIds = [caseId, ...merged.map((item) => item.id)];
+    const projection = {
     id: postHandoffRefundRequest.id,
     requestNumber: postHandoffRefundRequest.requestNumber,
     state: postHandoffRefundRequest.state,
@@ -63,8 +68,18 @@ export async function listPostHandoffRefundsForCase(headers: Headers, caseId: st
     decisionReason: postHandoffRefundRequest.decisionReason,
     refundMinor: postHandoffRefundRequest.refundMinor,
     decidedAt: postHandoffRefundRequest.decidedAt,
-  }).from(postHandoffRefundRequest).where(eq(postHandoffRefundRequest.caseId, caseId))
-    .orderBy(desc(postHandoffRefundRequest.requestNumber)).limit(10));
+    orderItemId: postHandoffRefundRequest.orderItemId,
+    };
+    const scope = inArray(postHandoffRefundRequest.caseId, caseIds);
+    if (actor.role === "ADMIN") {
+      return tx.select(projection).from(postHandoffRefundRequest)
+        .innerJoin(orderItemFulfillment, eq(orderItemFulfillment.orderItemId, postHandoffRefundRequest.orderItemId))
+        .where(and(scope, eq(orderItemFulfillment.assignedAdminId, actor.userId)))
+        .orderBy(desc(postHandoffRefundRequest.requestedAt)).limit(50);
+    }
+    return tx.select(projection).from(postHandoffRefundRequest).where(scope)
+      .orderBy(desc(postHandoffRefundRequest.requestedAt)).limit(50);
+  });
 }
 
 export async function listPendingPostHandoffRefunds(headers: Headers) {

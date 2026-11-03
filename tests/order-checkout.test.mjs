@@ -170,7 +170,7 @@ test("order count and rows share organization and Member scope with a stable bou
   assert.match(page, /\{page < totalPages \? <Link href=\{pageHref\(page \+ 1\)\}>Older orders →<\/Link> : <span \/>\}/);
 });
 
-test("Support resolves older items independently of the first order page with tenant and Member authorization", () => {
+test("Support can attach an off-page item’s order without widening customer order scope", () => {
   const server = readFileSync(new URL("../src/server/orders/checkout.ts", import.meta.url), "utf8");
   const lookup = server.slice(server.indexOf("export async function getMyOrderItemForSupport"));
   assert.match(lookup, /requireVerifiedCustomer\(headers\)/);
@@ -184,5 +184,7 @@ test("Support resolves older items independently of the first order page with te
   const support = readFileSync(new URL("../src/app/customer/support/page.tsx", import.meta.url), "utf8");
   assert.match(support, /const itemId = firstQueryValue\(params\.itemId\)/);
   assert.match(support, /getMyOrderItemForSupport\(requestHeaders, organizationId, itemId\)/);
-  assert.match(support, /if \(selectedItem && !items.some\(\(item\) => item.id === selectedItem.id\)\) items.unshift\(selectedItem\)/);
+  assert.match(support, /if \(selectedItem && !orderOptions\.some\(\(order\) => order\.id === selectedItem\.orderId\)\)/);
+  assert.match(support, /label: `Order #\$\{selectedItem\.orderId\.slice\(0, 8\)\.toUpperCase\(\)\} · includes selected placement`/);
+  assert.match(support, /const selectedOrderId = orderOptions\.some\(\(order\) => order\.id === requestedOrderId\) \? requestedOrderId : ""/);
 });

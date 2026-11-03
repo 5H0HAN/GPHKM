@@ -18,7 +18,7 @@ export const supplierItemNotice = pgTable("supplier_item_notice", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("supplier_item_notice_case_created_idx").on(t.caseId, t.createdAt),
-  unique("supplier_item_notice_repeat_uq").on(t.caseId, t.noticeType, t.contentHash),
+  unique("supplier_item_notice_repeat_uq").on(t.caseId, t.orderItemId, t.noticeType, t.contentHash),
   check("supplier_item_notice_type_valid", sql`${t.noticeType} in ('WITHDRAWAL','CORRECTION')`),
   check("supplier_item_notice_hash_valid", sql`${t.contentHash} ~ '^[0-9a-f]{64}$'`),
   check("supplier_item_notice_recipient_valid", sql`length(${t.recipient}) between 3 and 254 and ${t.recipient} !~ '[[:cntrl:]]'`),

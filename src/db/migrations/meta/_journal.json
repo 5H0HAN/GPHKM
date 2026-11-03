@@ -1100,6 +1100,83 @@
       "when": 1793649186686,
       "tag": "0156_metric_approval_url_lock",
       "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1793652588887,
+      "tag": "0157_support_customer_reply_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 158,
+      "version": "7",
+      "when": 1793652981801,
+      "tag": "0158_restrict_customer_support_state_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 159,
+      "version": "7",
+      "when": 1793653419757,
+      "tag": "0159_current_supplier_handoff_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 160,
+      "version": "7",
+      "when": 1793653785033,
+      "tag": "0160_equivalent_acceptance_lock_order",
+      "breakpoints": true
+    },
+    {
+      "idx": 161,
+      "version": "7",
+      "when": 1793654128859,
+      "tag": "0161_equivalent_acceptance_variable_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 162,
+      "version": "7",
+      "when": 1793654764962,
+      "tag": "0162_route_generation_and_offer_replay_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 163,
+      "version": "7",
+      "when": 1793673685632,
+      "tag": "0163_order_scoped_support",
+      "breakpoints": true
+    },
+    {
+      "idx": 164,
+      "version": "7",
+      "when": 1793674303850,
+      "tag": "0164_support_case_scope_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 165,
+      "version": "7",
+      "when": 1793677827822,
+      "tag": "0165_fix_plpgsql_output_column_ambiguity",
+      "breakpoints": true
+    },
+    {
+      "idx": 166,
+      "version": "7",
+      "when": 1793677993211,
+      "tag": "0166_scope_staff_order_item_rows",
+      "breakpoints": true
+    },
+    {
+      "idx": 167,
+      "version": "7",
+      "when": 1793678404837,
+      "tag": "0167_staff_attention_dismissal",
+      "breakpoints": true
     }
   ]
 }

@@ -46,7 +46,18 @@ export function customerSupportStatus(state: string) {
   return "In review";
 }
 
-export function customerSupportProjection(row: { id: string; orderId: string; orderItemId: string; summary: string; state: string; createdAt: Date; updatedAt: Date }, events: readonly { id: string; audience: string; kind: string; actorKind: string; body: string; createdAt: Date }[] = []) {
+export function customerCanReplyToSupportCase(state: string): boolean {
+  return state !== "RESOLVED" && state !== "CLOSED";
+}
+
+export const SUPPORT_QUEUE_FILTERS = ["ACTIVE", "ALL", ...SUPPORT_STATES] as const;
+export type SupportQueueFilter = typeof SUPPORT_QUEUE_FILTERS[number];
+
+export function supportQueueFilter(value: unknown): SupportQueueFilter {
+  return typeof value === "string" && SUPPORT_QUEUE_FILTERS.includes(value as SupportQueueFilter) ? value as SupportQueueFilter : "ACTIVE";
+}
+
+export function customerSupportProjection(row: { id: string; orderId: string | null; orderItemId: string | null; summary: string; state: string; createdAt: Date; updatedAt: Date }, events: readonly { id: string; audience: string; kind: string; actorKind: string; body: string; createdAt: Date }[] = []) {
   return {
     id: row.id, orderId: row.orderId, orderItemId: row.orderItemId, summary: row.summary,
     status: customerSupportStatus(row.state), createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(),

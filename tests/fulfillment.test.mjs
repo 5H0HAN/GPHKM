@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
 import { readFile } from "node:fs/promises";
+import { assertCustomerEquivalentOfferItemIds, MAX_CUSTOMER_EQUIVALENT_OFFER_ITEMS } from "../src/modules/fulfillment/equivalent-offers.ts";
+import { assertSupplierOutcomeMayBeRecorded } from "../src/modules/fulfillment/supplier-outcome.ts";
 import {
   acknowledgementFollowUpAt,
   assertPacketActionable,
@@ -37,6 +39,18 @@ import {
 } from "../src/modules/fulfillment/support-cases.ts";
 import { readBoundedUtf8Body } from "../src/modules/fulfillment/webhook-body.ts";
 
+const packetService = await readFile(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
+
+test("supplier packet reconciliation correlates nested checks to the outer attempt", () => {
+  assert.match(packetService, /newer_export\.packet_id = public\.supplier_packet_attempt\.packet_id/);
+  assert.match(packetService, /newer_export\.created_at, newer_export\.id\) > \(public\.supplier_packet_attempt\.created_at, public\.supplier_packet_attempt\.id/);
+  assert.match(packetService, /pending_manual\.packet_id = public\.supplier_packet_attempt\.packet_id/);
+  assert.match(packetService, /sent_manual\.sent_at >= public\.supplier_packet_attempt\.created_at/);
+  assert.match(packetService, /acknowledgement\.packet_id = public\.supplier_packet_attempt\.packet_id/);
+  assert.match(packetService, /newer_follow_up\.packet_id = public\.supplier_packet_attempt\.packet_id/);
+  assert.match(packetService, /pi\.packet_id = public\.supplier_packet_attempt\.packet_id/);
+});
+
 test("supplier webhook body reader enforces a hard streaming byte cap", async () => {
   const stream = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("123")); controller.enqueue(new TextEncoder().encode("45")); controller.close(); } });
   assert.equal(await readBoundedUtf8Body(stream, 5), "12345");
@@ -59,6 +73,37 @@ test("packet access requires every included item to remain assigned to the Admin
   assert.equal(mayAccessSupplierPacket({ actorId: "admin_a", actorRole: "ADMIN", assignments: [] }), false);
   assert.equal(mayAccessSupplierPacket({ actorId: "super", actorRole: "SUPER_ADMIN", assignments: [assigned] }), true);
   assert.equal(mayAccessSupplierPacket({ actorId: "finance", actorRole: "FINANCE", assignments: [assigned] }), false);
+});
+
+test("the 50-order customer page can check all 1,250 possible equivalent offers", async () => {
+  const itemIds = Array.from({ length: 50 * 25 }, (_, index) => `00000000-0000-4000-8000-${(index + 1).toString(16).padStart(12, "0")}`);
+  assert.equal(itemIds.length, MAX_CUSTOMER_EQUIVALENT_OFFER_ITEMS);
+  assert.doesNotThrow(() => assertCustomerEquivalentOfferItemIds(itemIds));
+  assert.throws(() => assertCustomerEquivalentOfferItemIds([...itemIds, "00000000-0000-4000-8000-000000000501"]), /unavailable/);
+  assert.throws(() => assertCustomerEquivalentOfferItemIds(["not-a-uuid"]), /unavailable/);
+  const service = await readFile(new URL("../src/server/fulfillment/equivalent-offers.ts", import.meta.url), "utf8");
+  assert.match(service, /assertCustomerEquivalentOfferItemIds\(itemIds\)/,
+    "the customer page boundary uses the tested 1,250-item validator");
+});
+
+test("supplier failures do not overwrite a pending cancellation and offer replay checks use one bounded query", async () => {
+  const outcomeService = await readFile(new URL("../src/server/fulfillment/supplier-outcomes.ts", import.meta.url), "utf8");
+  const fulfillmentLock = outcomeService.indexOf(".where(eq(orderItemFulfillment.orderItemId, input.itemId)).for(\"update\")");
+  const cancellationGuard = outcomeService.indexOf("assertSupplierOutcomeMayBeRecorded(fulfillment.state)");
+  const supportCaseInsert = outcomeService.indexOf("await tx.insert(supportCase).values");
+  const outcomeInsert = outcomeService.indexOf("await tx.insert(supplierFulfillmentOutcome).values");
+  assert.ok(fulfillmentLock >= 0 && cancellationGuard > fulfillmentLock && cancellationGuard < supportCaseInsert && cancellationGuard < outcomeInsert,
+    "the locked cancellation state is rejected before any case, outcome, or customer event is written");
+  assert.match(outcomeService, /assertSupplierOutcomeMayBeRecorded\(fulfillment\.state\)/);
+  assert.throws(() => assertSupplierOutcomeMayBeRecorded("CANCELLATION_REQUESTED"), /Resolve the pending cancellation request/);
+  assert.doesNotThrow(() => assertSupplierOutcomeMayBeRecorded("ON_HOLD"),
+    "a denied cancellation can restore its hold before the staff records the supplier outcome");
+
+  const service = await readFile(new URL("../src/server/fulfillment/equivalent-offers.ts", import.meta.url), "utf8");
+  assert.match(service, /LIMIT 20[\s\S]*JOIN LATERAL[\s\S]*ORDER BY offer_event\.created_at DESC, offer_event\.id DESC[\s\S]*has_pending_offer/,
+    "pending offers are checked for the bounded recent set with one stable latest-event query");
+  assert.doesNotMatch(service, /for \(const offer of existing\)/,
+    "offer history does not issue one database query per item while holding the fulfillment lock");
 });
 
 const now = "2026-10-28T00:00:00.000Z";
@@ -257,6 +302,39 @@ test("packet replacement supersedes prior versions and all send/export commands 
     const end = service.indexOf("\nexport async function ", start + 1);
     assert.match(service.slice(start, end < 0 ? undefined : end), /assertPacketActionable\(/, `${name} must reject stale or held packets`);
   }
+});
+
+test("supplier work start requires evidence on the latest active packet for the current route", async () => {
+  const adminService = await readFile(new URL("../src/server/fulfillment/admin.ts", import.meta.url), "utf8");
+  const updateState = adminService.slice(adminService.indexOf("export async function updateFulfillmentState"), adminService.indexOf("export async function recordPublicationEvidence"));
+  assert.match(updateState, /join public\.order_item_fulfillment_supplier route/);
+  assert.match(updateState, /packet\.supplier_id = route\.supplier_id/);
+  assert.match(updateState, /packet\.superseded_at is null/);
+  assert.match(updateState, /max\(latest\.version\)/);
+  assert.match(updateState, /orderItemFulfillmentSupplier\.orderItemId, input\.itemId\)\)\.for\("share"\)/);
+  assert.match(updateState, /attempt\.type = 'SEND'.*attempt\.state = 'DELIVERED'/s);
+  assert.match(updateState, /attempt\.type in \('MANUAL_SENT','MANUAL_SEND'\).*attempt\.state = 'MANUAL_SENT'/s);
+
+  const migration = await readFile(new URL("../src/db/migrations/0159_current_supplier_handoff_evidence.sql", import.meta.url), "utf8");
+  assert.match(migration, /packet\.supplier_id = fulfillment_supplier_id/);
+  assert.match(migration, /packet\.superseded_at IS NULL/);
+  assert.match(migration, /max\(latest\.version\)/);
+  assert.match(migration, /attempt\.type = 'SEND'.*attempt\.state = 'DELIVERED'/s);
+  assert.match(migration, /attempt\.type IN \('MANUAL_SENT','MANUAL_SEND'\).*attempt\.state = 'MANUAL_SENT'/s);
+
+  const acceptanceMigration = await readFile(new URL("../src/db/migrations/0160_equivalent_acceptance_lock_order.sql", import.meta.url), "utf8");
+  assert.match(acceptanceMigration, /SELECT f\.\* INTO fulfillment_row[\s\S]*FOR UPDATE/);
+  assert.match(acceptanceMigration, /Re-read consent and the supplier route only after taking the item lock/);
+  assert.match(acceptanceMigration, /FOR SHARE OF fs/);
+  const acceptanceVariableMigration = await readFile(new URL("../src/db/migrations/0161_equivalent_acceptance_variable_scope.sql", import.meta.url), "utf8");
+  assert.match(acceptanceVariableMigration, /DECLARE v_item_id text;[\s\S]*v_request_id text; v_version_id text; v_content_digest text/);
+  assert.match(acceptanceVariableMigration, /e\.request_id = v_request_id/);
+  assert.doesNotMatch(acceptanceVariableMigration, /e\.request_id = request_id/);
+
+  const rlsHarness = await readFile(new URL("../scripts/check-local-rls.ts", import.meta.url), "utf8");
+  assert.match(rlsHarness, /rejecting historical supplier handoff after an accepted equivalent route change/);
+  assert.match(rlsHarness, /superseded supplier packet after equivalent route acceptance/);
+  assert.match(rlsHarness, /latest active packet for the accepted supplier route permits work start/);
 });
 
 test("manual handoff reservation blocks cancellation until audited as unsent", async () => {

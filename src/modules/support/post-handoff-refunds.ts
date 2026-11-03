@@ -1,8 +1,8 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_NUMERIC_20 = 10n ** 20n - 1n;
 
-export function validatePostHandoffRefundRequest(input: { caseId: string; idempotencyKey: string; amountMinor: string; reason: string }) {
-  return { caseId: identity(input.caseId), idempotencyKey: identity(input.idempotencyKey), amountMinor: minor(input.amountMinor, false), reason: text(input.reason, 2000, 5) };
+export function validatePostHandoffRefundRequest(input: { caseId: string; orderItemId: string; idempotencyKey: string; amountMinor: string; reason: string }) {
+  return { caseId: identity(input.caseId), orderItemId: identity(input.orderItemId), idempotencyKey: identity(input.idempotencyKey), amountMinor: minor(input.amountMinor, false), reason: text(input.reason, 2000, 5) };
 }
 
 export function validatePostHandoffRefundDecision(input: {

@@ -44,8 +44,12 @@ export const orderItemEquivalentOfferRoute = pgTable("order_item_equivalent_offe
   supplierId: text("supplier_id").notNull().references(() => supplier.id),
   recipientEmail: text("recipient_email").notNull(),
   contentHash: text("content_hash").notNull(),
+  routeGeneration: integer("route_generation").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [check("order_item_equivalent_offer_route_hash_valid", sql`${t.contentHash} ~ '^[0-9a-f]{64}$'`)]).enableRLS();
+}, (t) => [
+  check("order_item_equivalent_offer_route_hash_valid", sql`${t.contentHash} ~ '^[0-9a-f]{64}$'`),
+  check("order_item_equivalent_offer_route_generation_positive", sql`${t.routeGeneration} > 0`),
+]).enableRLS();
 
 export const orderItemEquivalentOfferEvent = pgTable("order_item_equivalent_offer_event", {
   id: text("id").primaryKey(),

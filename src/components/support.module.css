@@ -19,9 +19,20 @@
 .pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
 .pagination a { color: var(--text-secondary); text-underline-offset: 3px; }
 .pagination a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.queueFilter { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto; align-items: end; gap: 12px; margin: 0 0 16px; }
+.queueFilter label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 12px; }
+.queueFilter select, .queueFilter button { min-height: 42px; padding: 9px 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--canvas); color: var(--text-primary); font: inherit; }
+.queueFilter button { background: var(--surface-2); cursor: pointer; }
+.queueFilter a { min-height: 42px; display: inline-flex; align-items: center; color: var(--text-secondary); font-size: 12px; text-underline-offset: 3px; }
+.queueFilter :is(select, button, a):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.row .rowMeta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 8px 0 0; color: var(--text-muted); font-size: 11px; }
+.row .rowMeta > span { display: inline; margin: 0; }
+.row .rowMeta .stateLabel { display: inline-flex; align-items: center; width: fit-content; margin: 0; padding: 3px 7px; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--text-secondary); }
+.row .rowMeta time { color: var(--text-muted); font-size: 11px; }
 .message header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; color: var(--text-muted); font-size: 11px; }
 .body { margin: 10px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-primary); font-size: 13px; line-height: 1.65; }
 .notice { padding: 12px; margin-bottom: 16px; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .internal { border-left: 2px solid var(--border-strong); padding-left: 14px; }
 .form :is(textarea, select, input, button):focus-visible, .link:focus-visible, .row:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-@media (max-width: 850px) { .grid { grid-template-columns: 1fr; } .header { flex-direction: column; } }
+@media (max-width: 850px) { .grid { grid-template-columns: 1fr; } .header { flex-direction: column; } .queueFilter { grid-template-columns: 1fr auto; } .queueFilter label { grid-column: 1 / -1; } }
+@media (max-width: 440px) { .queueFilter { grid-template-columns: 1fr; } .queueFilter label { grid-column: auto; } .queueFilter :is(button, a) { width: fit-content; } }
