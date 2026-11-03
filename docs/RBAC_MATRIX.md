@@ -78,7 +78,7 @@ See the detailed packet lifecycle and reconciliation contract in [Supplier Email
 
 - An internal JSON export is a report/data export and is Super Admin-only.
 - An Admin may create the minimum-data fulfillment handoff for an assigned order item. Record actor, time, item, recipient/contact, and fields shared. Do not include customer name, account, or billing details.
-- Admin or Super Admin assigns/reassigns fulfillment at the order-item level; assignment changes are audited. Only the currently assigned Admin may access that item's article, supplier packet, and manual handoff evidence. Super Admin access is audited.
+- Admin or Super Admin assigns/reassigns an order item to an active Admin; a Super Admin may also self-assign. Admin access to item content and handoff evidence requires current assignment; Super Admin access remains role-wide and audited. Assignment changes are audited.
 - Assigned Admin may approve a pre-handoff cancellation/refund only when it follows the disclosed item and writing-stage policy; the system computes the wallet credit. Finance/Super Admin approval is required for post-handoff exceptions, policy overrides, and manual adjustments.
 - Gross-profit reports and source-cost fields require Finance or Super Admin permission.
 - Internal report exports exclude customer names, briefs/content, credentials, and provider payment payloads.

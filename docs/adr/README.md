@@ -31,3 +31,4 @@ ADRs capture material choices and their consequences. Product behavior details r
 - [ADR-0027: Staff customer directory and access management](ADR-0027-staff-customer-directory-and-access-management.md)
 - [ADR-0028: Private object storage and durable cleanup](ADR-0028-private-object-storage-and-durable-cleanup.md)
 - [ADR-0029: Order-scoped active Support conversations and standalone cases](ADR-0029-order-scoped-support-conversations.md)
+- [ADR-0030: Super Admin self-assignment of fulfillment work](ADR-0030-superadmin-self-assignment.md)

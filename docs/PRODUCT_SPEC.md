@@ -139,7 +139,7 @@ A placement that was never delivered or was incorrectly verified follows the pre
 
 ## 8. Supplier operations and reporting
 
-Supplier profiles are private and include contacts, inventory, source history, listing links, and fulfillment history. A platform-sourced listing may still have an external fulfillment contact. Admin or Super Admin assigns/reassigns each order item to an Admin; only the assigned Admin may access that item's article, supplier packet, and handoff evidence. Assignment changes are audited. Super Admin access is audited.
+Supplier profiles are private and include contacts, inventory, source history, listing links, and fulfillment history. A platform-sourced listing may still have an external fulfillment contact. Admin or Super Admin may assign/reassign an order item to an active Admin; a Super Admin may also self-assign to take operational ownership. An Admin may access item content and evidence only while assigned, and Super Admin access remains role-wide and audited. Assignment changes are audited. See [ADR-0030](adr/ADR-0030-superadmin-self-assignment.md).
 
 Supplier email packets, provider sends, manual exports, item-level handoff state, audit evidence, and reconciliation follow the [Supplier Email Handoff](SUPPLIER_HANDOFF.md) specification. Staff handoff contains only the article/brief, approved link instructions, and publication requirements needed for the assigned item. It excludes customer identity, account, and billing data.
 
