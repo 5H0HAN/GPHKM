@@ -35,20 +35,21 @@ export async function recordSupplierFailure(headers: Headers, input: {
       .where(eq(customerOrderItem.id, input.itemId)).limit(1);
     if (!order || order.paid !== "PAID") throw new Error("Supplier outcome is unavailable for this item");
 
-    // All order-scoped writers use the same lock order: order advisory lock,
-    // Support case row, then item. The case-close trigger already holds the
-    // case before it locks its items, so item-first here could deadlock.
+    // Serialize order-scoped case discovery, then use the same item-before-case
+    // order as equivalent-offer decisions. Case closure locks only the case and
+    // never waits for item rows, so an item lock cannot form a close/accept cycle.
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
       'gphkm:support-order:' || ${order.organizationId} || ':' || ${order.id}, 0))`);
-    const [activeCase] = await tx.select().from(supportCase).where(and(
-      eq(supportCase.organizationId, order.organizationId), eq(supportCase.orderId, order.id),
-      sql`${supportCase.state} not in ('RESOLVED','CLOSED')`, sql`${supportCase.mergedIntoCaseId} is null`,
-    )).for("update").limit(1);
 
     const [fulfillment] = await tx.select().from(orderItemFulfillment)
       .where(eq(orderItemFulfillment.orderItemId, input.itemId)).for("update").limit(1);
     if (!fulfillment || !mayReadFulfillmentContent({ role: actor.role, userId: actor.userId, assignedAdminId: fulfillment.assignedAdminId }) ||
         ["COMPLETED", "CANCELED_REFUNDED"].includes(fulfillment.state)) throw new Error("Order item unavailable");
+
+    const [activeCase] = await tx.select().from(supportCase).where(and(
+      eq(supportCase.organizationId, order.organizationId), eq(supportCase.orderId, order.id),
+      sql`${supportCase.state} not in ('RESOLVED','CLOSED')`, sql`${supportCase.mergedIntoCaseId} is null`,
+    )).for("update").limit(1);
 
     const [prior] = await tx.select({ id: supplierFulfillmentOutcome.id, supportCaseId: supplierFulfillmentOutcome.supportCaseId,
       requestHash: supplierFulfillmentOutcome.requestHash })

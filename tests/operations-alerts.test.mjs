@@ -92,6 +92,8 @@ test("overview reads bounded role-scoped previews and refreshes without full que
   assert.doesNotMatch(alerts, /listFulfillmentQueue/);
   assert.match(alerts, /set_config\('app\.user_id'/);
   assert.match(alerts, /staffSupportAttentionStates\(actor\.role\)/);
+  assert.match(alerts, /Cases on orders with items assigned to you and standalone cases appear here/,
+    "Admin overview copy matches the order-scoped and standalone case access rules");
   assert.match(alerts, /from\(supportCase\)\.where\(supportScope\)/);
   assert.match(alerts, /isNull\(orderItemFulfillment\.assignedAdminId\)/);
   assert.match(alerts, /limit\(OPERATIONS_INBOX_PREVIEW_LIMIT\)/);

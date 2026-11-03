@@ -120,6 +120,16 @@ async function expectSupplierFailureCaseCloseRejected(query: Promise<{ rows: unk
   }
 }
 
+async function expectSupplierFailureHoldReleaseRejected(query: Promise<{ rows: unknown[] }>) {
+  try {
+    await query;
+    assert.fail("a declined or stale offer must not release a supplier-failure hold");
+  } catch (error) {
+    assert.equal(typeof error === "object" && error !== null && "code" in error ? error.code : null, "42501");
+    assert.match(error instanceof Error ? error.message : String(error), /resolve supplier failure through customer-approved equivalent or item cancellation before handoff/);
+  }
+}
+
 async function expectSupplierNoticeWithoutDeliveryRejected(query: Promise<{ rows: unknown[] }>) {
   try {
     await query;
@@ -149,8 +159,9 @@ try {
   const setup = new Client({ connectionString: isolatedMigrationUrl.href, connectionTimeoutMillis: 5000 });
   const handoff = new Client({ connectionString: isolatedRuntimeUrl.href, connectionTimeoutMillis: 5000 });
   const consent = new Client({ connectionString: isolatedRuntimeUrl.href, connectionTimeoutMillis: 5000 });
+  const failure = new Client({ connectionString: isolatedRuntimeUrl.href, connectionTimeoutMillis: 5000 });
   const observer = new Client({ connectionString: isolatedMigrationUrl.href, connectionTimeoutMillis: 5000 });
-  connections.push(setup, handoff, consent, observer);
+  connections.push(setup, handoff, consent, failure, observer);
   await Promise.all(connections.map((client) => client.connect()));
 
   const ownerId = randomUUID();
@@ -164,8 +175,10 @@ try {
   const routeItemId = randomUUID();
   const routeSupportCaseId = randomUUID();
   const routeFailureOutcomeId = randomUUID();
-  const routeReturnCaseId = randomUUID();
+  const routeReturnCaseId = routeSupportCaseId;
+  const routeMismatchCaseId = randomUUID();
   const routeReturnFailureOutcomeId = randomUUID();
+  const routeReturnConcurrentOutcomeId = randomUUID();
   const routeReturnRequestId = randomUUID();
   const routeReturnVersionId = randomUUID();
   const routeReturnOfferId = randomUUID();
@@ -173,6 +186,13 @@ try {
   const routeMismatchRequestId = randomUUID();
   const routeMismatchVersionId = randomUUID();
   const routeMismatchOfferId = randomUUID();
+  const routeDeclinedOfferListingId = randomUUID();
+  const routeDeclinedOfferItemId = randomUUID();
+  const routeDeclinedOfferOutcomeId = randomUUID();
+  const routeDeclinedConcurrentOutcomeId = randomUUID();
+  const routeDeclinedOfferRequestId = randomUUID();
+  const routeDeclinedOfferVersionId = randomUUID();
+  const routeDeclinedOfferId = randomUUID();
   const routeRequestId = randomUUID();
   const routeVersionId = randomUUID();
   const routeOfferId = randomUUID();
@@ -192,6 +212,7 @@ try {
   const routeFreshAAttemptId = randomUUID();
   const routeReturnContentHash = "d".repeat(64);
   const routeMismatchContentHash = "b".repeat(64);
+  const routeDeclinedContentHash = "7".repeat(64);
   const listingIds = [randomUUID(), randomUUID()];
   const itemIds = [randomUUID(), randomUUID()];
   const requestIds = [randomUUID(), randomUUID()];
@@ -543,9 +564,8 @@ try {
   ));
   await consent.query("rollback");
 
-  // Customer acceptance is recorded. Hold the item lock while
-  // a case close waits, then accept the route: the waiting close must re-read
-  // the accepted pointer after it acquires the same item lock.
+  // Record customer acceptance but keep the order conversation active: the
+  // same item will fail again on generation 2 before the case can be closed.
   await setup.query("begin");
   await setup.query(
     `insert into order_item_equivalent_offer_event (id, offer_id, actor_user_id, event_type, content_hash, notice_version, created_at)
@@ -553,28 +573,9 @@ try {
     [randomUUID(), routeOfferId, ownerId, routeContentHash],
   );
   await setup.query("commit");
-
   await consent.query("begin");
   await consent.query("set local role gphkm_runtime");
   await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
-  await consent.query("select public.gphkm_lock_equivalent_offer_item($1, $2, $3)", [routeOfferId, ownerId, organizationId]);
-  await handoff.query("begin");
-  await handoff.query("set local role gphkm_runtime");
-  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
-  const routeHandoffBackend = await handoff.query<{ pid: number }>("select pg_backend_pid() as pid");
-  await handoff.query(
-    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, from_state, to_state, idempotency_key, request_hash)
-     values ($1, $2, $3, 'STAFF', 'STATE_CHANGED', 'INTERNAL', 'Close after customer-approved supplier recovery', 'OPEN', 'RESOLVED', $4, repeat('b', 64))`,
-    [randomUUID(), routeSupportCaseId, targetAdminId, `close-after-accept-${routeItemId}`],
-  );
-  let closeOutcome = "pending";
-  const blockedCaseClose = handoff.query(
-    "update support_case set state = 'RESOLVED', updated_at = clock_timestamp() where id = $1", [routeSupportCaseId],
-  ).then((result) => { closeOutcome = `resolved:${result.rowCount}`; return result; }, (error: unknown) => {
-    closeOutcome = typeof error === "object" && error !== null && "code" in error ? `rejected:${String(error.code)}` : "rejected";
-    throw error;
-  });
-  await waitUntilBlocked(observer, routeHandoffBackend.rows[0]!.pid, "Case close-first route acceptance");
   await consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
      values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
@@ -582,11 +583,7 @@ try {
   );
   await consent.query("select public.gphkm_apply_equivalent_offer_acceptance($1, $2, $3)", [routeOfferId, ownerId, organizationId]);
   await consent.query("commit");
-  await blockedCaseClose;
-  assert.equal(closeOutcome, "resolved:1", "case close rechecks after acceptance commits and does not deadlock");
-  await handoff.query("commit");
-  const acceptedCase = await setup.query<{ state: string }>("select state from support_case where id = $1", [routeSupportCaseId]);
-  assert.equal(acceptedCase.rows[0]?.state, "RESOLVED", "accepted current route permits terminal case state");
+
   const acceptedItem = await setup.query<{ state: string; handed_off_at: Date | null; work_started_at: Date | null; notice_access: boolean }>(
     `select f.state, f.handed_off_at, f.work_started_at,
        public.gphkm_supplier_item_notice_access($2, $3) as notice_access
@@ -712,24 +709,49 @@ try {
   // confirms the attempt did not reach the provider.
   await setup.query("begin");
   await setup.query("select set_config('app.user_id', $1, true)", [targetAdminId]);
-  await setup.query("alter table support_case disable trigger support_case_guard");
-  await setup.query(
-    `insert into support_case (id, organization_id, order_id, order_item_id, opened_by_user_id, summary, idempotency_key, request_hash)
-     values ($1, $2, $3, $4, $5, 'Synthetic second supplier failure', $6, repeat('9', 64))`,
-    [routeReturnCaseId, organizationId, orderId, routeItemId, ownerId, `return-case-${routeItemId}`],
-  );
-  await setup.query("alter table support_case enable trigger support_case_guard");
-  await setup.query(
-    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, to_state, idempotency_key, request_hash)
-     values ($1, $2, $3, 'CUSTOMER', 'OPENED', 'INTERNAL', 'Synthetic second supplier failure', 'OPEN', $4, repeat('8', 64))`,
-    [randomUUID(), routeReturnCaseId, ownerId, `return-case-open-${routeItemId}`],
-  );
   await setup.query(
     `insert into supplier_fulfillment_outcome (id, order_item_id, supplier_id, support_case_id, actor_user_id,
        outcome, reason, idempotency_key, request_hash)
      values ($1, $2, $3, $4, $5, 'CANNOT_FULFILL', 'Synthetic supplier B failure for A-to-B-to-A regression', $6, repeat('7', 64))`,
     [routeReturnFailureOutcomeId, routeItemId, supplierBId, routeReturnCaseId, targetAdminId, `return-outcome-${routeItemId}`],
   );
+  await setup.query(
+    `update order_item_fulfillment set state = 'ON_HOLD', state_before_hold = 'IN_FULFILLMENT', updated_at = clock_timestamp()
+      where order_item_id = $1`, [routeItemId],
+  );
+  await setup.query("commit");
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  const staleAcceptanceClose = await handoff.query<{ can_close: boolean }>(
+    "select public.gphkm_supplier_failure_case_can_close($1) as can_close", [routeReturnCaseId],
+  );
+  const staleAcceptanceEvidence = await setup.query(
+    `select outcome.route_generation as failure_generation, current_route.route_generation as current_generation,
+            offer_route.route_generation as accepted_target_generation, latest.event_type, support.state
+       from supplier_fulfillment_outcome outcome
+       join order_item_fulfillment_supplier current_route on current_route.order_item_id = outcome.order_item_id
+       join support_case support on support.id = outcome.support_case_id
+       left join order_item_equivalent_offer offer on offer.order_item_id = outcome.order_item_id and offer.support_case_id = outcome.support_case_id
+       left join order_item_equivalent_offer_route offer_route on offer_route.offer_id = offer.id
+       left join lateral (select event_type from order_item_equivalent_offer_event event
+          where event.offer_id = offer.id order by event.created_at desc, event.id desc limit 1) latest on true
+      where outcome.id = $1`, [routeReturnFailureOutcomeId],
+  );
+  assert.equal(staleAcceptanceClose.rows[0]?.can_close, false,
+    `generation-2 failure is not resolved by the earlier generation-2 acceptance from A to B: ${JSON.stringify(staleAcceptanceEvidence.rows)}`);
+  await handoff.query("savepoint stale_generation_hold_release");
+  await expectSupplierFailureHoldReleaseRejected(handoff.query(
+    `update order_item_fulfillment set state = state_before_hold, state_before_hold = null, updated_at = clock_timestamp()
+      where order_item_id = $1`, [routeItemId],
+  ));
+  await handoff.query("rollback to savepoint stale_generation_hold_release");
+  await handoff.query("release savepoint stale_generation_hold_release");
+  await expectPacketAttemptRejected(handoff, routePacketId, randomUUID(), targetAdminId,
+    /resolve the current supplier failure before sending or exporting a packet/);
+  await handoff.query("rollback");
+  await setup.query("begin");
+  await setup.query("select set_config('app.user_id', $1, true)", [targetAdminId]);
   await setup.query(
     `insert into order_item_content_change_request (id, order_item_id, request_number, requested_by_user_id,
        base_version, target_supplier_id, target_url, anchor_text, article_text)
@@ -819,20 +841,66 @@ try {
   );
   await handoff.query("commit");
 
+  // Race a second failure insert against the customer decision. The outcome
+  // trigger snapshots the locked generation even when the caller timestamp is
+  // far older; acceptance waits for that insert, then resolves both outcomes.
+  await setup.query("begin");
+  await setup.query("select set_config('app.user_id', $1, true)", [targetAdminId]);
+  await setup.query(
+    `insert into supplier_fulfillment_outcome (id, order_item_id, supplier_id, support_case_id, actor_user_id,
+       outcome, reason, idempotency_key, request_hash, created_at)
+     values ($1, $2, $3, $4, $5, 'CANNOT_FULFILL', 'Synthetic concurrent B failure with a stale app timestamp', $6, repeat('6', 64), '2000-01-01 00:00:00+00')`,
+    [routeReturnConcurrentOutcomeId, routeItemId, supplierBId, routeReturnCaseId, targetAdminId, `return-concurrent-${routeItemId}`],
+  );
   await consent.query("begin");
   await consent.query("set local role gphkm_runtime");
   await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
-  await consent.query("select public.gphkm_lock_equivalent_offer_item($1, $2, $3)", [routeReturnOfferId, ownerId, organizationId]);
+  const offerDecisionBackend = await consent.query<{ pid: number }>("select pg_backend_pid() as pid");
+  let offerLockOutcome = "pending";
+  const blockedOfferLock = consent.query(
+    "select public.gphkm_lock_equivalent_offer_item($1, $2, $3)", [routeReturnOfferId, ownerId, organizationId],
+  ).then((result) => { offerLockOutcome = "locked"; return result; }, (error: unknown) => {
+    offerLockOutcome = typeof error === "object" && error !== null && "code" in error ? `rejected:${String(error.code)}` : "rejected";
+    throw error;
+  });
+  await waitUntilBlocked(observer, offerDecisionBackend.rows[0]!.pid, "Offer decision waits for a concurrent supplier failure insert");
+  await setup.query("commit");
+  await blockedOfferLock;
+  assert.equal(offerLockOutcome, "locked", "customer acceptance observes the committed failure after acquiring the shared item lock");
+
   const recoveredDecision = await consent.query<{ can_decide: boolean }>(
     "select public.gphkm_customer_can_decide_equivalent_offer($1, $2, $3) as can_decide", [routeReturnOfferId, ownerId, organizationId],
   );
   assert.equal(recoveredDecision.rows[0]?.can_decide, true,
     "customer can decide the exact approved recovery after the send is reconciled as not sent");
-  await consent.query(
+  // A case-close attempt that reaches the case row before the accepted route
+  // must fail closed. Offer events take a shared case lock, so they wait for
+  // this decision instead of deadlocking while close waits on the item row.
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  await handoff.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, from_state, to_state, idempotency_key, request_hash)
+     values ($1, $2, $3, 'STAFF', 'STATE_CHANGED', 'INTERNAL', 'Attempt closure before the latest supplier recovery commits', 'OPEN', 'RESOLVED', $4, repeat('c', 64))`,
+    [randomUUID(), routeReturnCaseId, targetAdminId, `close-before-route-${routeItemId}`],
+  );
+  const acceptedEventBackend = await consent.query<{ pid: number }>("select pg_backend_pid() as pid");
+  let acceptedEventOutcome = "pending";
+  const blockedAcceptedEvent = consent.query(
     `insert into order_item_equivalent_offer_event (id, offer_id, actor_user_id, event_type, content_hash, notice_version)
      values ($1, $2, $3, 'ACCEPTED', $4, 'race-fixture-v1')`,
     [randomUUID(), routeReturnOfferId, ownerId, routeReturnContentHash],
-  );
+  ).then((result) => { acceptedEventOutcome = "accepted"; return result; }, (error: unknown) => {
+    acceptedEventOutcome = typeof error === "object" && error !== null && "code" in error ? `rejected:${String(error.code)}` : "rejected";
+    throw error;
+  });
+  await waitUntilBlocked(observer, acceptedEventBackend.rows[0]!.pid, "Customer acceptance waits for the case-close decision");
+  await expectSupplierFailureCaseCloseRejected(handoff.query(
+    "update support_case set state = 'RESOLVED', updated_at = clock_timestamp() where id = $1", [routeReturnCaseId],
+  ));
+  await handoff.query("rollback");
+  await blockedAcceptedEvent;
+  assert.equal(acceptedEventOutcome, "accepted", "the accepted event proceeds after failed closure releases the case row");
   await consent.query("savepoint missing_recovery_consent");
   await expectEquivalentAcceptanceRejected(consent.query(
     "select public.gphkm_apply_equivalent_offer_acceptance($1, $2, $3)", [routeReturnOfferId, ownerId, organizationId],
@@ -854,9 +922,75 @@ try {
   );
   await consent.query("select public.gphkm_apply_equivalent_offer_acceptance($1, $2, $3)", [routeReturnOfferId, ownerId, organizationId]);
   await consent.query("commit");
+
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  await handoff.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, from_state, to_state, idempotency_key, request_hash)
+     values ($1, $2, $3, 'STAFF', 'STATE_CHANGED', 'INTERNAL', 'Resolve after both failed route generations have accepted replacements', 'OPEN', 'RESOLVED', $4, repeat('c', 64))`,
+    [randomUUID(), routeReturnCaseId, targetAdminId, `close-after-both-routes-${routeItemId}`],
+  );
+  await handoff.query("update support_case set state = 'RESOLVED', updated_at = clock_timestamp() where id = $1", [routeReturnCaseId]);
+  await handoff.query("commit");
+  const resolvedReturnCase = await setup.query<{ state: string }>("select state from support_case where id = $1", [routeReturnCaseId]);
+  assert.equal(resolvedReturnCase.rows[0]?.state, "RESOLVED");
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  const assignedClosedNotice = await handoff.query<{ id: string }>(
+    "select id from supplier_item_notice where id = $1", [routeNoticeId],
+  );
+  assert.deepEqual(assignedClosedNotice.rows, [{ id: routeNoticeId }],
+    "assigned staff retain RLS-scoped access to supplier notice evidence after its Support case resolves");
+  await handoff.query("commit");
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminId]);
+  const unassignedClosedNotice = await handoff.query<{ id: string }>(
+    "select id from supplier_item_notice where id = $1", [routeNoticeId],
+  );
+  assert.deepEqual(unassignedClosedNotice.rows, [],
+    "an unassigned Admin cannot read supplier notice evidence after case resolution");
+  await handoff.query("commit");
   await consent.query("begin");
   await consent.query("set local role gphkm_runtime");
   await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
+  const customerClosedNotice = await consent.query<{ id: string }>(
+    "select id from supplier_item_notice where id = $1", [routeNoticeId],
+  );
+  assert.deepEqual(customerClosedNotice.rows, [],
+    "customers cannot read internal supplier notice evidence after case resolution");
+  await consent.query("commit");
+  const resolvedOutcomeCount = await setup.query<{ count: number }>(
+    "select count(*)::int as count from supplier_fulfillment_outcome_resolution where offer_id = $1", [routeReturnOfferId],
+  );
+  assert.equal(resolvedOutcomeCount.rows[0]?.count, 2,
+    "the replacement acceptance resolves every failure recorded on the source generation, including the concurrent insert");
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  const assignedResolutionRead = await handoff.query<{ count: string }>(
+    "select count(*)::text as count from supplier_fulfillment_outcome_resolution where offer_id = $1", [routeReturnOfferId],
+  );
+  assert.equal(assignedResolutionRead.rows[0]?.count, "2",
+    "assigned staff can use the internal resolution edges needed to review packet eligibility");
+  await handoff.query("commit");
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminId]);
+  const unassignedResolutionRead = await handoff.query<{ count: string }>(
+    "select count(*)::text as count from supplier_fulfillment_outcome_resolution where offer_id = $1", [routeReturnOfferId],
+  );
+  assert.equal(unassignedResolutionRead.rows[0]?.count, "0", "an unassigned Admin cannot read another Admin's supplier failure evidence");
+  await handoff.query("commit");
+  await consent.query("begin");
+  await consent.query("set local role gphkm_runtime");
+  await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
+  const customerResolutionRead = await consent.query<{ count: string }>(
+    "select count(*)::text as count from supplier_fulfillment_outcome_resolution where offer_id = $1", [routeReturnOfferId],
+  );
+  assert.equal(customerResolutionRead.rows[0]?.count, "0", "customers cannot read internal supplier route resolution evidence");
   await expectEquivalentAcceptanceRejected(consent.query(
     "select public.gphkm_apply_equivalent_offer_acceptance($1, $2, $3)", [routeOfferId, ownerId, organizationId],
   ));
@@ -942,18 +1076,41 @@ try {
   assert.deepEqual(freshRouteWork.rows[0], { state: "IN_FULFILLMENT", route_generation: 3 },
     "fresh generation-3 A evidence permits work start after stale generation-1 A evidence was rejected");
 
-  // Keep the mismatch regression in the same active order conversation. The
-  // current route is A, but this synthetic accepted recovery offer routes to B
-  // while its approved content request still names A. Matching hashes alone
-  // must not authorize post-handoff supplier consent for that mismatch.
+  // The earlier case is terminal, so this later supplier failure opens a new
+  // order conversation. The current route is A, but the synthetic offer below
+  // routes to B while its approved content request still names A.
   await setup.query("begin");
   await setup.query("select set_config('app.user_id', $1, true)", [targetAdminId]);
+  await setup.query("alter table support_case disable trigger support_case_guard");
+  await setup.query(
+    `insert into support_case (id, organization_id, order_id, order_item_id, opened_by_user_id, summary, idempotency_key, request_hash)
+     values ($1, $2, $3, $4, $5, 'Synthetic later supplier failure', $6, repeat('3', 64))`,
+    [routeMismatchCaseId, organizationId, orderId, routeItemId, ownerId, `mismatch-case-${routeItemId}`],
+  );
+  await setup.query("alter table support_case enable trigger support_case_guard");
+  await setup.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, to_state, idempotency_key, request_hash)
+     values ($1, $2, $3, 'CUSTOMER', 'OPENED', 'INTERNAL', 'Synthetic later supplier failure', 'OPEN', $4, repeat('2', 64))`,
+    [randomUUID(), routeMismatchCaseId, ownerId, `mismatch-case-open-${routeItemId}`],
+  );
   await setup.query(
     `insert into supplier_fulfillment_outcome (id, order_item_id, supplier_id, support_case_id, actor_user_id,
        outcome, reason, idempotency_key, request_hash)
      values ($1, $2, $3, $4, $5, 'CANNOT_FULFILL', 'Synthetic supplier A failure for cross-supplier consent regression', $6, repeat('4', 64))`,
-    [routeMismatchFailureOutcomeId, routeItemId, supplierAId, routeReturnCaseId, targetAdminId, `mismatch-outcome-${routeItemId}`],
+    [routeMismatchFailureOutcomeId, routeItemId, supplierAId, routeMismatchCaseId, targetAdminId, `mismatch-outcome-${routeItemId}`],
   );
+  const mismatchRoutePreconditions = await setup.query<{ state: string; can_read: boolean; active_case: boolean; active_supplier_contact: boolean }>(
+    `select fulfillment.state,
+       staff.active and (staff.role = 'SUPER_ADMIN' or (staff.role = 'ADMIN' and fulfillment.assigned_admin_id = $2)) as can_read,
+       exists (select 1 from support_case case_row where case_row.order_id = item.order_id and case_row.state not in ('RESOLVED','CLOSED')) as active_case,
+       exists (select 1 from supplier supplier_row join supplier_contact contact on contact.supplier_id = supplier_row.id
+         where supplier_row.id = $3 and supplier_row.status = 'ACTIVE' and contact.is_primary) as active_supplier_contact
+       from customer_order_item item join order_item_fulfillment fulfillment on fulfillment.order_item_id = item.id
+       join staff_account staff on staff.user_id = $2 where item.id = $1`, [routeItemId, targetAdminId, supplierAId],
+  );
+  assert.deepEqual(mismatchRoutePreconditions.rows[0], {
+    state: "IN_FULFILLMENT", can_read: true, active_case: true, active_supplier_contact: true,
+  }, "mismatched-route regression content route preconditions must be valid before offer creation");
   await setup.query(
     `insert into order_item_content_change_request (id, order_item_id, request_number, requested_by_user_id,
        base_version, target_supplier_id, target_url, anchor_text, article_text)
@@ -984,7 +1141,7 @@ try {
      values ($1, $2, $3, $4, $5, 'Mismatched supplier route', 'https://replacement.race-fixture.invalid/',
        'Synthetic mismatched supplier offer', 'Must be rejected by consent binding', ARRAY['General'], 'US', 'English',
        'DOFOLLOW', 'PERMANENT', 30, null, false, '{"source":"mismatch-race"}'::jsonb, 1000, $6)`,
-    [routeMismatchOfferId, routeItemId, routeReturnCaseId, routeMismatchRequestId, routeMismatchVersionId, targetAdminId],
+    [routeMismatchOfferId, routeItemId, routeMismatchCaseId, routeMismatchRequestId, routeMismatchVersionId, targetAdminId],
   );
   await setup.query(
     `insert into order_item_equivalent_offer_route (offer_id, supplier_id, recipient_email, content_hash, route_generation)
@@ -1022,6 +1179,178 @@ try {
   );
   assert.deepEqual(mismatchedRoute.rows[0], { supplier_id: supplierAId, route_generation: 3 },
     "rejected mismatched consent leaves the accepted A route unchanged");
+
+  // A valid decline on a separate placement must preserve both holds in the
+  // shared order case. This exercises the customer-visible decline path.
+  await setup.query("begin");
+  await setup.query("select set_config('app.user_id', $1, true)", [targetAdminId]);
+  await setup.query(
+    `insert into marketplace_listing (id, title, description, country_code, primary_language, categories,
+       retail_price_cents, link_type, link_validity, turnaround_days, sponsored_content_marking, status,
+       allows_sports_and_gaming, allows_pharmacy, allows_crypto, allows_foreign_language)
+     values ($1, 'Decline isolation item', 'Synthetic placement for customer decline', 'US', 'English', ARRAY['General'],
+       1000, 'DOFOLLOW', 'PERMANENT', 30, false, 'DRAFT', false, false, false, false)`, [routeDeclinedOfferListingId],
+  );
+  await setup.query("alter table customer_order_item disable trigger customer_order_item_pending_only");
+  await setup.query(
+    `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+       placement_price_minor, writing_selected, target_url, anchor_text, article_text, supplier_sharing_consented, consent_notice_version)
+     values ($1, $2, $3, 1, '{"title":"Decline isolation item"}'::jsonb, 1000, false,
+       'https://example.invalid/decline-item', 'decline item', 'Synthetic decline article', true, 'race-fixture-v1')`,
+    [routeDeclinedOfferItemId, orderId, routeDeclinedOfferListingId],
+  );
+  await setup.query("alter table customer_order_item enable trigger customer_order_item_pending_only");
+  await setup.query(
+    `insert into order_item_financial (order_item_id, commercial_source, supplier_id, fulfillment_supplier_id)
+     values ($1, 'SUPPLIER_SOURCED', $2, $2)`, [routeDeclinedOfferItemId, supplierAId],
+  );
+  await setup.query(
+    `insert into supplier_fulfillment_outcome (id, order_item_id, supplier_id, support_case_id, actor_user_id,
+       outcome, reason, idempotency_key, request_hash)
+     values ($1, $2, $3, $4, $5, 'CANNOT_FULFILL', 'Synthetic failure for a valid declined offer', $6, repeat('5', 64))`,
+    [routeDeclinedOfferOutcomeId, routeDeclinedOfferItemId, supplierAId, routeMismatchCaseId, targetAdminId, `decline-offer-${routeDeclinedOfferItemId}`],
+  );
+  await setup.query(
+    `update order_item_fulfillment set state = 'ON_HOLD', state_before_hold = 'CONFIRMED', assigned_admin_id = $2, updated_at = clock_timestamp()
+      where order_item_id = $1`, [routeDeclinedOfferItemId, targetAdminId],
+  );
+  const declinedRoutePreconditions = await setup.query<{ state: string; can_read: boolean; active_case: boolean; active_supplier_contact: boolean }>(
+    `select fulfillment.state,
+       staff.active and (staff.role = 'SUPER_ADMIN' or (staff.role = 'ADMIN' and fulfillment.assigned_admin_id = $2)) as can_read,
+       exists (select 1 from support_case case_row where case_row.order_id = item.order_id and case_row.state not in ('RESOLVED','CLOSED')) as active_case,
+       exists (select 1 from supplier supplier_row join supplier_contact contact on contact.supplier_id = supplier_row.id
+         where supplier_row.id = $3 and supplier_row.status = 'ACTIVE' and contact.is_primary) as active_supplier_contact
+       from customer_order_item item join order_item_fulfillment fulfillment on fulfillment.order_item_id = item.id
+       join staff_account staff on staff.user_id = $2
+      where item.id = $1`, [routeDeclinedOfferItemId, targetAdminId, supplierBId],
+  );
+  assert.deepEqual(declinedRoutePreconditions.rows[0], {
+    state: "ON_HOLD", can_read: true, active_case: true, active_supplier_contact: true,
+  }, "decline regression content route preconditions must be valid before offer creation");
+  await setup.query(
+    `insert into order_item_content_change_request (id, order_item_id, request_number, requested_by_user_id,
+       base_version, target_supplier_id, target_url, anchor_text, article_text)
+     values ($1, $2, 1, $3, 1, $4, 'https://example.invalid/declined-replacement', 'declined replacement',
+       'Synthetic replacement article for the decline regression')`,
+    [routeDeclinedOfferRequestId, routeDeclinedOfferItemId, ownerId, supplierBId],
+  );
+  await setup.query(
+    `insert into order_item_content_version (id, order_item_id, request_id, version, target_url, anchor_text,
+       article_text, instructions, supplier_id, recipient_email, content_hash, approved_by_user_id)
+     values ($1, $2, $3, 2, 'https://example.invalid/declined-replacement', 'declined replacement',
+       'Synthetic replacement article for the decline regression', '', $4, 'replacement@race-fixture.invalid', $5, $6)`,
+    [routeDeclinedOfferVersionId, routeDeclinedOfferItemId, routeDeclinedOfferRequestId, supplierBId, routeDeclinedContentHash, targetAdminId],
+  );
+  await setup.query(
+    `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, created_at)
+     values ($1, $2, $3, 'REQUESTED', clock_timestamp())`, [randomUUID(), routeDeclinedOfferRequestId, ownerId],
+  );
+  await setup.query(
+    `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, created_at)
+     values ($1, $2, $3, 'APPROVED', $4, $5, clock_timestamp())`,
+    [randomUUID(), routeDeclinedOfferRequestId, targetAdminId, routeDeclinedOfferVersionId, routeDeclinedContentHash],
+  );
+  await setup.query(
+    `insert into order_item_equivalent_offer (id, order_item_id, support_case_id, content_request_id, content_version_id,
+       title, website_url, description, equivalence_note, categories, country_code, language, link_type, link_validity,
+       turnaround_days, buyer_requirements, sponsored_content_marking, terms, locked_price_minor, offered_by_user_id)
+     values ($1, $2, $3, $4, $5, 'Valid decline replacement', 'https://replacement.race-fixture.invalid/',
+       'Synthetic valid replacement', 'Same purchased terms for the decline regression', ARRAY['General'], 'US', 'English',
+       'DOFOLLOW', 'PERMANENT', 30, null, false, '{"source":"decline-race"}'::jsonb, 1000, $6)`,
+    [routeDeclinedOfferId, routeDeclinedOfferItemId, routeMismatchCaseId, routeDeclinedOfferRequestId, routeDeclinedOfferVersionId, targetAdminId],
+  );
+  await setup.query(
+    `insert into order_item_equivalent_offer_route (offer_id, supplier_id, recipient_email, content_hash, route_generation)
+     values ($1, $2, 'replacement@race-fixture.invalid', $3, 2)`, [routeDeclinedOfferId, supplierBId, routeDeclinedContentHash],
+  );
+  await setup.query(
+    `insert into order_item_equivalent_offer_event (id, offer_id, actor_user_id, event_type, content_hash, created_at)
+     values ($1, $2, $3, 'OFFERED', $4, clock_timestamp())`,
+    [randomUUID(), routeDeclinedOfferId, targetAdminId, routeDeclinedContentHash],
+  );
+  await setup.query(
+    `update order_item_fulfillment set state = 'ON_HOLD', state_before_hold = 'IN_FULFILLMENT', updated_at = clock_timestamp()
+      where order_item_id = $1`, [routeItemId],
+  );
+  await setup.query("commit");
+
+  await consent.query("begin");
+  await consent.query("set local role gphkm_runtime");
+  await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
+  await consent.query("select public.gphkm_lock_equivalent_offer_item($1, $2, $3)", [routeDeclinedOfferId, ownerId, organizationId]);
+  const canDeclineRecovery = await consent.query<{ can_decide: boolean }>(
+    "select public.gphkm_customer_can_decide_equivalent_offer($1, $2, $3) as can_decide", [routeDeclinedOfferId, ownerId, organizationId],
+  );
+  assert.equal(canDeclineRecovery.rows[0]?.can_decide, true, "the regression uses an actually customer-decidable equivalent offer");
+
+  // A second supplier failure on an item with an outstanding offer must wait
+  // for the customer's item lock before it locks the shared Support case. This
+  // is the same item → case order used by offer event guards; case-first here
+  // would deadlock when the customer decision asks for FOR SHARE on the case.
+  await failure.query("begin");
+  await failure.query("set local role gphkm_runtime");
+  await failure.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  await failure.query(
+    `select pg_advisory_xact_lock(hashtextextended('gphkm:support-order:' || $1 || ':' || $2, 0))`,
+    [organizationId, orderId],
+  );
+  const failureBackend = await failure.query<{ pid: number }>("select pg_backend_pid() as pid");
+  const blockedFailureItem = failure.query(
+    "select order_item_id from order_item_fulfillment where order_item_id = $1 for update", [routeDeclinedOfferItemId],
+  );
+  await waitUntilBlocked(observer, failureBackend.rows[0]!.pid, "Supplier failure waits for a concurrent customer offer event");
+  await consent.query(
+    `insert into order_item_equivalent_offer_event (id, offer_id, actor_user_id, event_type, reason)
+     values ($1, $2, $3, 'DECLINED', 'The replacement terms were not suitable.')`,
+    [randomUUID(), routeDeclinedOfferId, ownerId],
+  );
+  await consent.query("commit");
+  await blockedFailureItem;
+  await failure.query(
+    `select id from support_case where id = $1 and state not in ('RESOLVED','CLOSED') for update`, [routeMismatchCaseId],
+  );
+  await failure.query(
+    `insert into supplier_fulfillment_outcome (id, order_item_id, supplier_id, support_case_id, actor_user_id,
+       outcome, reason, idempotency_key, request_hash)
+     values ($1, $2, $3, $4, $5, 'NONRESPONSIVE', 'Synthetic concurrent supplier follow-up', $6, repeat('9', 64))`,
+    [routeDeclinedConcurrentOutcomeId, routeDeclinedOfferItemId, supplierAId, routeMismatchCaseId, targetAdminId,
+      `declined-race-${routeDeclinedOfferItemId}`],
+  );
+  await failure.query("commit");
+  const concurrentFailure = await setup.query<{ route_generation: number; fulfillment_state: string; state_before_hold: string | null }>(
+    `select outcome.route_generation, fulfillment.state as fulfillment_state, fulfillment.state_before_hold
+       from supplier_fulfillment_outcome outcome join order_item_fulfillment fulfillment on fulfillment.order_item_id = outcome.order_item_id
+      where outcome.id = $1`, [routeDeclinedConcurrentOutcomeId],
+  );
+  assert.deepEqual(concurrentFailure.rows[0], {
+    route_generation: 1, fulfillment_state: "ON_HOLD", state_before_hold: "CONFIRMED",
+  }, "the failure command proceeds after the offer decision without deadlock or releasing the supplier-failure hold");
+
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  await handoff.query("savepoint declined_item_hold_release");
+  await expectSupplierFailureHoldReleaseRejected(handoff.query(
+    `update order_item_fulfillment set state = state_before_hold, state_before_hold = null, updated_at = clock_timestamp()
+      where order_item_id = $1`, [routeDeclinedOfferItemId],
+  ));
+  await handoff.query("rollback to savepoint declined_item_hold_release");
+  await handoff.query("release savepoint declined_item_hold_release");
+  await handoff.query("savepoint sibling_item_decline_hold_release");
+  await expectSupplierFailureHoldReleaseRejected(handoff.query(
+    `update order_item_fulfillment set state = state_before_hold, state_before_hold = null, updated_at = clock_timestamp()
+      where order_item_id = $1`, [routeItemId],
+  ));
+  await handoff.query("rollback to savepoint sibling_item_decline_hold_release");
+  await handoff.query("release savepoint sibling_item_decline_hold_release");
+  await handoff.query("rollback");
+  const declinedHoldStates = await setup.query<{ item_id: string; state: string; state_before_hold: string | null }>(
+    `select order_item_id as item_id, state, state_before_hold from order_item_fulfillment
+      where order_item_id = any($1::text[]) order by order_item_id`, [[routeItemId, routeDeclinedOfferItemId]],
+  );
+  assert.equal(declinedHoldStates.rows.length, 2);
+  assert.ok(declinedHoldStates.rows.every((row) => row.state === 'ON_HOLD' && row.state_before_hold !== null),
+    "declining an equivalent leaves its own and sibling failure holds intact");
 
   // Move all active items off the Admin, then race their deactivation against
   // an assignment command started with the old authority. The command must
@@ -1071,12 +1400,24 @@ try {
   assert.equal(finalStates.rowCount, 2);
   assert.ok(finalStates.rows.every((row) => row.state === "IN_FULFILLMENT" && row.handed_off_at),
     "both ordering permutations leave the handoff committed and reject any later consent event");
-  console.log("Local two-session security races passed: an ordering member accepted recovery when a different Owner opened Support; unsent notices were rejected while delivered notices stayed reconcilable after rerouting; historical cancellation cutoffs were preserved; customer consent and work-start revalidated after handoff locks; a reserved SEND remained blocked until audited not-sent reconciliation; A→B→A rejected stale packet evidence and offer replay; and a deactivated assignment actor could not mutate work after waiting.");
+  console.log("Local two-session security races passed: an ordering member accepted recovery when a different Owner opened Support; concurrent supplier failure waited for a customer offer decision without deadlock; declined offers preserved item holds; unsent notices were rejected while delivered notices stayed reconcilable after rerouting; historical cancellation cutoffs were preserved; customer consent and work-start revalidated after handoff locks; a reserved SEND remained blocked until audited not-sent reconciliation; A→B→A rejected stale packet evidence and offer replay; and a deactivated assignment actor could not mutate work after waiting.");
 } catch (error) {
   if (error instanceof Error) console.error(error.message);
-  if (typeof error === "object" && error !== null && "where" in error && typeof error.where === "string") console.error(error.where);
-  if (typeof error === "object" && error !== null && "detail" in error && typeof error.detail === "string") console.error(error.detail);
-  if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") console.error(`PostgreSQL code: ${error.code}`);
+  if (typeof error === "object" && error !== null) {
+    const diagnostic = error as Record<string, unknown>;
+    for (const field of ["code", "detail", "hint", "where", "schema", "table", "column", "constraint", "position"] as const) {
+      if (typeof diagnostic[field] === "string") console.error(`${field}: ${diagnostic[field]}`);
+    }
+    if (diagnostic.cause instanceof Error) {
+      console.error(`Cause: ${diagnostic.cause.message}`);
+      const cause = diagnostic.cause as Error & { code?: unknown };
+      if (cause.code !== undefined) console.error(`Cause code: ${String(cause.code)}`);
+      const causeDetails = diagnostic.cause as Error & Record<string, unknown>;
+      for (const field of ["position", "where", "detail", "hint"] as const) {
+        if (typeof causeDetails[field] === "string") console.error(`Cause ${field}: ${causeDetails[field]}`);
+      }
+    }
+  }
   process.exitCode = 1;
 } finally {
   await Promise.all(connections.map((client) => client.end().catch(() => undefined)));

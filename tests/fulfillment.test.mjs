@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
 import { readFile } from "node:fs/promises";
+import { sql } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { assertCustomerEquivalentOfferItemIds, MAX_CUSTOMER_EQUIVALENT_OFFER_ITEMS } from "../src/modules/fulfillment/equivalent-offers.ts";
 import { assertSupplierOutcomeMayBeRecorded } from "../src/modules/fulfillment/supplier-outcome.ts";
 import {
@@ -84,6 +86,16 @@ test("the 50-order customer page can check all 1,250 possible equivalent offers"
   const service = await readFile(new URL("../src/server/fulfillment/equivalent-offers.ts", import.meta.url), "utf8");
   assert.match(service, /assertCustomerEquivalentOfferItemIds\(itemIds\)/,
     "the customer page boundary uses the tested 1,250-item validator");
+  assert.match(service, /if \(itemIds\.length === 0\) return \[\]/,
+    "an empty page avoids constructing an invalid unnest expression");
+  assert.match(service, /from unnest\(\$\{sql\.param\(offerIds\)\}::text\[\]\)/,
+    "offer IDs are bound as one PostgreSQL text-array parameter for the decision projection");
+  const dialect = new PgDialect();
+  for (const values of [[], ["one"], ["one", "two"]]) {
+    const query = dialect.sqlToQuery(sql`select offer_id from unnest(${sql.param(values)}::text[]) as offer_id`);
+    assert.equal(query.sql, "select offer_id from unnest($1::text[]) as offer_id");
+    assert.deepEqual(query.params, [values], "empty, singleton, and multi-ID arrays stay one bound parameter");
+  }
 });
 
 test("supplier failures do not overwrite a pending cancellation and offer replay checks use one bounded query", async () => {

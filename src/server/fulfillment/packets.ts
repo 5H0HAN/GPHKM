@@ -6,7 +6,7 @@ import { getResendWebhookDb } from "@/db/resend-webhook";
 import { customerOrder, customerOrderItem, orderItemFulfillment, orderItemFulfillmentSupplier, orderItemWriting } from "@/db/order-schema";
 import { supplierPacket, supplierPacketAcknowledgement, supplierPacketAttempt, supplierPacketAttemptEvent, supplierPacketItem, supplierPacketManualEvidence, supplierPacketProviderEvent } from "@/db/packet-schema";
 import { supplier, supplierContact } from "@/db/catalog-schema";
-import { supplierFulfillmentOutcome } from "@/db/supplier-outcome-schema";
+import { supplierFulfillmentOutcome, supplierFulfillmentOutcomeResolution } from "@/db/supplier-outcome-schema";
 import { assertCompletePacketReplacement, assertPacketActionable, buildSupplierPacket, mayAccessSupplierPacket, mayStartManualPacketHandoff, monotonicProviderAttemptState, parseExplicitInstant, recordManualExportAttempt, recordManualHandoff, renderSupplierEmail, resolveUnknownAttempt, startPacketAttempt, supplierShareContentHash, transitionItem, type ItemState, type PacketAttempt, type PacketAttemptState, type PacketItemInput, type SupplierPacket } from "@/modules/fulfillment/workflow";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { appendAuditEvent } from "@/server/audit/append";
@@ -465,17 +465,8 @@ async function loadCurrentPacket(tx: Tx, row: typeof supplierPacket.$inferSelect
     const unresolvedFailures = await tx.select({ itemId: supplierFulfillmentOutcome.orderItemId })
       .from(supplierFulfillmentOutcome).where(and(
         inArray(supplierFulfillmentOutcome.orderItemId, links.map(({ item }) => item.id)),
-        sql`not exists (
-          select 1 from public.order_item_equivalent_offer offer
-          join public.order_item_equivalent_offer_route offer_route on offer_route.offer_id = offer.id
-          join lateral (select event.event_type from public.order_item_equivalent_offer_event event
-            where event.offer_id = offer.id order by event.created_at desc, event.id desc limit 1) latest on true
-          join public.order_item_fulfillment_supplier current_route on current_route.order_item_id = offer.order_item_id
-          where offer.order_item_id = public.supplier_fulfillment_outcome.order_item_id
-            and offer.support_case_id = public.supplier_fulfillment_outcome.support_case_id
-            and latest.event_type = 'ACCEPTED'
-            and offer_route.route_generation <= current_route.route_generation
-        )`,
+        notExists(tx.select({ one: sql`1` }).from(supplierFulfillmentOutcomeResolution)
+          .where(eq(supplierFulfillmentOutcomeResolution.outcomeId, supplierFulfillmentOutcome.id))),
       ));
     if (unresolvedFailures.length) throw new Error("Resolve the current supplier failure through its Support case before sending or exporting this packet");
   }

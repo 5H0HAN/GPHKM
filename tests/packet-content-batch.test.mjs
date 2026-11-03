@@ -106,6 +106,9 @@ test("packet consent resolution stays bounded for 25 items and 50 versions each"
   assert.match(packetService.slice(prepareStart, currentPacketStart), /getConsentedSupplierPacketContentBatch\(/);
   assert.match(packetService.slice(currentPacketStart, packetService.indexOf("function resendConfig", currentPacketStart)), /getConsentedSupplierPacketContentBatch\(/);
   assert.doesNotMatch(packetService, /getConsentedSupplierPacketContent\(tx/);
-  assert.match(packetService, /offer\.order_item_id = public\.supplier_fulfillment_outcome\.order_item_id[\s\S]*offer\.support_case_id = public\.supplier_fulfillment_outcome\.support_case_id/,
-    "the nested failure-route check qualifies its outer columns so inner offer columns cannot shadow them");
+  const currentPacket = packetService.slice(currentPacketStart, packetService.indexOf("function resendConfig", currentPacketStart));
+  assert.match(currentPacket, /supplierFulfillmentOutcomeResolution[\s\S]*outcomeId, supplierFulfillmentOutcome\.id/,
+    "packet eligibility uses the same explicit resolution edge as the database handoff and closure guards");
+  assert.doesNotMatch(currentPacket, /latest\.eventType\s*===?\s*['"]ACCEPTED|latest\.event_type\s*=\s*'ACCEPTED'/,
+    "an older accepted offer cannot make a later supplier failure appear resolved in packet review");
 });

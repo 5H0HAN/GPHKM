@@ -286,7 +286,7 @@ export async function getStaffOperationsAlerts(headers: Headers, actor: StaffInb
       const supportDescription = actor.role === "FINANCE"
         ? "Only cases awaiting a Finance decision are shown. Record the decision in the audited Support workflow."
         : actor.role === "ADMIN"
-          ? "Only cases assigned to you that need staff review or supplier follow-up are shown. Resolve them in Support; cases waiting on customers remain in the case queue."
+          ? "Cases on orders with items assigned to you and standalone cases appear here when they need staff review or supplier follow-up. Resolve them in Support; cases waiting on customers remain in the case queue."
           : "Review assigned staff cases, supplier follow-ups, and Finance decisions. Resolve each case through its audited workflow.";
       const support = countAlert({
         key: "support-cases", title: actor.role === "FINANCE" ? "Support cases awaiting Finance" : "Support cases to review",

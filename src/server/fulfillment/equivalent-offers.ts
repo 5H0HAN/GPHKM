@@ -82,7 +82,9 @@ export async function createEquivalentOffer(headers: Headers, input: {
     if (!replacement?.supplierId || replacement.supplierId === currentRoute?.supplierId || !replacement.contactEmail) throw new Error("Select a live alternative with an active fulfillment contact");
     const [failure] = currentRoute?.supplierId ? await tx.select({ id: supplierFulfillmentOutcome.id })
       .from(supplierFulfillmentOutcome).where(and(eq(supplierFulfillmentOutcome.orderItemId, input.itemId),
-        eq(supplierFulfillmentOutcome.supplierId, currentRoute.supplierId), eq(supplierFulfillmentOutcome.supportCaseId, input.caseId))).limit(1) : [];
+        eq(supplierFulfillmentOutcome.supplierId, currentRoute.supplierId),
+        eq(supplierFulfillmentOutcome.supportCaseId, input.caseId),
+        eq(supplierFulfillmentOutcome.routeGeneration, currentRoute.routeGeneration))).limit(1) : [];
     if (!failure) throw new Error("Record a supplier failure on this active case before offering an alternative");
 
     const pendingOfferResult = await tx.execute(sql`
@@ -197,7 +199,7 @@ export async function listCustomerEquivalentOffers(headers: Headers, organizatio
       }).from(orderItemEquivalentOfferEvent).where(inArray(orderItemEquivalentOfferEvent.offerId, offerIds))
         .orderBy(orderItemEquivalentOfferEvent.offerId, desc(orderItemEquivalentOfferEvent.createdAt), desc(orderItemEquivalentOfferEvent.id)),
       tx.execute(sql`select offer_id, public.gphkm_customer_can_decide_equivalent_offer(offer_id, ${actor.userId}, ${organizationId}) as can_decide
-        from unnest(${offerIds}::text[]) as offer_id`),
+        from unnest(${sql.param(offerIds)}::text[]) as offer_id`),
     ]);
     const latestByOffer = new Map(latestEvents.map((event) => [event.offerId, event.eventType]));
     const canDecideByOffer = new Map(((decisionResult as unknown as { rows?: Array<{ offer_id: string; can_decide: boolean }> }).rows ?? [])
@@ -246,11 +248,6 @@ export async function decideCustomerEquivalentOffer(headers: Headers, organizati
     if (input.decision === "DECLINE") {
       await tx.insert(orderItemEquivalentOfferEvent).values({ id: randomUUID(), offerId: offer.id, actorUserId: actor.userId,
         eventType: "DECLINED", reason, createdAt: now });
-      const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, offer.orderItemId)).limit(1);
-      if (fulfillment?.state === "ON_HOLD" && fulfillment.stateBeforeHold && !fulfillment.handedOffAt) {
-        await tx.update(orderItemFulfillment).set({ state: fulfillment.stateBeforeHold, stateBeforeHold: null, updatedAt: now })
-          .where(eq(orderItemFulfillment.orderItemId, offer.orderItemId));
-      }
       await appendAuditEvent(tx, { organizationId, actorUserId: actor.userId, action: "SUPPLIER_EQUIVALENT_OFFER_DECLINED",
         targetType: "CUSTOMER_ORDER_ITEM", targetId: offer.orderItemId, metadata: { result: "DECLINED", offerId: offer.id } });
       return { state: "DECLINED" as const };

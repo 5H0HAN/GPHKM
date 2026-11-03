@@ -63,12 +63,12 @@ async function audit(tx: DbTransaction, row: Pick<CaseRow, "id" | "organizationI
 }
 
 export async function openCustomerSupportCase(headers: Headers, organizationId: string, input: { orderId?: string; orderItemId?: string; summary: string; idempotencyKey: string }) {
-  if (input.orderId) identity(input.orderId);
-  if (input.orderItemId) identity(input.orderItemId);
+  const normalizedOrderId = input.orderId ? identity(input.orderId) : null;
+  const normalizedOrderItemId = input.orderItemId ? identity(input.orderItemId) : null;
   identity(input.idempotencyKey);
   const summary = supportText(input.summary, 2000);
   const actor = await requireVerifiedCustomer(headers);
-  const requestHash = digest({ orderId: input.orderId ?? null, orderItemId: input.orderItemId ?? null, summary });
+  const requestHash = digest({ orderId: normalizedOrderId, orderItemId: normalizedOrderItemId, summary });
   const requestId = randomUUID();
   let stage = "support_scope";
   try { return await withProtectedOrganizationContext(headers, organizationId, async (tx) => {
@@ -89,7 +89,7 @@ export async function openCustomerSupportCase(headers: Headers, organizationId: 
       .where(and(eq(supportCase.organizationId, organizationId), eq(supportCaseEvent.actorUserId, actor.userId),
         eq(supportCaseEvent.idempotencyKey, input.idempotencyKey))).limit(1);
     if (priorMessage) {
-      if (priorMessage.body !== summary || priorMessage.orderId !== (input.orderId ?? null) ||
+      if (priorMessage.body !== summary || priorMessage.orderId !== normalizedOrderId ||
           !((priorMessage.kind === "OPENED" && priorMessage.audience === "INTERNAL") ||
             (priorMessage.kind === "REPLY" && priorMessage.audience === "CUSTOMER"))) {
         throw new Error("Support action idempotency conflict");
@@ -97,8 +97,8 @@ export async function openCustomerSupportCase(headers: Headers, organizationId: 
       return { caseId: priorMessage.caseId };
     }
 
-    let requestedOrderId = input.orderId ?? null;
-    let contextItemId = input.orderItemId ?? null;
+    let requestedOrderId = normalizedOrderId;
+    let contextItemId = normalizedOrderItemId;
     if (contextItemId) {
       const [item] = await tx.select({ orderId: customerOrderItem.orderId }).from(customerOrderItem)
         .innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
