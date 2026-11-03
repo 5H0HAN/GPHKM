@@ -9,6 +9,7 @@ import { supplierFulfillmentOutcome } from "@/db/supplier-outcome-schema";
 import { appendAuditEvent } from "@/server/audit/append";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { mayReadFulfillmentContent } from "@/modules/fulfillment/console";
+import { assertSupplierOutcomeMayBeRecorded } from "@/modules/fulfillment/supplier-outcome";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Outcome = "REJECTED" | "CANNOT_FULFILL" | "NONRESPONSIVE";
@@ -28,12 +29,27 @@ export async function recordSupplierFailure(headers: Headers, input: {
 
   return db.transaction(async (tx: Tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
-    // Item-first locking serializes this command with cancellation and handoff.
-    // Never lock a packet row here: packet delivery locks packet before item.
+    const [order] = await tx.select({ id: customerOrder.id, organizationId: customerOrder.organizationId,
+      ordererId: customerOrder.actorUserId, paid: customerOrder.checkoutState })
+      .from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
+      .where(eq(customerOrderItem.id, input.itemId)).limit(1);
+    if (!order || order.paid !== "PAID") throw new Error("Supplier outcome is unavailable for this item");
+
+    // Serialize order-scoped case discovery, then use the same item-before-case
+    // order as equivalent-offer decisions. Case closure locks only the case and
+    // never waits for item rows, so an item lock cannot form a close/accept cycle.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
+      'gphkm:support-order:' || ${order.organizationId} || ':' || ${order.id}, 0))`);
+
     const [fulfillment] = await tx.select().from(orderItemFulfillment)
       .where(eq(orderItemFulfillment.orderItemId, input.itemId)).for("update").limit(1);
     if (!fulfillment || !mayReadFulfillmentContent({ role: actor.role, userId: actor.userId, assignedAdminId: fulfillment.assignedAdminId }) ||
         ["COMPLETED", "CANCELED_REFUNDED"].includes(fulfillment.state)) throw new Error("Order item unavailable");
+
+    const [activeCase] = await tx.select().from(supportCase).where(and(
+      eq(supportCase.organizationId, order.organizationId), eq(supportCase.orderId, order.id),
+      sql`${supportCase.state} not in ('RESOLVED','CLOSED')`, sql`${supportCase.mergedIntoCaseId} is null`,
+    )).for("update").limit(1);
 
     const [prior] = await tx.select({ id: supplierFulfillmentOutcome.id, supportCaseId: supplierFulfillmentOutcome.supportCaseId,
       requestHash: supplierFulfillmentOutcome.requestHash })
@@ -43,33 +59,38 @@ export async function recordSupplierFailure(headers: Headers, input: {
       if (prior.requestHash !== requestHash) throw new Error("Supplier outcome idempotency conflict");
       return { outcomeId: prior.id, supportCaseId: prior.supportCaseId, replayed: true };
     }
+    assertSupplierOutcomeMayBeRecorded(fulfillment.state);
 
-    const [order] = await tx.select({ id: customerOrder.id, organizationId: customerOrder.organizationId,
-      ordererId: customerOrder.actorUserId, paid: customerOrder.checkoutState })
-      .from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
-      .where(eq(customerOrderItem.id, input.itemId)).limit(1);
     const [supplierRow] = await tx.select({ supplierId: orderItemFulfillmentSupplier.supplierId })
       .from(orderItemFulfillmentSupplier).where(eq(orderItemFulfillmentSupplier.orderItemId, input.itemId)).limit(1);
-    if (!order || order.paid !== "PAID" || !supplierRow?.supplierId) throw new Error("Supplier outcome is unavailable for this item");
+    if (!supplierRow?.supplierId) throw new Error("Supplier outcome is unavailable for this item");
 
     const now = new Date();
     const outcomeId = randomUUID();
-    const caseId = randomUUID();
+    const caseId = activeCase?.id ?? randomUUID();
     const safeSummary = "GPHKM is reviewing an update to this placement.";
     const caseHash = hash({ source: "SUPPLIER_FULFILLMENT_OUTCOME", outcomeId });
-    await tx.insert(supportCase).values({
-      id: caseId, organizationId: order.organizationId, orderId: order.id, orderItemId: input.itemId,
-      openedByUserId: order.ordererId, summary: safeSummary, state: "OPEN", idempotencyKey: outcomeId,
-      requestHash: caseHash, createdAt: now, updatedAt: now,
-    });
+    if (!activeCase) {
+      await tx.insert(supportCase).values({
+        id: caseId, organizationId: order.organizationId, orderId: order.id, orderItemId: input.itemId,
+        openedByUserId: order.ordererId, summary: safeSummary, state: "OPEN", idempotencyKey: outcomeId,
+        requestHash: caseHash, createdAt: now, updatedAt: now,
+      });
+    } else if (["WAITING_ON_CUSTOMER", "WAITING_ON_SUPPLIER"].includes(activeCase.state)) {
+      await tx.insert(supportCaseEvent).values({ id: randomUUID(), caseId, actorUserId: actor.userId, actorKind: "STAFF",
+        kind: "STATE_CHANGED", audience: "INTERNAL", body: "A new supplier update needs staff review.",
+        fromState: activeCase.state, toState: "INVESTIGATING", idempotencyKey: randomUUID(),
+        requestHash: hash({ caseId, from: activeCase.state, to: "INVESTIGATING", outcomeId }) });
+      await tx.update(supportCase).set({ state: "INVESTIGATING", updatedAt: now }).where(eq(supportCase.id, caseId));
+    }
     await tx.insert(supplierFulfillmentOutcome).values({
       id: outcomeId, orderItemId: input.itemId, supplierId: supplierRow.supplierId, supportCaseId: caseId,
       actorUserId: actor.userId, outcome: input.outcome, reason, idempotencyKey: input.idempotencyKey,
       requestHash, createdAt: now,
     });
     await tx.insert(supportCaseEvent).values([
-      { id: randomUUID(), caseId, actorUserId: actor.userId, actorKind: "STAFF", kind: "OPENED", audience: "INTERNAL",
-        body: safeSummary, toState: "OPEN", idempotencyKey: outcomeId, requestHash: caseHash, createdAt: now },
+      ...(!activeCase ? [{ id: randomUUID(), caseId, actorUserId: actor.userId, actorKind: "STAFF" as const, kind: "OPENED" as const, audience: "INTERNAL" as const,
+        body: safeSummary, toState: "OPEN", idempotencyKey: outcomeId, requestHash: caseHash, createdAt: now }] : []),
       { id: randomUUID(), caseId, actorUserId: actor.userId, actorKind: "STAFF", kind: "NOTE", audience: "INTERNAL",
         body: reason, idempotencyKey: randomUUID(), requestHash: hash({ caseId, outcomeId, audience: "INTERNAL", reason }), createdAt: now },
       { id: randomUUID(), caseId, actorUserId: actor.userId, actorKind: "STAFF", kind: "REPLY", audience: "CUSTOMER",

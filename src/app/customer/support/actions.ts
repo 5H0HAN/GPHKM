@@ -9,7 +9,7 @@ export async function openSupportAction(form: FormData) {
   let caseId: string;
   try {
     const result = await openCustomerSupportCase(await headers(), organizationId, {
-      orderItemId: field(form, "orderItemId"), summary: field(form, "summary"), idempotencyKey: field(form, "idempotencyKey"),
+      orderId: field(form, "orderId"), summary: field(form, "summary"), idempotencyKey: field(form, "idempotencyKey"),
     });
     caseId = result.caseId;
   } catch { redirect(`/customer/support?organizationId=${encodeURIComponent(organizationId)}&error=1`); }

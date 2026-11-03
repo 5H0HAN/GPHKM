@@ -25,8 +25,8 @@ Organization closure is Owner-requested and Admin/Super Admin-managed through Su
 | See hidden listing URLs with active organization access | Yes | Yes |
 | View own orders and item progress | Yes | Yes |
 | View all organization orders | Yes | No |
-| View all organization Support cases | Yes | No |
-| View/reply to own Support cases or cases tied to own orders | Yes | Yes |
+| View all organization Support cases, including standalone cases | Yes | No |
+| View/reply to cases opened by the Member or tied to the Member's orders | Yes | Yes |
 | View organization wallet balance and sufficiency | Yes | Yes |
 | View recharge/payment history | Yes | No |
 | Fund the organization wallet | Yes | No |
@@ -50,6 +50,8 @@ The v1 staff model uses three bundles: Admin, Finance, and Super Admin. Each ord
 | Record or revoke an audited customer-redistribution attestation for a current metric observation | No | No | Yes |
 | View supplier costs and gross-profit reports | No by default | Yes | Yes |
 | Handle routine fulfillment, supplier contact, and customer updates | Yes | No | Yes |
+| View standalone Support cases with the Support permission | Yes | No | Yes, audited |
+| View an order-level Support case | If assigned to at least one item in that order | No | Yes, audited |
 | Search and view customer directory, customer-safe operational context, and active organization wallet balance projections (`customer.directory.read`) | Yes | No | Yes |
 | Change existing customer organization roles or membership status (`customer.account.manage`) | Yes, audited | No | Yes, audited |
 | Suspend or reactivate a customer account (`customer.account.manage`) | Yes, audited; suspension revokes sessions | No | Yes, audited; suspension revokes sessions |
@@ -101,7 +103,7 @@ See the detailed packet lifecycle and reconciliation contract in [Supplier Email
 | Content-change requests and consent | Ordering Member only; Owner cannot consent for another Member | Assigned Admin review | No by default | Authorized access, audited |
 | Supplier packet content/recipient | No | Assigned fulfillment only | No | Authorized access, audited |
 | Handoff transport/reconciliation metadata | No | Assigned fulfillment only | Reconciliation metadata only | Yes, audited |
-| Support case and messages | Owner: all org cases; Member: cases they opened or tied to own orders | Assigned Admin for case/order | Finance-review fields only as needed | Yes, audited |
+| Support case and messages | Owner: all org cases; Member: cases they opened or tied to own orders | Standalone case: Admin with Support permission. Order case: Admin assigned to any item in that order may view the conversation; content and actions for each item remain assigned-item scoped | Finance-review fields only as needed | Yes, audited |
 | Wallet ledger/recharge history | Owner only | No | Yes, scoped | Yes |
 | Internal supplier performance | No | Operational measures | Financial measures as assigned | Yes |
 | Internal JSON export | No | No | No | Yes |

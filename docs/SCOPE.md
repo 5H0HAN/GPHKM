@@ -19,7 +19,7 @@ V1 establishes a secure catalog-to-publication loop for customer organizations a
 - Custom Stripe USD wallet top-up checkout and wallet-funded order checkout.
 - Customer-provided article by default; optional paid GPHKM Writing add-on on eligible listings.
 - Text-only customer order details and supplements; bounded article/brief/instruction fields with no customer file uploads or order attachments.
-- Text-only Support requests linked to orders/items, customer-safe statuses/replies, in-app and email notifications, and Support-managed organization closure.
+- Text-only Support requests with one active customer conversation per order and separate unlinked general Support cases, customer-safe statuses/replies, in-app and email notifications, and Support-managed organization closure.
 - Itemized order history, milestones, next-update date, balance, and Owner-visible recharge history.
 - Member order placement and own-order view; member sees balance/sufficiency but not recharge history.
 - Transactional notices and optional, separate newsletter preference.
@@ -35,7 +35,7 @@ V1 establishes a secure catalog-to-publication loop for customer organizations a
 - Separate commercial source (platform or supplier) and fulfillment contact.
 - Staff-triggered batched metric refresh. Open PageRank is the first provider integration; Ahrefs DR and Moz DA remain deferred until keys and provider checks are available. Customer display is gated on rights, attribution, redistribution, and cost review.
 - Per-item internal order queue and supplier-specific packet handoff, with minimum necessary content, exact recipient preview, provider send, manual EML/PDF export, handoff evidence, milestones, publication evidence, and reconciliation.
-- Item-level Admin assignment; minimal Support case workflow; audited item-state transitions, customer content change requests, and correction of incorrect publication verification.
+- Item-level Admin assignment; order-level Support conversations plus unlinked standalone cases; audited item-state transitions, customer content change requests, and correction of incorrect publication verification.
 - Staff customer directory for Admin and Super Admin: search and paginate customer identities, review organization membership and customer-safe order/Support context, see the current shared USD wallet balance for each active organization membership, change existing organization roles or active membership, and suspend/reactivate customer access through audited controls. Finance has no directory access; customer profile and credential recovery remain customer-managed. The directory does not expose wallet holds, ledger entries, recharge history, payment evidence, or reconciliation data.
 - Platform-wide acceptable-content rules, listing-specific requirements, and neutral disclosure of publication-site/partner sharing without exposing supplier identities or sourcing classifications.
 - Append-only manual supplier transfer events with evidence and partial-payment reconciliation; no payment execution.
@@ -86,7 +86,7 @@ Implement Stripe USD top-ups, immutable wallet ledger, $50 qualification, six-mo
 
 ### Slice 4 — Orders and customer content
 
-Implement 25-item bulk checkout, wallet debit, item/placement/writing-stage snapshots, text-only content and Support requests, content policy acceptance, consent/versioning, customer order views, and pre-handoff cancellation requests.
+Implement 25-item bulk checkout, wallet debit, item/placement/writing-stage snapshots, text-only content and Support requests, order-level active Support conversations, unlinked general Support cases, content policy acceptance, consent/versioning, customer order views, and pre-handoff cancellation requests.
 
 ### Slice 5 — Fulfillment and reporting
 

@@ -118,7 +118,11 @@ export const customerOrderItemMilestone = pgTable("customer_order_item_milestone
 export const orderItemFulfillmentSupplier = pgTable("order_item_fulfillment_supplier", {
   orderItemId: text("order_item_id").primaryKey().references(() => orderItemFulfillment.orderItemId),
   supplierId: text("supplier_id").references(() => supplier.id),
-}).enableRLS();
+  routeGeneration: integer("route_generation").notNull().default(1),
+  lastEquivalentOfferId: text("last_equivalent_offer_id"),
+}, (t) => [
+  check("order_item_fulfillment_supplier_generation_positive", sql`${t.routeGeneration} > 0`),
+]).enableRLS();
 
 // Publication evidence is append-only. The URL is recorded, never fetched by GPHKM.
 export const publicationEvidence = pgTable("publication_evidence", {

@@ -970,6 +970,10 @@
 .orderTotal { display: grid; justify-items: end; gap: 4px; flex: 0 0 auto; }
 .orderTotal span { color: var(--text-muted); font-size: 11px; }
 .orderTotal strong { font-size: 19px; font-variant-numeric: tabular-nums; }
+.orderSupportLink { margin: 0; padding: 12px 22px; border-bottom: 1px solid var(--border); }
+.orderSupportLink a { color: var(--text-primary); font-size: 13px; font-weight: 560; text-underline-offset: 3px; }
+.orderSupportLink a:hover { color: var(--accent-text); }
+.orderSupportLink a:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .placementList { display: grid; }
 .placementCard { min-width: 0; padding: 22px; }
 .placementCard + .placementCard { border-top: 1px solid var(--border); }
@@ -1066,6 +1070,7 @@
   .ordersHeading { align-items: flex-start; flex-direction: column; gap: 16px; }
   .ordersContext { align-items: flex-start; flex-direction: column; gap: 4px; }
   .orderCardHeader { align-items: flex-start; padding: 16px; }
+  .orderSupportLink { padding: 12px 16px; }
   .placementCard { padding: 16px; }
   .progressTrack { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 14px; margin: 20px 0; }
   .progressTrack li::before { display: none; }

@@ -258,6 +258,7 @@ try {
   const organizationB = randomUUID();
   const ownerOrderA = randomUUID();
   const memberOrderA = randomUUID();
+  const memberOrderDebitA = randomUUID();
   const ownerOrderB = randomUUID();
   const cancellationOrder = randomUUID();
   const cancellationItem = randomUUID();
@@ -322,11 +323,20 @@ try {
   const nonWritingCostFixture = randomUUID();
   const originalEvidence = randomUUID();
   const correctionCase = randomUUID();
+  const supportOwnerCase = randomUUID();
+  const supportMemberOrderCase = randomUUID();
+  const supportBatchCase = randomUUID();
   const orderDebitA = randomUUID();
   const resendPacketId = `pkt_${randomUUID()}`;
   const resendPacketAttemptId = randomUUID();
   const manualPacketId = `pkt_${randomUUID()}`;
   const manualPacketAttemptId = randomUUID();
+  const staleRoutePacketId = `pkt_${randomUUID()}`;
+  const staleRouteAttemptId = randomUUID();
+  const replacementPacketV1Id = `pkt_${randomUUID()}`;
+  const replacementPacketV1AttemptId = randomUUID();
+  const replacementPacketV2Id = `pkt_${randomUUID()}`;
+  const replacementPacketV2AttemptId = randomUUID();
   await migration.query("BEGIN");
   transactionOpen = true;
   phase = "creating synthetic identities";
@@ -346,9 +356,34 @@ try {
        ($1, 'ADMIN', true), ($2, 'ADMIN', true), ($3, 'FINANCE', true), ($4, 'SUPER_ADMIN', true)`,
     [adminA, adminB, financeA, superAdminA],
   );
+  phase = "checking staff Overview dismissals are private to the active staff user";
+  const attentionTaskKey = `rls-smoke:${suffix}`;
+  const attentionVersion = randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", "");
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true)", [adminA]);
+  await migration.query(
+    "insert into staff_attention_dismissal (staff_user_id, task_key, task_version) values ($1, $2, $3)",
+    [adminA, attentionTaskKey, attentionVersion],
+  );
+  const ownAttention = await migration.query<{ count: string }>(
+    "select count(*)::text as count from staff_attention_dismissal where staff_user_id = $1 and task_key = $2",
+    [adminA, attentionTaskKey],
+  );
+  assert.equal(ownAttention.rows[0]?.count, "1", "staff can store their own personal Overview state");
+  await migration.query("select set_config('app.user_id', $1, true)", [adminB]);
+  const otherAttention = await migration.query<{ count: string }>(
+    "select count(*)::text as count from staff_attention_dismissal where staff_user_id = $1 and task_key = $2",
+    [adminA, attentionTaskKey],
+  );
+  assert.equal(otherAttention.rows[0]?.count, "0", "one staff member cannot read another staff member's Overview state");
+  await expectPermissionDenied(migration, "cross-user Overview dismissal insert", () => migration.query(
+    "insert into staff_attention_dismissal (staff_user_id, task_key, task_version) values ($1, $2, $3)",
+    [adminA, `cross-user:${suffix}`, attentionVersion],
+  ));
+  await migration.query("RESET ROLE");
   phase = "checking audited Super Admin access policy command";
   await migration.query("SET LOCAL ROLE gphkm_runtime");
-  await migration.query("select set_config('app.user_id', $1, true)", [superAdminA]);
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [superAdminA]);
   const currentPolicy = await migration.query<{ minimum_minor: string; duration: string; version: number }>(
     "select minimum_minor::text, duration, version from access_policy where id = 1",
   );
@@ -392,6 +427,12 @@ try {
   await migration.query(
     `insert into supplier (id, name, status, created_by_user_id) values ($1, 'RLS Other Supplier', 'ACTIVE', $2)`,
     [supplierOtherFixture, adminA],
+  );
+  await migration.query(
+    `insert into supplier_contact (id, supplier_id, name, email, is_primary) values
+       ($1, $3, 'Original supplier contact', 'old-supplier@example.invalid', true),
+       ($2, $4, 'Replacement supplier contact', 'replacement-supplier@example.invalid', true)`,
+    [randomUUID(), randomUUID(), supplierFixture, supplierOtherFixture],
   );
   phase = "checking supplier profile refund-count privacy boundary";
   await migration.query("SET LOCAL ROLE gphkm_runtime");
@@ -1585,6 +1626,17 @@ try {
   await migration.query(
     `insert into wallet_ledger_entry (id, organization_id, actor_user_id, kind, delta_minor, currency,
        operation, idempotency_key, related_type, related_id, reason_code)
+     values ($1, $2, $3, 'ORDER_DEBIT', -1000, 'USD', 'RLS_SMOKE_MEMBER_ORDER', $4,
+       'CUSTOMER_ORDER', $5, 'ORDER_CHECKOUT')`,
+    [memberOrderDebitA, organizationA, memberA, `member-order-debit-${suffix}`, memberOrderA],
+  );
+  await migration.query(
+    "update customer_order set checkout_state = 'PAID', paid_ledger_entry_id = $2 where id = $1",
+    [memberOrderA, memberOrderDebitA],
+  );
+  await migration.query(
+    `insert into wallet_ledger_entry (id, organization_id, actor_user_id, kind, delta_minor, currency,
+       operation, idempotency_key, related_type, related_id, reason_code)
      values ($1, $2, $3, 'ORDER_DEBIT', -1500, 'USD', 'RLS_SMOKE_CANCELLATION', $4,
        'CUSTOMER_ORDER', $5, 'ORDER_CHECKOUT')`,
     [cancellationDebit, organizationB, userB, `cancel-debit-${suffix}`, cancellationOrder],
@@ -1666,6 +1718,111 @@ try {
     [orderItemFixture],
   );
   assert.equal(assignmentAudit.rows[0]?.count, 2, "database assignment command records each actual change exactly once");
+
+  phase = "checking Support reply lifecycle, terminal-case denial, and customer membership scope";
+  const supportOwnerOpenKey = randomUUID();
+  const supportMemberOpenKey = randomUUID();
+  const supportBatchOpenKey = randomUUID();
+  const ownerSummary = "Synthetic owner order support case";
+  const memberSummary = "Synthetic member order support case";
+  const batchSummary = "Synthetic batch order support case";
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
+  await migration.query(
+    `insert into support_case (id, organization_id, order_id, order_item_id, opened_by_user_id, summary,
+       idempotency_key, request_hash)
+     values ($1, $2, $3, $4, $5, $6, $7, repeat('a', 64)),
+       ($8, $2, $9, $10, $5, $11, $12, repeat('b', 64)),
+       ($13, $2, $14, null, $5, $15, $16, repeat('c', 64))`,
+    [supportOwnerCase, organizationA, ownerOrderA, orderItemFixture, userA, ownerSummary, supportOwnerOpenKey,
+      supportMemberOrderCase, memberOrderA, orderItemFixtureThree, memberSummary, supportMemberOpenKey,
+      supportBatchCase, checkoutOrderFixture, batchSummary, supportBatchOpenKey],
+  );
+  await migration.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, to_state, idempotency_key, request_hash)
+     values ($1, $2, $3, 'CUSTOMER', 'OPENED', 'INTERNAL', $4, 'OPEN', $5, repeat('a', 64)),
+       ($6, $7, $3, 'CUSTOMER', 'OPENED', 'INTERNAL', $8, 'OPEN', $9, repeat('b', 64)),
+       ($10, $11, $3, 'CUSTOMER', 'OPENED', 'INTERNAL', $12, 'OPEN', $13, repeat('c', 64))`,
+    [randomUUID(), supportOwnerCase, userA, ownerSummary, supportOwnerOpenKey, randomUUID(), supportMemberOrderCase,
+      memberSummary, supportMemberOpenKey, randomUUID(), supportBatchCase, batchSummary, supportBatchOpenKey],
+  );
+  await migration.query("RESET ROLE");
+
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminA]);
+  const waitingEventKey = randomUUID();
+  await migration.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, from_state, to_state, idempotency_key, request_hash)
+     values ($1, $2, $3, 'STAFF', 'STATE_CHANGED', 'INTERNAL', 'Waiting for the customer reply', 'OPEN', 'WAITING_ON_CUSTOMER', $4, repeat('c', 64))`,
+    [randomUUID(), supportOwnerCase, adminA, waitingEventKey],
+  );
+  await migration.query("update support_case set state = 'WAITING_ON_CUSTOMER' where id = $1", [supportOwnerCase]);
+  await migration.query("RESET ROLE");
+
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
+  await expectPermissionDenied(migration, "customer direct Support state event", () => migration.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, from_state, to_state, idempotency_key, request_hash)
+     values ($1, $2, $3, 'CUSTOMER', 'STATE_CHANGED', 'INTERNAL', 'Must be triggered by a reply', 'WAITING_ON_CUSTOMER', 'INVESTIGATING', $4, repeat('9', 64))`,
+    [randomUUID(), supportOwnerCase, userA, randomUUID()],
+  ));
+  const rolledBackReplyKey = randomUUID();
+  await migration.query("SAVEPOINT support_reply_rollback");
+  await migration.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, idempotency_key, request_hash)
+     values ($1, $2, $3, 'CUSTOMER', 'REPLY', 'CUSTOMER', 'Synthetic reply rolled back', $4, repeat('d', 64))`,
+    [randomUUID(), supportOwnerCase, userA, rolledBackReplyKey],
+  );
+  await migration.query("ROLLBACK TO SAVEPOINT support_reply_rollback");
+  await migration.query("RELEASE SAVEPOINT support_reply_rollback");
+  const waitingAfterRollback = await migration.query<{ state: string }>("select state from support_case where id = $1", [supportOwnerCase]);
+  assert.equal(waitingAfterRollback.rows[0]?.state, "WAITING_ON_CUSTOMER", "reply plus trigger-generated transition roll back atomically");
+  const successfulReplyKey = randomUUID();
+  await migration.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, idempotency_key, request_hash)
+     values ($1, $2, $3, 'CUSTOMER', 'REPLY', 'CUSTOMER', 'Synthetic customer reply', $4, repeat('e', 64))`,
+    [randomUUID(), supportOwnerCase, userA, successfulReplyKey],
+  );
+  const resumedCase = await migration.query<{ state: string }>("select state from support_case where id = $1", [supportOwnerCase]);
+  assert.equal(resumedCase.rows[0]?.state, "INVESTIGATING", "customer reply resumes a waiting case in the same database transaction");
+  await migration.query("RESET ROLE");
+
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminA]);
+  await migration.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, from_state, to_state, idempotency_key, request_hash)
+     values ($1, $2, $3, 'STAFF', 'STATE_CHANGED', 'INTERNAL', 'Resolved after customer reply', 'INVESTIGATING', 'RESOLVED', $4, repeat('f', 64))`,
+    [randomUUID(), supportOwnerCase, adminA, randomUUID()],
+  );
+  await migration.query("update support_case set state = 'RESOLVED' where id = $1", [supportOwnerCase]);
+  await migration.query("RESET ROLE");
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
+  await expectCheckConstraint(migration, "customer reply to a resolved Support case", () => migration.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body, idempotency_key, request_hash)
+     values ($1, $2, $3, 'CUSTOMER', 'REPLY', 'CUSTOMER', 'Must open a new case', $4, repeat('1', 64))`,
+    [randomUUID(), supportOwnerCase, userA, randomUUID()],
+  ));
+  const terminalFacts = await migration.query<{ state: string; reply_count: number }>(
+    `select c.state, (select count(*)::int from support_case_event e where e.case_id = c.id and e.kind = 'REPLY' and e.actor_kind = 'CUSTOMER') as reply_count
+       from support_case c where c.id = $1`, [supportOwnerCase],
+  );
+  assert.deepEqual(terminalFacts.rows[0], { state: "RESOLVED", reply_count: 1 }, "terminal reply rejection leaves case and history unchanged");
+  const ownerCases = await migration.query<{ id: string }>(
+    "select id from support_case where id = any($1::text[]) order by id", [[supportOwnerCase, supportMemberOrderCase]],
+  );
+  assert.deepEqual(ownerCases.rows.map((row) => row.id).sort(), [supportOwnerCase, supportMemberOrderCase].sort(), "Owner sees all organization cases");
+  await migration.query("select set_config('app.user_id', $1, true)", [memberA]);
+  const memberCases = await migration.query<{ id: string }>(
+    "select id from support_case where id = any($1::text[]) order by id", [[supportOwnerCase, supportMemberOrderCase]],
+  );
+  assert.deepEqual(memberCases.rows.map((row) => row.id), [supportMemberOrderCase], "Member sees only a case attached to their own order");
+  const supportMemberStateCounts = await migration.query<{ state: string; count: number }>(
+    `select state, count(*)::int as count from support_case
+      where organization_id = $1 and public.gphkm_support_customer_access(id, $2, $1) group by state`, [organizationA, memberA],
+  );
+  assert.deepEqual(supportMemberStateCounts.rows, [{ state: "OPEN", count: 1 }], "scoped summary counts cover all cases visible to the member");
+  await migration.query("RESET ROLE");
 
   phase = "exercising customer cancellation requests and assigned-Admin refund decisions";
   await migration.query("update order_item_fulfillment set work_started_at = now() where order_item_id = $1", [cancellationItem]);
@@ -1791,7 +1948,105 @@ try {
   await migration.query("update order_item_fulfillment set assigned_admin_id = null where order_item_id = $1", [cancellationItem]);
   await migration.query("RESET ROLE");
 
+  phase = "rejecting historical supplier handoff after an accepted equivalent route change";
+  await migration.query(
+    `insert into order_item_fulfillment (order_item_id, order_id, listing_title)
+     select id, order_id, customer_listing_snapshot ->> 'title' from customer_order_item where id = $1`,
+    [orderItemFixtureThree],
+  );
+  await migration.query(
+    "update order_item_fulfillment set state = 'READY_FOR_HANDOFF', assigned_admin_id = $2 where order_item_id = $1",
+    [orderItemFixtureThree, adminA],
+  );
+  const originalFixtureRoute = await migration.query(
+    `insert into order_item_fulfillment_supplier (order_item_id, supplier_id) values ($1, $2)
+     on conflict (order_item_id) do update set supplier_id = excluded.supplier_id`,
+    [orderItemFixtureThree, supplierFixture],
+  );
+  assert.equal(originalFixtureRoute.rowCount, 1, "equivalent-route fixture starts with its original supplier route");
+  phase = "creating original supplier packet";
+  await migration.query(
+    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
+     select $1, 1, o.organization_id, o.id, $3, 'old-supplier@example.invalid', '{\"items\":[{\"id\":\"old-route\"}]}'::jsonb, repeat('a',64), $4
+       from customer_order_item oi join customer_order o on o.id = oi.order_id where oi.id = $2`,
+    [staleRoutePacketId, orderItemFixtureThree, supplierFixture, adminA],
+  );
+  phase = "recording the original supplier packet membership";
+  await migration.query(
+    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
+     select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, repeat('b',64)
+       from customer_order_item oi where oi.id = $2`,
+    [staleRoutePacketId, orderItemFixtureThree, adminA],
+  );
+  phase = "recording the original supplier handoff evidence";
+  await migration.query(
+    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key, manual_message_reference, sent_at, resolved_at)
+     values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'old-supplier@example.invalid', $4, 'old-route-manual-send', now(), now())`,
+    [staleRouteAttemptId, staleRoutePacketId, adminA, `stale-route-${suffix}`],
+  );
+  await migration.query("update supplier_packet set superseded_at = now() where id = $1", [staleRoutePacketId]);
+  phase = "simulating accepted equivalent supplier route";
+  await migration.query("update order_item_fulfillment_supplier set supplier_id = $2 where order_item_id = $1", [orderItemFixtureThree, supplierOtherFixture]);
+  await migration.query(
+    `update order_item_fulfillment set state = 'READY_FOR_HANDOFF', customer_status = 'PREPARING',
+       handed_off_at = null, work_started_at = null where order_item_id = $1`, [orderItemFixtureThree],
+  );
+  await migration.query(
+    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
+     select $1, 1, o.organization_id, o.id, $3, 'replacement-supplier@example.invalid', '{\"items\":[{\"id\":\"replacement-v1\"}]}'::jsonb, repeat('c',64), $4
+       from customer_order_item oi join customer_order o on o.id = oi.order_id where oi.id = $2`,
+    [replacementPacketV1Id, orderItemFixtureThree, supplierOtherFixture, adminA],
+  );
+  phase = "recording the replacement supplier packet v1 membership";
+  await migration.query(
+    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
+     select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, repeat('d',64)
+       from customer_order_item oi where oi.id = $2`,
+    [replacementPacketV1Id, orderItemFixtureThree, adminA],
+  );
+  await migration.query(
+    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key, manual_message_reference, sent_at, resolved_at)
+     values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'replacement-supplier@example.invalid', $4, 'superseded-manual-send', now(), now())`,
+    [replacementPacketV1AttemptId, replacementPacketV1Id, adminA, `stale-packet-${suffix}`],
+  );
+  await migration.query("update supplier_packet set superseded_at = now() where id = $1", [replacementPacketV1Id]);
+  await migration.query(
+    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
+     select $1, 2, o.organization_id, o.id, $3, 'replacement-supplier@example.invalid', '{\"items\":[{\"id\":\"replacement-v2\"}]}'::jsonb, repeat('e',64), $4
+       from customer_order_item oi join customer_order o on o.id = oi.order_id where oi.id = $2`,
+    [replacementPacketV2Id, orderItemFixtureThree, supplierOtherFixture, adminA],
+  );
+  phase = "recording the replacement supplier packet v2 membership";
+  await migration.query(
+    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
+     select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, repeat('f',64)
+       from customer_order_item oi where oi.id = $2`,
+    [replacementPacketV2Id, orderItemFixtureThree, adminA],
+  );
+  await migration.query("update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [orderItemFixtureThree]);
+  await expectPermissionDenied(migration, "work start using a superseded supplier packet after equivalent route acceptance", () => migration.query(
+    `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS', handed_off_at = now(), work_started_at = now()
+      where order_item_id = $1`, [orderItemFixtureThree],
+  ));
+  await migration.query(
+    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key, manual_message_reference, sent_at, resolved_at)
+     values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'replacement-supplier@example.invalid', $4, 'current-manual-send', now(), now())`,
+    [replacementPacketV2AttemptId, replacementPacketV2Id, adminA, `current-route-${suffix}`],
+  );
+  await migration.query(
+    `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS', handed_off_at = now(), work_started_at = now()
+      where order_item_id = $1`, [orderItemFixtureThree],
+  );
+  const currentRouteHandoff = await migration.query<{ state: string }>(
+    "select state from order_item_fulfillment where order_item_id = $1", [orderItemFixtureThree],
+  );
+  assert.equal(currentRouteHandoff.rows[0]?.state, "IN_FULFILLMENT", "manual evidence on the latest active packet for the accepted supplier route permits work start");
+
   phase = "checking manual handoff reservation, evidence, and acknowledgement guards";
+  await migration.query(
+    "update supplier_contact set email = 'manual-supplier@example.invalid' where supplier_id = $1 and is_primary",
+    [supplierFixture],
+  );
   await migration.query(
     "update order_item_fulfillment set state = 'READY_FOR_HANDOFF', assigned_admin_id = $2 where order_item_id = $1",
     [orderItemFixture, adminA],
@@ -1916,6 +2171,10 @@ try {
   await migration.query("RESET ROLE");
 
   phase = "proving isolated Resend packet and notification callbacks";
+  await migration.query(
+    "update supplier_contact set email = 'supplier@example.invalid' where supplier_id = $1 and is_primary",
+    [supplierOtherFixture],
+  );
   await migration.query(
     `update order_item_fulfillment set state = 'READY_FOR_HANDOFF', assigned_admin_id = $2 where order_item_id = $1`,
     [orderItemFixtureTwo, superAdminA],
@@ -2374,29 +2633,58 @@ try {
   phase = "checking tenant order visibility";
   const visibleOrders = await migration.query<{ id: string }>("select id from customer_order order by id");
   assert.deepEqual(visibleOrders.rows.map((row) => row.id).sort(), [ownerOrderA, checkoutOrderFixture, memberOrderA].sort());
+  const customerBatchPlacementCount = await migration.query<{ count: number }>(
+    "select public.gphkm_support_case_placement_count($1) as count", [supportBatchCase],
+  );
+  assert.equal(customerBatchPlacementCount.rows[0]?.count, 2,
+    "customer sees the full placement count for one batch-level Support conversation");
   phase = "checking customer milestone history tenant isolation";
   const visibleMilestones = await migration.query<{ order_item_id: string; status: string }>(
     "select distinct order_item_id, status from customer_order_item_milestone order by order_item_id, status",
   );
   assert.deepEqual(
     [...new Set(visibleMilestones.rows.map((row) => row.order_item_id))].sort(),
-    [orderItemFixture, checkoutOrderItemFixture, checkoutOrderItemFixtureTwo].sort(),
+    [orderItemFixture, orderItemFixtureThree, checkoutOrderItemFixture, checkoutOrderItemFixtureTwo].sort(),
     "customer milestone history must contain this organization's items and exclude another tenant",
   );
   phase = "checking assigned-only staff milestone history";
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [superAdminA]);
+  await migration.query("select public.gphkm_assign_fulfillment_item($1, $2)", [checkoutOrderItemFixture, adminA]);
   await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminA]);
+  const assignedBatchItems = await migration.query<{ id: string; target_url: string; article_text: string | null }>(
+    "select id, target_url, article_text from customer_order_item where order_id = $1 order by id", [checkoutOrderFixture],
+  );
+  assert.deepEqual(assignedBatchItems.rows.map((row) => row.id), [checkoutOrderItemFixture],
+    "Admin assignment to one item does not expose sibling order-item content or target URLs");
+  const adminBatchPlacementCount = await migration.query<{ count: number }>(
+    "select public.gphkm_support_case_placement_count($1) as count", [supportBatchCase],
+  );
+  assert.equal(adminBatchPlacementCount.rows[0]?.count, 2,
+    "assigned Admin can see the case's placement count without selecting unassigned item details");
   const assignedMilestones = await migration.query<{ order_item_id: string }>(
     "select order_item_id from customer_order_item_milestone order by order_item_id",
   );
-  assert.ok(assignedMilestones.rows.length > 0 && assignedMilestones.rows.every((row) => row.order_item_id === orderItemFixture),
+  assert.deepEqual(
+    [...new Set(assignedMilestones.rows.map((row) => row.order_item_id))].sort(),
+    [orderItemFixture, orderItemFixtureThree, checkoutOrderItemFixture].sort(),
     "assigned Admin must see its item milestones and no unassigned items");
   await migration.query("select set_config('app.user_id', $1, true)", [adminB]);
+  const unassignedBatchItems = await migration.query("select id from customer_order_item where order_id = $1", [checkoutOrderFixture]);
+  assert.equal(unassignedBatchItems.rowCount, 0, "an unassigned Admin cannot read any item from the batch");
+  const unassignedBatchCount = await migration.query<{ count: number | null }>(
+    "select public.gphkm_support_case_placement_count($1) as count", [supportBatchCase],
+  );
+  assert.equal(unassignedBatchCount.rows[0]?.count, null, "an unassigned Admin cannot count a Support order it cannot access");
   const unassignedMilestones = await migration.query("select order_item_id from customer_order_item_milestone");
   assert.equal(unassignedMilestones.rowCount, 0, "unassigned Admin must not read item milestone history");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [superAdminA]);
+  const superAdminBatchItems = await migration.query("select id from customer_order_item where order_id = $1 order by id", [checkoutOrderFixture]);
+  assert.deepEqual(superAdminBatchItems.rows.map((row) => row.id), [checkoutOrderItemFixture, checkoutOrderItemFixtureTwo].sort(),
+    "Super Admin retains full item visibility for authorized order operations");
   await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
   phase = "checking owner-only wallet history";
   const visibleLedger = await migration.query<{ id: string }>("select id from wallet_ledger_entry order by id");
-  assert.deepEqual(visibleLedger.rows.map((row) => row.id).sort(), [ledgerA, orderDebitA, checkoutLedgerId].sort());
+  assert.deepEqual(visibleLedger.rows.map((row) => row.id).sort(), [ledgerA, orderDebitA, memberOrderDebitA, checkoutLedgerId].sort());
   const visibleAttempts = await migration.query<{ id: string }>("select id from payment_attempt order by id");
   assert.deepEqual(visibleAttempts.rows.map((row) => row.id), [attemptA]);
   phase = "checking owner-only wallet holds and access grants";
@@ -2797,7 +3085,7 @@ try {
   await resendWebhook.connect();
   const actualResendRole = await resendWebhook.query<{ user: string }>("select current_user as user");
   assert.equal(actualResendRole.rows[0]?.user, "gphkm_resend_webhook", "RESEND_WEBHOOK_DATABASE_URL must authenticate as the isolated Resend role");
-  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, atomic two-item checkout with exact debit and idempotent replay, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence/acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, public-domain and URL-revision metric invalidation, and denied direct wallet writes.");
+  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, atomic two-item checkout with exact debit and idempotent replay, scoped batch item reads and Support placement counts, private per-user Overview dismissals, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence/acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, public-domain and URL-revision metric invalidation, and denied direct wallet writes.");
 } catch (error) {
   console.error(`Local RLS smoke failed while ${phase}; any open synthetic-data transaction will be rolled back.`);
   if (error instanceof Error) console.error(error.message);

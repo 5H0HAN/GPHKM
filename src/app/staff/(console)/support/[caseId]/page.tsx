@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
 import { getStaffSupportCase } from "@/server/support/cases";
@@ -22,26 +23,29 @@ export default async function StaffSupportDetail({ params, searchParams }: { par
   let result;
   try { result = await getStaffSupportCase(requestHeaders, caseId, before); }
   catch { return <p className={styles.notice}>This case is unavailable to your role or current assignment. <Link href="/staff/support">Return to Support</Link></p>; }
-  const { row, events, actorRole } = result;
+  if (result.redirectCaseId) redirect(`/staff/support/${encodeURIComponent(result.redirectCaseId)}`);
+  const { row, itemContexts, events, actorRole } = result;
   const refundRequests = await listPostHandoffRefundsForCase(requestHeaders, caseId).catch(() => []);
   const supplierNotices = await listSupplierItemNoticesForCase(requestHeaders, caseId).catch(() => []);
   const transitions = actorRole === "FINANCE" ? [] : allowedSupportTransitions(supportState(row.state));
   const financeReview = row.state === "FINANCE_REVIEW" && (actorRole === "FINANCE" || actorRole === "SUPER_ADMIN");
   return <>
-    <header className={styles.header}><div><h1>Support case</h1><p>{label(row.state)} · Item {row.orderItemId.slice(0, 8)} · Updated {row.updatedAt.toLocaleString()}</p></div><Link className={styles.link} href="/staff/support">All cases</Link></header>
+    <header className={styles.header}><div><h1>Support conversation</h1><p>{label(row.state)} · {row.orderId ? `Order #${row.orderId.slice(0, 8).toUpperCase()}` : "General Support · no order attached"} · Updated {row.updatedAt.toLocaleString()}</p></div><Link className={styles.link} href="/staff/support">All cases</Link></header>
     {query.error && <p role="alert" className={styles.notice}>The action could not be saved. The case may have changed or the selected action may be unavailable. Refresh before trying again.</p>}
     {query.refundRequested && <p role="status" className={styles.notice}>The refund request was sent for Finance review. No wallet credit has been issued yet.</p>}
     {query.refundDecided && <p role="status" className={styles.notice}>The Finance decision was recorded and audited.</p>}
     {query.noticePrepared && <p role="status" className={styles.notice}>A separate item notice was prepared. Review it before sending or exporting.</p>}
     {query.noticeSent && <p role="status" className={styles.notice}>The notice send was recorded. Provider acceptance or manual-send evidence does not mean the supplier stopped work.</p>}
     {query.noticeReconciled && <p role="status" className={styles.notice}>The supplier notice result was recorded and audited.</p>}
+    {row.orderId && <section className={styles.panel} aria-labelledby="case-order-context"><h2 id="case-order-context">Order items</h2>{itemContexts.length ? itemContexts.map((item) => <article className={styles.message} key={item.orderItemId}><strong>{item.listingTitle}</strong><p className={styles.meta}>Customer update: {label(item.customerStatus)} · Next update: {item.nextUpdateAt?.toLocaleDateString() ?? "Not scheduled"}</p><Link className={styles.link} href={`/staff/fulfillment/${encodeURIComponent(item.orderItemId)}`}>Open this assigned fulfillment item</Link></article>) : <p className={styles.meta}>No order item details are visible to this role or assignment.</p>}</section>}
     <div className={styles.grid}>
       <section className={styles.panel}><h2>Case history</h2><p className={styles.body}>{row.summary}</p>{events.filter((event) => event.kind !== "OPENED").map((event) => <article className={`${styles.message} ${event.audience !== "CUSTOMER" ? styles.internal : ""}`} key={event.id}><header><strong>{event.audience === "CUSTOMER" ? event.actorKind === "CUSTOMER" ? "Customer reply" : "GPHKM reply" : label(event.audience)} · {label(event.kind)}</strong><time dateTime={event.createdAt.toISOString()}>{event.createdAt.toLocaleString()}</time></header>{event.fromState && <p className={styles.meta}>{label(event.fromState)} → {label(event.toState ?? "")}</p>}{event.decision && <p className={styles.meta}>Outcome: {label(event.decision)}</p>}<p className={styles.body}>{event.body}</p></article>)}
         {result.olderCursor && <nav className={styles.pagination} aria-label="Staff Support case history"><span /> <Link href={`/staff/support/${row.id}?before=${encodeURIComponent(result.olderCursor)}`}>Earlier case history</Link></nav>}
       </section>
       <div>
-        {row.state === "FINANCE_REVIEW" && (actorRole === "ADMIN" || actorRole === "SUPER_ADMIN") && <section className={styles.panel}><h2>Request post-handoff wallet refund</h2><p>Only an item-specific Finance or Super Admin approval can credit the organization wallet. This request is reviewed case by case and is not guaranteed.</p><form action={requestPostHandoffRefundAction} className={styles.form}>
+        {row.state === "FINANCE_REVIEW" && (actorRole === "ADMIN" || actorRole === "SUPER_ADMIN") && itemContexts.some((item) => (item.handedOffAt || item.workStartedAt) && !["COMPLETED", "CANCELED_REFUNDED"].includes(item.state)) && <section className={styles.panel}><h2>Request post-handoff wallet refund</h2><p>Choose one eligible item. Finance reviews each requested amount against that item’s remaining paid amount; approval is not guaranteed.</p><form action={requestPostHandoffRefundAction} className={styles.form}>
           <input type="hidden" name="caseId" value={row.id} /><input type="hidden" name="idempotencyKey" value={randomUUID()} />
+          <label>Order item<select name="orderItemId" required>{itemContexts.filter((item) => (item.handedOffAt || item.workStartedAt) && !["COMPLETED", "CANCELED_REFUNDED"].includes(item.state)).map((item) => <option key={item.orderItemId} value={item.orderItemId}>{item.listingTitle}</option>)}</select></label>
           <label>Requested amount (USD)<input name="amount" required inputMode="decimal" placeholder="e.g. 50.00" /></label>
           <label>Reason and case evidence summary<textarea name="reason" maxLength={2000} minLength={5} rows={4} required /></label>
           <button type="submit">Send to Finance review</button>
@@ -57,9 +61,10 @@ export default async function StaffSupportDetail({ params, searchParams }: { par
             <div><button type="submit" name="decision" value="APPROVED">Approve wallet credit</button> <button type="submit" name="decision" value="DENIED">Deny request</button></div>
           </form>}
         </article>)}</section>}
-        {actorRole !== "FINANCE" && <section className={styles.panel}><h2>Supplier withdrawal or correction notice</h2><p>Notices are separate from the original packet and remain tied to this item and Support case. Sending or delivery does not confirm that the supplier stopped work or made a correction.</p>
+        {actorRole !== "FINANCE" && itemContexts.some((item) => item.handedOffAt) && <section className={styles.panel}><h2>Supplier withdrawal or correction notice</h2><p>Notices are separate from the original packet and remain tied to the selected item and this order conversation. Sending or delivery does not confirm that the supplier stopped work or made a correction.</p>
           <form action={prepareSupplierItemNoticeAction} className={styles.form}>
             <input type="hidden" name="caseId" value={row.id} />
+            <label>Handed-off order item<select name="orderItemId" required>{itemContexts.filter((item) => item.handedOffAt).map((item) => <option key={item.orderItemId} value={item.orderItemId}>{item.listingTitle}</option>)}</select></label>
             <label>Notice type<select name="type"><option value="WITHDRAWAL">Request stop / withdrawal</option><option value="CORRECTION">Request correction</option></select></label>
             <label>Supplier instruction<textarea name="reason" required minLength={5} maxLength={1000} rows={4} /></label>
             <button type="submit">Prepare separate notice</button>

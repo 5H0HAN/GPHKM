@@ -24,7 +24,20 @@ test("packet reconciliation pages every issue queue with stable bounds", async (
   assert.match(queue, /limit\(unpacketItemsPagination\.limit\)\.offset\(unpacketItemsPagination\.offset\)/);
   assert.match(queue, /limit\(heldPacketsPagination\.limit\)\.offset\(heldPacketsPagination\.offset\)/);
   assert.match(queue, /limit\(unmatchedEventsPagination\.limit\)\.offset\(unmatchedEventsPagination\.offset\)/);
-  assert.match(queue, /actor\.role === "ADMIN" \? assignedPacketExists/);
+  assert.match(queue, /actor\.role === "ADMIN" \? and\(assignedPacketExists, assignedPacketHasNoReassignedItems\)/);
+  assert.match(queue, /const heldWhere = and\([\s\S]*actor\.role === "ADMIN" \? and\(assignedPacketExists, assignedPacketHasNoReassignedItems\)/);
+  assert.match(queue, /\.from\(supplierPacket\)\.where\(heldWhere\);[\s\S]*\.from\(supplierPacket\)\.where\(heldWhere\)\.orderBy/);
+  assert.doesNotMatch(queue, /heldPacketRows\.filter/);
+  assert.match(queue, /const eventAssignedPacketExists = exists\([\s\S]*\.innerJoin\(orderItemFulfillment, eq\(orderItemFulfillment\.orderItemId, supplierPacketItem\.orderItemId\)\)[\s\S]*eq\(orderItemFulfillment\.assignedAdminId, actor\.userId\)/);
+  assert.match(queue, /const eventPacketHasNoReassignedItems = notExists\([\s\S]*assignedAdminId\} is distinct from \$\{actor\.userId\}/);
+  assert.match(queue, /eventAssignedPacketExists, eventPacketHasNoReassignedItems/);
+  assert.match(queue, /\.from\(supplierPacketProviderEvent\)\.where\(eventWhere\);[\s\S]*\.where\(eventWhere\)\.orderBy/);
+  assert.match(queue, /const actionableAttempt = sql`[\s\S]*supplierPacket\.supersededAt} IS NULL/);
+  assert.match(queue, /\.from\(supplierPacketAttempt\)[\s\S]*\.where\(attemptsWhere\);[\s\S]*\.from\(supplierPacketAttempt\)[\s\S]*\.where\(attemptsWhere\)\.orderBy/);
+  assert.match(queue, /newer_export\.created_at, newer_export\.id/);
+  assert.match(queue, /pending_manual\.state = 'SENDING'/);
+  assert.doesNotMatch(queue, /const relevant = attempts\.flatMap/);
+  assert.doesNotMatch(queue, /if \(actor\.role === "ADMIN" && \(!items\.length/);
   assert.match(queue, /actor\.role === "SUPER_ADMIN" \? eq\(supplierPacketProviderEvent\.state/);
   assert.doesNotMatch(queue, /\.limit\((?:100|200)\)/);
 

@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { customerOrder, customerOrderItem, orderItemFulfillment, orderItemFulfillmentSupplier, orderItemWriting } from "@/db/order-schema";
 import { orderItemContentChangeEvent, orderItemContentChangeRequest, orderItemContentVersion } from "@/db/change-request-schema";
@@ -12,6 +12,7 @@ import { appendAuditEvent } from "@/server/audit/append";
 import { contentChangeStatus, hashOrderContent, mayRequestContentChange, mergeContentChange, validateContentChangePatch, type OrderContent } from "@/modules/orders/content-changes";
 import { mayReadFulfillmentContent } from "@/modules/fulfillment/console";
 import { CONTENT_SHARING_NOTICE_VERSION } from "@/modules/orders/checkout";
+import { resolvePacketContentRows, type PacketContent as BatchPacketContent } from "@/modules/orders/packet-content";
 
 const validId = (value: string) => /^[0-9a-f-]{36}$/i.test(value);
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -277,4 +278,117 @@ export async function getConsentedSupplierPacketContent(tx: Tx, itemId: string) 
     noticeVersion: matchingConsent.noticeVersion, consentedAt: matchingConsent.createdAt,
     ...(acceptedEquivalent ? { listingTerms: acceptedEquivalent.terms } : {}),
   });
+}
+
+const MAX_PACKET_CONTENT_VERSIONS_PER_ITEM = 50;
+
+// Multi-item packet screens resolve consent in bounded queries. Keep the
+// single-item helper above for commands whose scope is one item.
+export async function getConsentedSupplierPacketContentBatch(tx: Tx, itemIds: string[]) {
+  const ids = [...new Set(itemIds)];
+  if (!ids.length) return new Map();
+
+  const rankedVersions = tx.select({
+    id: orderItemContentVersion.id,
+    itemId: orderItemContentVersion.orderItemId,
+    requestId: orderItemContentVersion.requestId,
+    version: orderItemContentVersion.version,
+    targetUrl: orderItemContentVersion.targetUrl,
+    anchorText: orderItemContentVersion.anchorText,
+    articleText: orderItemContentVersion.articleText,
+    instructions: orderItemContentVersion.instructions,
+    supplierId: orderItemContentVersion.supplierId,
+    recipientEmail: orderItemContentVersion.recipientEmail,
+    contentHash: orderItemContentVersion.contentHash,
+    rowNumber: sql<number>`row_number() over (partition by ${orderItemContentVersion.orderItemId} order by ${orderItemContentVersion.version} desc)`,
+  }).from(orderItemContentVersion).where(inArray(orderItemContentVersion.orderItemId, ids)).as("ranked_packet_content_versions");
+
+  const [latestRequests, routes, versions] = await Promise.all([
+    tx.selectDistinctOn([orderItemContentChangeRequest.orderItemId], {
+      itemId: orderItemContentChangeRequest.orderItemId,
+      requestId: orderItemContentChangeRequest.id,
+    }).from(orderItemContentChangeRequest)
+      .where(inArray(orderItemContentChangeRequest.orderItemId, ids))
+      .orderBy(orderItemContentChangeRequest.orderItemId, desc(orderItemContentChangeRequest.requestNumber), desc(orderItemContentChangeRequest.id)),
+    tx.select({
+      itemId: orderItemFulfillmentSupplier.orderItemId,
+      supplierId: orderItemFulfillmentSupplier.supplierId,
+      email: supplierContact.email,
+    }).from(orderItemFulfillmentSupplier)
+      .leftJoin(supplierContact, and(eq(supplierContact.supplierId, orderItemFulfillmentSupplier.supplierId), eq(supplierContact.isPrimary, true)))
+      .where(inArray(orderItemFulfillmentSupplier.orderItemId, ids)),
+    tx.select({
+      id: rankedVersions.id,
+      itemId: rankedVersions.itemId,
+      requestId: rankedVersions.requestId,
+      version: rankedVersions.version,
+      targetUrl: rankedVersions.targetUrl,
+      anchorText: rankedVersions.anchorText,
+      articleText: rankedVersions.articleText,
+      instructions: rankedVersions.instructions,
+      supplierId: rankedVersions.supplierId,
+      recipientEmail: rankedVersions.recipientEmail,
+      contentHash: rankedVersions.contentHash,
+    }).from(rankedVersions)
+      .where(lte(rankedVersions.rowNumber, MAX_PACKET_CONTENT_VERSIONS_PER_ITEM))
+      .orderBy(rankedVersions.itemId, desc(rankedVersions.version)),
+  ]);
+
+  const requestIds = [...new Set([
+    ...latestRequests.map((request) => request.requestId),
+    ...versions.map((version) => version.requestId),
+  ])];
+  const [latestEvents, declinedRequests] = await Promise.all([
+    requestIds.length ? tx.selectDistinctOn([orderItemContentChangeEvent.requestId], {
+      requestId: orderItemContentChangeEvent.requestId,
+      eventType: orderItemContentChangeEvent.eventType,
+      versionId: orderItemContentChangeEvent.versionId,
+      contentHash: orderItemContentChangeEvent.contentHash,
+      noticeVersion: orderItemContentChangeEvent.noticeVersion,
+      createdAt: orderItemContentChangeEvent.createdAt,
+    }).from(orderItemContentChangeEvent)
+      .where(inArray(orderItemContentChangeEvent.requestId, requestIds))
+      .orderBy(orderItemContentChangeEvent.requestId, desc(orderItemContentChangeEvent.createdAt), desc(orderItemContentChangeEvent.id)) : [],
+    latestRequests.length ? tx.selectDistinctOn([orderItemEquivalentOffer.contentRequestId], {
+      requestId: orderItemEquivalentOffer.contentRequestId,
+    }).from(orderItemEquivalentOffer)
+      .innerJoin(orderItemEquivalentOfferEvent, eq(orderItemEquivalentOfferEvent.offerId, orderItemEquivalentOffer.id))
+      .where(and(inArray(orderItemEquivalentOffer.contentRequestId, latestRequests.map((request) => request.requestId)), eq(orderItemEquivalentOfferEvent.eventType, "DECLINED")))
+      .orderBy(orderItemEquivalentOffer.contentRequestId) : [],
+  ]);
+
+  const selectedVersionHashes = versions.filter((version) => {
+    const event = latestEvents.find((candidate) => candidate.requestId === version.requestId);
+    const route = routes.find((candidate) => candidate.itemId === version.itemId);
+    return event?.eventType === "CONSENTED" && event.versionId === version.id && event.contentHash === version.contentHash
+      && version.supplierId === (route?.supplierId ?? null)
+      && version.recipientEmail === (route?.email ?? "GPHKM_INTERNAL");
+  });
+  const acceptedEquivalentRows = selectedVersionHashes.length ? await tx.selectDistinctOn(
+    [orderItemEquivalentOffer.contentRequestId, orderItemEquivalentOfferEvent.contentHash],
+    {
+      requestId: orderItemEquivalentOffer.contentRequestId,
+      contentHash: orderItemEquivalentOfferEvent.contentHash,
+      terms: orderItemEquivalentOffer.terms,
+    },
+  ).from(orderItemEquivalentOffer)
+    .innerJoin(orderItemEquivalentOfferEvent, eq(orderItemEquivalentOfferEvent.offerId, orderItemEquivalentOffer.id))
+    .where(and(
+      eq(orderItemEquivalentOfferEvent.eventType, "ACCEPTED"),
+      or(...selectedVersionHashes.map((version) => and(
+        eq(orderItemEquivalentOffer.contentRequestId, version.requestId),
+        eq(orderItemEquivalentOfferEvent.contentHash, version.contentHash),
+      ))!),
+    ))
+    .orderBy(orderItemEquivalentOffer.contentRequestId, orderItemEquivalentOfferEvent.contentHash,
+      desc(orderItemEquivalentOfferEvent.createdAt), desc(orderItemEquivalentOfferEvent.id)) : [];
+  return resolvePacketContentRows({
+    itemIds: ids,
+    latestRequests,
+    routes: routes.map((route) => ({ itemId: route.itemId, supplierId: route.supplierId, recipientEmail: route.email })),
+    versions,
+    latestEvents,
+    declinedRequestIds: declinedRequests.map((request) => request.requestId),
+    acceptedTerms: acceptedEquivalentRows,
+  }) as Map<string, { content: BatchPacketContent | null; error?: Error }>;
 }

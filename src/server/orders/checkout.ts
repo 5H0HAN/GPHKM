@@ -5,6 +5,7 @@ import { organization, walletAccount } from "@/db/schema";
 import { listing } from "@/db/catalog-schema";
 import { customerOrder, customerOrderItem, customerOrderItemMilestone, orderItemFulfillment, orderItemWriting, publicationEvidence } from "@/db/order-schema";
 import { CONTENT_SHARING_NOTICE_VERSION, CUSTOMER_CONTENT_POLICY_VERSION, PLACEMENT_DISCLOSURE_VERSION, WRITING_REFUND_DISCLOSURE_VERSION, customerOrderPagination, customerOrderProjection, validateCheckoutInput, type CheckoutInput } from "@/modules/orders/checkout";
+import { customerHomeTimestampIso } from "@/modules/orders/home-summary";
 import { isMarketplaceTrialActive } from "@/modules/wallet/marketplace-trial";
 import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganizationContext } from "@/server/identity/customer-context";
 import { appendAuditEvent } from "@/server/audit/append";
@@ -204,6 +205,50 @@ export async function getMyOrders(headers: Headers, organizationId: string, limi
   return (await getMyOrdersPage(headers, organizationId, 1, limit)).orders;
 }
 
+export async function getCustomerOrderHomeSummary(headers: Headers, organizationId: string) {
+  const actor = await requireVerifiedCustomer(headers);
+  return withOrganizationContext(headers, organizationId, async (tx, role) => {
+    const scope = [eq(customerOrder.organizationId, organizationId)];
+    if (role === "MEMBER") scope.push(eq(customerOrder.actorUserId, actor.userId));
+
+    const [counts] = await tx.select({
+      orderCount: sql<number>`count(distinct ${customerOrder.id})::integer`,
+      placementCount: sql<number>`count(${customerOrderItem.id})::integer`,
+      activePlacementCount: sql<number>`(count(${customerOrderItem.id}) filter (where
+        ${orderItemFulfillment.customerStatus} is null or
+        ${orderItemFulfillment.customerStatus} not in ('COMPLETE', 'RESOLVED', 'CANCELLED', 'REFUNDED')))::integer`,
+    }).from(customerOrder)
+      .leftJoin(customerOrderItem, eq(customerOrderItem.orderId, customerOrder.id))
+      .leftJoin(orderItemFulfillment, eq(orderItemFulfillment.orderItemId, customerOrderItem.id))
+      .where(and(...scope));
+
+    const recentActivity = await tx.select({
+      orderId: customerOrder.id,
+      orderItemId: customerOrderItem.id,
+      title: sql<string>`coalesce(${customerOrderItem.customerListingSnapshot}->>'title', 'Website placement')`,
+      status: sql<string>`coalesce(${orderItemFulfillment.customerStatus}, 'ORDER_RECEIVED')`,
+      updatedAt: sql<Date>`coalesce(${orderItemFulfillment.updatedAt}, ${customerOrder.createdAt})`,
+      nextUpdateAt: orderItemFulfillment.nextUpdateAt,
+    }).from(customerOrder)
+      .innerJoin(customerOrderItem, eq(customerOrderItem.orderId, customerOrder.id))
+      .leftJoin(orderItemFulfillment, eq(orderItemFulfillment.orderItemId, customerOrderItem.id))
+      .where(and(...scope))
+      .orderBy(desc(sql`coalesce(${orderItemFulfillment.updatedAt}, ${customerOrder.createdAt})`), desc(customerOrderItem.id))
+      .limit(4);
+
+    return {
+      orderCount: counts?.orderCount ?? 0,
+      placementCount: counts?.placementCount ?? 0,
+      activePlacementCount: counts?.activePlacementCount ?? 0,
+      recentActivity: recentActivity.map((row) => ({
+        ...row,
+        updatedAt: customerHomeTimestampIso(row.updatedAt)!,
+        nextUpdateAt: customerHomeTimestampIso(row.nextUpdateAt),
+      })),
+    };
+  });
+}
+
 export async function getMyOrdersPage(headers: Headers, organizationId: string, requestedPage: unknown = 1, pageSize = 50) {
   const actor = await requireVerifiedCustomer(headers);
   return withOrganizationContext(headers, organizationId, async (tx, role) => {
@@ -297,6 +342,6 @@ export async function getMyOrderItemForSupport(headers: Headers, organizationId:
       title: sql<unknown>`${customerOrderItem.customerListingSnapshot}->>'title'`,
     }).from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
       .where(and(...scope)).limit(1);
-    return item ? { id: item.id, label: `${typeof item.title === "string" ? item.title : "Placement"} · Order ${item.orderId.slice(0, 8)}` } : null;
+    return item ? { id: item.id, orderId: item.orderId, label: `${typeof item.title === "string" ? item.title : "Placement"} · Order ${item.orderId.slice(0, 8)}` } : null;
   });
 }

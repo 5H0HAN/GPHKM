@@ -23,3 +23,17 @@ _Avoid_: Estimated cost, retail price
 **Supplier payable status**:
 The current comparison of confirmed actual supplier cost with recorded transfer events: unpaid, partially paid, paid, or overpaid.
 _Avoid_: Payment status event
+
+## Support
+
+**Order-level Support conversation**:
+The one active customer-facing Support case for an order. It can contain messages and supplier-failure outcomes for several items, while item decisions and fulfillment authority remain specific to each item.
+_Avoid_: Item-level ticket
+
+**Standalone Support case**:
+A general Support case that is not linked to an order.
+_Avoid_: Unassigned order case
+
+**Terminal Support case**:
+A resolved or closed case that no longer accepts customer replies. A later issue starts a new case; for an order, that is a new conversation.
+_Avoid_: Reopened conversation

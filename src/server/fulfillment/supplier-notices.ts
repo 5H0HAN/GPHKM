@@ -1,11 +1,11 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { supplierItemNotice, supplierItemNoticeAttempt, supplierItemNoticeEvent } from "@/db/supplier-notice-schema";
 import { supplierPacket, supplierPacketItem } from "@/db/packet-schema";
-import { orderItemFulfillment } from "@/db/order-schema";
+import { customerOrderItem, orderItemFulfillment, orderItemFulfillmentSupplier } from "@/db/order-schema";
 import { supportCase } from "@/db/support-schema";
 import { postHandoffRefundRequest } from "@/db/post-handoff-refund-schema";
 import { appendAuditEvent } from "@/server/audit/append";
@@ -29,19 +29,31 @@ async function staffTx<T>(headers: Headers, work: (tx: Tx, actor: { userId: stri
   });
 }
 
-export async function prepareSupplierItemNotice(headers: Headers, input: { caseId: string; type: NoticeType; reason: string }) {
-  if (!validId(input.caseId) || !["WITHDRAWAL", "CORRECTION"].includes(input.type)) throw new Error("Notice unavailable");
+export async function prepareSupplierItemNotice(headers: Headers, input: { caseId: string; orderItemId: string; type: NoticeType; reason: string }) {
+  if (!validId(input.caseId) || !validId(input.orderItemId) || !["WITHDRAWAL", "CORRECTION"].includes(input.type)) throw new Error("Notice unavailable");
   const reason = input.reason.trim();
   if (reason.length < 5 || reason.length > 1000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(reason)) throw new Error("Provide a valid supplier instruction");
   return staffTx(headers, async (tx, actor) => {
     const [row] = await tx.select({ caseId: supportCase.id, organizationId: supportCase.organizationId,
-      itemId: supportCase.orderItemId, handedOffAt: orderItemFulfillment.handedOffAt,
+      itemId: orderItemFulfillment.orderItemId, handedOffAt: orderItemFulfillment.handedOffAt,
       assignedAdminId: orderItemFulfillment.assignedAdminId, packet: supplierPacket.packet,
       packetId: supplierPacket.id, recipient: supplierPacket.recipient,
-    }).from(supportCase).innerJoin(orderItemFulfillment, eq(orderItemFulfillment.orderItemId, supportCase.orderItemId))
-      .innerJoin(supplierPacketItem, eq(supplierPacketItem.orderItemId, supportCase.orderItemId))
+    }).from(supportCase).innerJoin(orderItemFulfillment, eq(orderItemFulfillment.orderItemId, input.orderItemId))
+      .innerJoin(customerOrderItem, eq(customerOrderItem.id, orderItemFulfillment.orderItemId))
+      .innerJoin(orderItemFulfillmentSupplier, eq(orderItemFulfillmentSupplier.orderItemId, orderItemFulfillment.orderItemId))
+      .innerJoin(supplierPacketItem, eq(supplierPacketItem.orderItemId, orderItemFulfillment.orderItemId))
       .innerJoin(supplierPacket, eq(supplierPacket.id, supplierPacketItem.packetId))
-      .where(eq(supportCase.id, input.caseId)).orderBy(desc(supplierPacket.createdAt)).limit(1);
+      .where(and(eq(supportCase.id, input.caseId), eq(supportCase.orderId, customerOrderItem.orderId),
+        eq(orderItemFulfillment.orderItemId, input.orderItemId),
+        sql`${supportCase.state} not in ('RESOLVED','CLOSED')`,
+        eq(supplierPacket.supplierId, orderItemFulfillmentSupplier.supplierId),
+        eq(supplierPacketItem.routeGeneration, orderItemFulfillmentSupplier.routeGeneration),
+        sql`exists (select 1 from public.supplier_packet_attempt attempt
+          where attempt.packet_id = public.supplier_packet.id
+            and lower(attempt.recipient) = lower(public.supplier_packet.recipient)
+            and ((attempt.type = 'SEND' and attempt.state = 'DELIVERED' and attempt.delivered_at is not null)
+              or (attempt.type in ('MANUAL_SENT','MANUAL_SEND') and attempt.state = 'MANUAL_SENT' and attempt.sent_at is not null)))`))
+      .orderBy(desc(supplierPacket.version), desc(supplierPacket.createdAt)).limit(1);
     if (!row || !row.handedOffAt || !row.assignedAdminId || (actor.role === "ADMIN" && row.assignedAdminId !== actor.userId)) throw new Error("Assigned, handed-off item unavailable");
     const packet = row.packet as { items?: Array<{ orderItemId?: string; reference?: string }> };
     const item = packet.items?.find((candidate) => candidate.orderItemId === row.itemId);
@@ -62,9 +74,9 @@ async function getNotice(tx: Tx, noticeId: string, actor: { userId: string; role
   const query = tx.select().from(supplierItemNotice).where(eq(supplierItemNotice.id, noticeId));
   const [row] = await (lock ? query.for("update").limit(1) : query.limit(1));
   if (!row) throw new Error("Notice unavailable");
-  const [fulfillment] = await tx.select({ assignedAdminId: orderItemFulfillment.assignedAdminId, handedOffAt: orderItemFulfillment.handedOffAt })
+  const [fulfillment] = await tx.select({ assignedAdminId: orderItemFulfillment.assignedAdminId })
     .from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, row.orderItemId)).limit(1);
-  if (!fulfillment?.handedOffAt || (actor.role !== "SUPER_ADMIN" && fulfillment.assignedAdminId !== actor.userId)) throw new Error("Notice unavailable");
+  if (!fulfillment || (actor.role !== "SUPER_ADMIN" && fulfillment.assignedAdminId !== actor.userId)) throw new Error("Notice unavailable");
   return row;
 }
 
@@ -209,36 +221,59 @@ export async function markStuckSupplierItemNoticeUnknown(headers: Headers, input
 
 export async function listSupplierItemNoticesForCase(headers: Headers, caseId: string) {
   if (!validId(caseId)) return [];
-  return staffTx(headers, async (tx, actor) => {
-    const notices = await tx.select().from(supplierItemNotice).where(eq(supplierItemNotice.caseId, caseId)).orderBy(desc(supplierItemNotice.createdAt));
-    const rows = [];
-    for (const notice of notices) {
-      const noticeRow = await getNotice(tx, notice.id, actor).catch(() => null);
-      if (!noticeRow) continue;
-      const attempts = await tx.select().from(supplierItemNoticeAttempt).where(eq(supplierItemNoticeAttempt.noticeId, notice.id)).orderBy(desc(supplierItemNoticeAttempt.createdAt));
-      rows.push({ ...notice, attempts });
-    }
-    return rows;
+  return staffTx(headers, async (tx) => {
+    const merged = await tx.select({ id: supportCase.id }).from(supportCase).where(eq(supportCase.mergedIntoCaseId, caseId));
+    const caseIds = [caseId, ...merged.map((item) => item.id)];
+    const notices = await tx.select().from(supplierItemNotice).where(inArray(supplierItemNotice.caseId, caseIds))
+      .orderBy(desc(supplierItemNotice.createdAt)).limit(100);
+    if (!notices.length) return [];
+    const itemIds = [...new Set(notices.map((notice) => notice.orderItemId))];
+    const accessibleItems = await tx.select({ id: orderItemFulfillment.orderItemId }).from(orderItemFulfillment)
+      .where(inArray(orderItemFulfillment.orderItemId, itemIds));
+    const allowedItems = new Set(accessibleItems.map((item) => item.id));
+    const visible = notices.filter((notice) => allowedItems.has(notice.orderItemId));
+    if (!visible.length) return [];
+    const attempts = await tx.select().from(supplierItemNoticeAttempt)
+      .where(inArray(supplierItemNoticeAttempt.noticeId, visible.map((notice) => notice.id)))
+      .orderBy(desc(supplierItemNoticeAttempt.createdAt));
+    const attemptsByNotice = new Map<string, typeof attempts>();
+    for (const attempt of attempts) attemptsByNotice.set(attempt.noticeId, [...(attemptsByNotice.get(attempt.noticeId) ?? []), attempt]);
+    return visible.map((notice) => ({ ...notice, attempts: attemptsByNotice.get(notice.id) ?? [] }));
   });
 }
 
 export async function listApprovedAfterDispatchNoticeReconciliation(headers: Headers) {
   return staffTx(headers, async (tx, actor) => {
     if (actor.role !== "SUPER_ADMIN") throw new Error("Super Admin access required");
-    const rows = await tx.select({ notice: supplierItemNotice, attempt: supplierItemNoticeAttempt, refund: postHandoffRefundRequest })
-      .from(postHandoffRefundRequest).innerJoin(supplierItemNotice, eq(supplierItemNotice.caseId, postHandoffRefundRequest.caseId))
-      .innerJoin(supplierItemNoticeAttempt, eq(supplierItemNoticeAttempt.noticeId, supplierItemNotice.id))
-      .where(eq(postHandoffRefundRequest.state, "APPROVED"))
-      .orderBy(desc(supplierItemNoticeAttempt.createdAt)).limit(200);
-    const latest = new Map<string, typeof rows[number]>();
-    for (const row of rows) if (!latest.has(row.notice.id)) latest.set(row.notice.id, row);
-    const result = [];
-    for (const row of latest.values()) {
-      if (!["SENDING", "UNKNOWN", "ACCEPTED", "RECONCILED_FAILED", "EXPORTED", "MANUAL_SENT", "SUPPLIER_CONTINUING", "UNABLE_TO_CONFIRM"].includes(row.attempt.state)) continue;
-      if (row.notice.orderItemId !== row.refund.orderItemId) continue;
-      const access = await getNotice(tx, row.notice.id, actor).catch(() => null);
-      if (access) result.push(row);
-    }
-    return result;
+    const notices = await tx.select().from(supplierItemNotice).where(sql`exists (
+      select 1 from public.post_handoff_refund_request refund
+      where refund.state = 'APPROVED' and refund.case_id = public.supplier_item_notice.case_id
+        and refund.order_item_id = public.supplier_item_notice.order_item_id)`)
+      .orderBy(desc(supplierItemNotice.createdAt), desc(supplierItemNotice.id)).limit(200);
+    if (!notices.length) return [];
+    const noticeIds = notices.map((notice) => notice.id);
+    const caseIds = [...new Set(notices.map((notice) => notice.caseId))];
+    const orderItemIds = [...new Set(notices.map((notice) => notice.orderItemId))];
+    const [latestAttempts, latestRefunds] = await Promise.all([
+      tx.selectDistinctOn([supplierItemNoticeAttempt.noticeId], {
+        noticeId: supplierItemNoticeAttempt.noticeId, attempt: supplierItemNoticeAttempt,
+      }).from(supplierItemNoticeAttempt).where(inArray(supplierItemNoticeAttempt.noticeId, noticeIds))
+        .orderBy(supplierItemNoticeAttempt.noticeId, desc(supplierItemNoticeAttempt.createdAt), desc(supplierItemNoticeAttempt.id)),
+      tx.selectDistinctOn([postHandoffRefundRequest.caseId, postHandoffRefundRequest.orderItemId], {
+        caseId: postHandoffRefundRequest.caseId, orderItemId: postHandoffRefundRequest.orderItemId,
+        refund: postHandoffRefundRequest,
+      }).from(postHandoffRefundRequest).where(and(eq(postHandoffRefundRequest.state, "APPROVED"),
+        inArray(postHandoffRefundRequest.caseId, caseIds), inArray(postHandoffRefundRequest.orderItemId, orderItemIds)))
+        .orderBy(postHandoffRefundRequest.caseId, postHandoffRefundRequest.orderItemId,
+          desc(postHandoffRefundRequest.decidedAt), desc(postHandoffRefundRequest.id)),
+    ]);
+    const attemptByNotice = new Map(latestAttempts.map((row) => [row.noticeId, row.attempt]));
+    const refundByItem = new Map(latestRefunds.map((row) => [`${row.caseId}:${row.orderItemId}`, row.refund]));
+    const unresolvedStates = new Set(["SENDING", "UNKNOWN", "ACCEPTED", "RECONCILED_FAILED", "EXPORTED", "MANUAL_SENT", "SUPPLIER_CONTINUING", "UNABLE_TO_CONFIRM"]);
+    return notices.flatMap((notice) => {
+      const attempt = attemptByNotice.get(notice.id);
+      const refund = refundByItem.get(`${notice.caseId}:${notice.orderItemId}`);
+      return attempt && refund && unresolvedStates.has(attempt.state) ? [{ notice, attempt, refund }] : [];
+    });
   });
 }

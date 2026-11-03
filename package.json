@@ -15,6 +15,7 @@
     "db:check-import-apply:local": "node --conditions=react-server --env-file=.env --import tsx scripts/check-catalog-import-apply-local.ts",
     "db:check-private-files:local": "node --env-file=.env scripts/check-local-private-files.ts",
     "db:check-content-race:local": "node --env-file=.env scripts/check-content-handoff-race-local.ts",
+    "db:check-supplier-failure-migration:local": "node --env-file=.env scripts/check-supplier-failure-migration-local.ts",
     "db:check-session-guard:local": "NODE_ENV=development node --env-file=.env scripts/check-customer-session-revocation-local.ts",
     "db:check-staff-mfa:local": "NODE_ENV=development node --env-file=.env scripts/check-staff-mfa-local.ts",
     "auth:bootstrap:local": "NODE_ENV=development node --env-file=.env scripts/bootstrap-local-admin.ts",

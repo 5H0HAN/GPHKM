@@ -1,10 +1,13 @@
+import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { headers } from "next/headers";
 import { getMarketplaceAccess, getWalletSummary } from "@/server/wallet/read";
-import { getMyOrders } from "@/server/orders/checkout";
+import { getCustomerOrderHomeSummary } from "@/server/orders/checkout";
+import { getCustomerSupportSummary } from "@/server/support/cases";
 import { loadCustomerWorkspace } from "./workspace";
 import styles from "./customer.module.css";
 import { firstQueryValue } from "@/modules/query-params";
+import { logSafeFailure } from "@/server/observability/safe-log";
 
 export const dynamic = "force-dynamic";
 
@@ -33,31 +36,35 @@ export default async function CustomerHome({ searchParams }: { searchParams: Pro
     return null; // The customer layout owns legal acceptance and organization onboarding.
   }
   let balance: string | null = null;
-  let orders: Awaited<ReturnType<typeof getMyOrders>> | null = null;
+  let orders: Awaited<ReturnType<typeof getCustomerOrderHomeSummary>> | null = null;
+  let support: Awaited<ReturnType<typeof getCustomerSupportSummary>> | null = null;
   let access: Awaited<ReturnType<typeof getMarketplaceAccess>> | null = null;
   let orderLoadFailed = false;
+  let supportLoadFailed = false;
   if (organization) {
-    const [walletResult, ordersResult, accessResult] = await Promise.allSettled([
+    const [walletResult, ordersResult, accessResult, supportResult] = await Promise.allSettled([
       getWalletSummary(requestHeaders, organization.id),
-      getMyOrders(requestHeaders, organization.id),
+      getCustomerOrderHomeSummary(requestHeaders, organization.id),
       getMarketplaceAccess(requestHeaders, organization.id),
+      getCustomerSupportSummary(requestHeaders, organization.id),
     ]);
     if (walletResult.status === "fulfilled") balance = walletResult.value.balanceMinor;
     if (ordersResult.status === "fulfilled") orders = ordersResult.value;
-    else orderLoadFailed = true;
+    else {
+      orderLoadFailed = true;
+      logSafeFailure("customer_home_orders_load_failed", ordersResult.reason, randomUUID());
+    }
     if (accessResult.status === "fulfilled") access = accessResult.value;
+    if (supportResult.status === "fulfilled") support = supportResult.value;
+    else {
+      supportLoadFailed = true;
+      logSafeFailure("customer_home_support_load_failed", supportResult.reason, randomUUID());
+    }
   }
-  const orderCount = orders?.length ?? 0;
-  const itemCount = orders?.reduce((total, order) => total + order.items.length, 0) ?? 0;
-  const pendingItemCount = orders?.reduce((total, order) => total + order.items.filter((item) => !["COMPLETE", "RESOLVED", "CANCELLED", "REFUNDED"].includes(item.status)).length, 0) ?? 0;
-  const recentItems = orders?.flatMap((order) => order.items.map((item) => ({
-    orderId: order.id,
-    orderDate: order.createdAt,
-    title: typeof item.listing.title === "string" ? item.listing.title : "Website placement",
-    status: item.status,
-    updatedAt: item.lastUpdatedAt ?? order.createdAt,
-    nextUpdateAt: item.nextUpdateAt,
-  }))).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, 4) ?? [];
+  const orderCount = orders?.orderCount ?? 0;
+  const itemCount = orders?.placementCount ?? 0;
+  const pendingItemCount = orders?.activePlacementCount ?? 0;
+  const recentItems = orders?.recentActivity ?? [];
 
   return (
     <>
@@ -97,7 +104,7 @@ export default async function CustomerHome({ searchParams }: { searchParams: Pro
             <p className={styles.panelText}>Refresh the page or open your orders to try again.</p>
             <Link className={styles.panelAction} href={organization ? `/customer/orders?organizationId=${encodeURIComponent(organization.id)}` : "/customer/orders"}>Open orders</Link>
           </div> : recentItems.length ? <ul className={styles.list}>
-            {recentItems.map((item) => <li className={styles.listItem} key={`${item.orderId}-${item.title}-${item.updatedAt}`}>
+            {recentItems.map((item) => <li className={styles.listItem} key={item.orderItemId}>
               <span className={styles.activityTitle}><span className={styles.activityDot} aria-hidden="true" /><span><strong>{item.title}</strong><small>{label(item.status)} · Order {item.orderId.slice(0, 8)}</small></span></span>
               <span className={styles.activityDate}><time dateTime={item.updatedAt}>{date(item.updatedAt)}</time>{item.nextUpdateAt && <small>Next update {date(item.nextUpdateAt)}</small>}</span>
             </li>)}
@@ -117,6 +124,31 @@ export default async function CustomerHome({ searchParams }: { searchParams: Pro
                 <div><dt>Placement activity</dt><dd>{orderLoadFailed ? "Unavailable" : `${orderCount} order${orderCount === 1 ? "" : "s"}`}</dd></div>
               </dl>
               <Link className={styles.secondaryAction} href="/customer/settings">Manage account settings <span aria-hidden="true">↗</span></Link>
+            </section>
+            <section className={styles.homePanel} aria-labelledby="support-summary-heading">
+              <div className={styles.homePanelHeader}>
+                <h2 id="support-summary-heading">Support requests</h2>
+                <Link href={organization ? `/customer/support?organizationId=${encodeURIComponent(organization.id)}` : "/customer/support"}>Open Support <span aria-hidden="true">↗</span></Link>
+              </div>
+              {supportLoadFailed ? <div className={styles.empty}>
+                <p role="alert" className={styles.emptyTitle}>Support activity could not be loaded</p>
+                <p className={styles.panelText}>Open Support to check your requests, or refresh this page to try again.</p>
+              </div> : support?.recent.length ? <>
+                <p className={styles.panelText}>{support.openCount} open request{support.openCount === 1 ? "" : "s"} · {support.waitingOnCustomerCount} waiting on you</p>
+                <ul className={styles.list}>
+                  {support.recent.map((item) => <li className={styles.listItem} key={item.id}>
+                    <span className={styles.activityTitle}><span className={styles.activityDot} aria-hidden="true" /><span><strong>{item.summary}</strong><small>{item.status} · {item.orderId ? `Order ${item.orderId.slice(0, 8)}` : "General Support"}</small></span></span>
+                    <Link className={styles.activityDate} href={organization ? `/customer/support/${item.id}?organizationId=${encodeURIComponent(organization.id)}` : `/customer/support/${item.id}`}>
+                      <span>Open request</span><small><time dateTime={item.updatedAt}>Updated {date(item.updatedAt)}</time></small>
+                    </Link>
+                  </li>)}
+                </ul>
+                {support.totalCount > support.recent.length && <p className={styles.panelText}>Showing the latest {support.recent.length} of {support.totalCount} requests.</p>}
+              </> : <div className={styles.empty}>
+                <p className={styles.emptyTitle}>No Support requests yet</p>
+                <p className={styles.panelText}>Send a message from an order when you need help with a placement.</p>
+                <Link className={styles.panelAction} href={organization ? `/customer/support?organizationId=${encodeURIComponent(organization.id)}` : "/customer/support"}>Go to Support</Link>
+              </div>}
             </section>
             <section className={styles.tipPanel}>
               <span className={styles.tipMark} aria-hidden="true">i</span>

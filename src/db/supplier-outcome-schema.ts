@@ -1,9 +1,10 @@
 import { sql } from "drizzle-orm";
-import { check, index, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { check, index, integer, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
 import { user } from "./schema";
 import { customerOrderItem } from "./order-schema";
 import { supplier } from "./catalog-schema";
 import { supportCase } from "./support-schema";
+import { orderItemEquivalentOffer } from "./equivalent-offer-schema";
 
 // Immutable evidence that a supplier could not complete a purchased placement.
 export const supplierFulfillmentOutcome = pgTable("supplier_fulfillment_outcome", {
@@ -16,6 +17,7 @@ export const supplierFulfillmentOutcome = pgTable("supplier_fulfillment_outcome"
   reason: text("reason").notNull(),
   idempotencyKey: text("idempotency_key").notNull(),
   requestHash: text("request_hash").notNull(),
+  routeGeneration: integer("route_generation").notNull().default(1),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   unique("supplier_fulfillment_outcome_idem_uq").on(t.orderItemId, t.actorUserId, t.idempotencyKey),
@@ -24,4 +26,15 @@ export const supplierFulfillmentOutcome = pgTable("supplier_fulfillment_outcome"
   check("supplier_fulfillment_outcome_type_valid", sql`${t.outcome} in ('REJECTED','CANNOT_FULFILL','NONRESPONSIVE')`),
   check("supplier_fulfillment_outcome_reason_valid", sql`length(btrim(${t.reason})) between 5 and 2000`),
   check("supplier_fulfillment_outcome_identity_valid", sql`length(${t.idempotencyKey}) between 16 and 128 and ${t.requestHash} ~ '^[0-9a-f]{64}$'`),
+  check("supplier_fulfillment_outcome_route_generation_positive", sql`${t.routeGeneration} > 0`),
+]).enableRLS();
+
+// A separate immutable edge records which accepted replacement resolved each
+// failure. It avoids inferring historical resolution from wall-clock ordering.
+export const supplierFulfillmentOutcomeResolution = pgTable("supplier_fulfillment_outcome_resolution", {
+  outcomeId: text("outcome_id").primaryKey().references(() => supplierFulfillmentOutcome.id),
+  offerId: text("offer_id").notNull().references(() => orderItemEquivalentOffer.id),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("supplier_fulfillment_outcome_resolution_offer_idx").on(t.offerId),
 ]).enableRLS();

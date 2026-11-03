@@ -7,10 +7,12 @@ import { customerOrder, customerOrderItem, orderItemFulfillment, orderItemFulfil
 import { orderItemContentChangeEvent, orderItemContentChangeRequest, orderItemContentVersion } from "@/db/change-request-schema";
 import { orderItemEquivalentOffer, orderItemEquivalentOfferEvent, orderItemEquivalentOfferRoute } from "@/db/equivalent-offer-schema";
 import { supportCase } from "@/db/support-schema";
+import { supplierFulfillmentOutcome } from "@/db/supplier-outcome-schema";
 import { appendAuditEvent } from "@/server/audit/append";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganizationContext } from "@/server/identity/customer-context";
 import { mayReadFulfillmentContent } from "@/modules/fulfillment/console";
+import { assertCustomerEquivalentOfferItemIds } from "@/modules/fulfillment/equivalent-offers";
 import { hashOrderContent, type OrderContent } from "@/modules/orders/content-changes";
 import { CONTENT_SHARING_NOTICE_VERSION } from "@/modules/orders/checkout";
 import { getConsentedSupplierPacketContent } from "@/server/orders/content-changes";
@@ -57,14 +59,15 @@ export async function createEquivalentOffer(headers: Headers, input: {
     // refund decisions lock case then item. This avoids reversing either lock order.
     const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, input.itemId)).for("update").limit(1);
     if (!fulfillment || !mayReadFulfillmentContent({ role: actor.role, userId: actor.userId, assignedAdminId: fulfillment.assignedAdminId }) ||
-        ["COMPLETED", "CANCELED_REFUNDED"].includes(fulfillment.state)) throw new Error("Item unavailable");
-    const [support] = await tx.select({ id: supportCase.id }).from(supportCase)
-      .where(and(eq(supportCase.id, input.caseId), eq(supportCase.orderItemId, input.itemId), sql`${supportCase.state} not in ('RESOLVED','CLOSED')`)).limit(1);
-    if (!support) throw new Error("An active item Support case is required");
+        ["COMPLETED", "CANCELED_REFUNDED", "CANCELLATION_REQUESTED"].includes(fulfillment.state)) throw new Error("Item unavailable");
     const [itemRow] = await tx.select({ item: customerOrderItem, order: customerOrder })
       .from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
       .where(and(eq(customerOrderItem.id, input.itemId), eq(customerOrder.checkoutState, "PAID"))).limit(1);
     if (!itemRow) throw new Error("Paid order item unavailable");
+    const [support] = await tx.select({ id: supportCase.id, state: supportCase.state }).from(supportCase)
+      .where(and(eq(supportCase.id, input.caseId), eq(supportCase.orderId, itemRow.order.id),
+        sql`${supportCase.state} not in ('RESOLVED','CLOSED')`, sql`${supportCase.mergedIntoCaseId} is null`)).limit(1);
+    if (!support) throw new Error("An active Support conversation for this order is required");
     const [replacement] = await tx.select({
       listingRow: listing, websiteUrl: listingUrl.websiteUrl,
       supplierId: listingSourcing.fulfillmentSupplierId, contactEmail: supplierContact.email,
@@ -73,17 +76,38 @@ export async function createEquivalentOffer(headers: Headers, input: {
       .innerJoin(supplier, eq(supplier.id, listingSourcing.fulfillmentSupplierId))
       .innerJoin(supplierContact, and(eq(supplierContact.supplierId, supplier.id), eq(supplierContact.isPrimary, true)))
       .where(and(eq(listing.id, input.listingId), eq(listing.status, "LIVE"), eq(supplier.status, "ACTIVE"))).limit(1);
-    const [currentRoute] = await tx.select({ supplierId: orderItemFulfillmentSupplier.supplierId })
-      .from(orderItemFulfillmentSupplier).where(eq(orderItemFulfillmentSupplier.orderItemId, input.itemId)).limit(1);
+    const [currentRoute] = await tx.select({ supplierId: orderItemFulfillmentSupplier.supplierId,
+      routeGeneration: orderItemFulfillmentSupplier.routeGeneration })
+      .from(orderItemFulfillmentSupplier).where(eq(orderItemFulfillmentSupplier.orderItemId, input.itemId)).for("share").limit(1);
     if (!replacement?.supplierId || replacement.supplierId === currentRoute?.supplierId || !replacement.contactEmail) throw new Error("Select a live alternative with an active fulfillment contact");
+    const [failure] = currentRoute?.supplierId ? await tx.select({ id: supplierFulfillmentOutcome.id })
+      .from(supplierFulfillmentOutcome).where(and(eq(supplierFulfillmentOutcome.orderItemId, input.itemId),
+        eq(supplierFulfillmentOutcome.supplierId, currentRoute.supplierId),
+        eq(supplierFulfillmentOutcome.supportCaseId, input.caseId),
+        eq(supplierFulfillmentOutcome.routeGeneration, currentRoute.routeGeneration))).limit(1) : [];
+    if (!failure) throw new Error("Record a supplier failure on this active case before offering an alternative");
 
-    const existing = await tx.select({ id: orderItemEquivalentOffer.id }).from(orderItemEquivalentOffer)
-      .where(eq(orderItemEquivalentOffer.orderItemId, input.itemId)).orderBy(desc(orderItemEquivalentOffer.createdAt)).limit(20);
-    for (const offer of existing) {
-      const [latest] = await tx.select({ eventType: orderItemEquivalentOfferEvent.eventType }).from(orderItemEquivalentOfferEvent)
-        .where(eq(orderItemEquivalentOfferEvent.offerId, offer.id)).orderBy(desc(orderItemEquivalentOfferEvent.createdAt), desc(orderItemEquivalentOfferEvent.id)).limit(1);
-      if (latest?.eventType === "OFFERED") throw new Error("Resolve the pending equivalent offer first");
-    }
+    const pendingOfferResult = await tx.execute(sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM (
+          SELECT offer.id
+          FROM public.order_item_equivalent_offer AS offer
+          WHERE offer.order_item_id = ${input.itemId}
+          ORDER BY offer.created_at DESC, offer.id DESC
+          LIMIT 20
+        ) AS recent_offer
+        JOIN LATERAL (
+          SELECT offer_event.event_type
+          FROM public.order_item_equivalent_offer_event AS offer_event
+          WHERE offer_event.offer_id = recent_offer.id
+          ORDER BY offer_event.created_at DESC, offer_event.id DESC
+          LIMIT 1
+        ) AS latest_event ON latest_event.event_type = 'OFFERED'
+      ) AS has_pending_offer
+    `);
+    const hasPendingOffer = (pendingOfferResult as unknown as { rows?: Array<{ has_pending_offer: boolean }> }).rows?.[0]?.has_pending_offer;
+    if (hasPendingOffer) throw new Error("Resolve the pending equivalent offer first");
 
     let content: OrderContent;
     const currentConsented = await getConsentedSupplierPacketContent(tx, input.itemId);
@@ -145,7 +169,8 @@ export async function createEquivalentOffer(headers: Headers, input: {
       terms, lockedPriceMinor, offeredByUserId: actor.userId, createdAt: now,
     });
     await tx.insert(orderItemEquivalentOfferRoute).values({ offerId, supplierId: replacement.supplierId,
-      recipientEmail: replacement.contactEmail, contentHash: boundHash, createdAt: now });
+      recipientEmail: replacement.contactEmail, contentHash: boundHash,
+      routeGeneration: currentRoute!.routeGeneration + 1, createdAt: now });
     await tx.insert(orderItemEquivalentOfferEvent).values({ id: randomUUID(), offerId, actorUserId: actor.userId,
       eventType: "OFFERED", contentHash: boundHash, createdAt: now });
     if (fulfillment.state !== "ON_HOLD") {
@@ -162,30 +187,35 @@ export async function createEquivalentOffer(headers: Headers, input: {
 export async function listCustomerEquivalentOffers(headers: Headers, organizationId: string, itemIds: string[]) {
   const actor = await requireVerifiedCustomer(headers);
   if (itemIds.length === 0) return [];
-  if (itemIds.length > 100 || itemIds.some((id) => !UUID.test(id))) throw new Error("Equivalent offers are unavailable");
+  assertCustomerEquivalentOfferItemIds(itemIds);
   return withOrganizationContext(headers, organizationId, async (tx) => {
     const rows = await tx.select().from(orderItemEquivalentOffer).where(inArray(orderItemEquivalentOffer.orderItemId, itemIds))
       .orderBy(orderItemEquivalentOffer.createdAt);
-    const result = [];
-    for (const row of rows) {
-      const events = await tx.select({ eventType: orderItemEquivalentOfferEvent.eventType, createdAt: orderItemEquivalentOfferEvent.createdAt })
-        .from(orderItemEquivalentOfferEvent).where(eq(orderItemEquivalentOfferEvent.offerId, row.id))
-        .orderBy(orderItemEquivalentOfferEvent.createdAt, orderItemEquivalentOfferEvent.id);
-      const latest = events.at(-1)?.eventType ?? "OFFERED";
-      const [order] = await tx.select({ ordererId: customerOrder.actorUserId }).from(customerOrderItem)
-        .innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
-        .where(and(eq(customerOrderItem.id, row.orderItemId), eq(customerOrder.organizationId, organizationId))).limit(1);
-      result.push({
+    if (!rows.length) return [];
+    const offerIds = rows.map((row) => row.id);
+    const [latestEvents, decisionResult] = await Promise.all([
+      tx.selectDistinctOn([orderItemEquivalentOfferEvent.offerId], {
+        offerId: orderItemEquivalentOfferEvent.offerId, eventType: orderItemEquivalentOfferEvent.eventType,
+      }).from(orderItemEquivalentOfferEvent).where(inArray(orderItemEquivalentOfferEvent.offerId, offerIds))
+        .orderBy(orderItemEquivalentOfferEvent.offerId, desc(orderItemEquivalentOfferEvent.createdAt), desc(orderItemEquivalentOfferEvent.id)),
+      tx.execute(sql`select offer_id, public.gphkm_customer_can_decide_equivalent_offer(offer_id, ${actor.userId}, ${organizationId}) as can_decide
+        from unnest(${sql.param(offerIds)}::text[]) as offer_id`),
+    ]);
+    const latestByOffer = new Map(latestEvents.map((event) => [event.offerId, event.eventType]));
+    const canDecideByOffer = new Map(((decisionResult as unknown as { rows?: Array<{ offer_id: string; can_decide: boolean }> }).rows ?? [])
+      .map((decision) => [decision.offer_id, decision.can_decide]));
+    return rows.map((row) => {
+      const latest = latestByOffer.get(row.id) ?? "OFFERED";
+      return {
         id: row.id, orderItemId: row.orderItemId, title: row.title, websiteUrl: row.websiteUrl,
         description: row.description, equivalenceNote: row.equivalenceNote, categories: row.categories,
         countryCode: row.countryCode, language: row.language, linkType: row.linkType,
         linkValidity: row.linkValidity, turnaroundDays: row.turnaroundDays, buyerRequirements: row.buyerRequirements,
         sponsoredContentMarking: row.sponsoredContentMarking, lockedPriceMinor: row.lockedPriceMinor,
-        status: latest, canDecide: latest === "OFFERED" && order?.ordererId === actor.userId,
+        status: latest, canDecide: latest === "OFFERED" && canDecideByOffer.get(row.id) === true,
         createdAt: row.createdAt,
-      });
-    }
-    return result;
+      };
+    });
   });
 }
 
@@ -218,11 +248,6 @@ export async function decideCustomerEquivalentOffer(headers: Headers, organizati
     if (input.decision === "DECLINE") {
       await tx.insert(orderItemEquivalentOfferEvent).values({ id: randomUUID(), offerId: offer.id, actorUserId: actor.userId,
         eventType: "DECLINED", reason, createdAt: now });
-      const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, offer.orderItemId)).limit(1);
-      if (fulfillment?.state === "ON_HOLD" && fulfillment.stateBeforeHold && !fulfillment.handedOffAt) {
-        await tx.update(orderItemFulfillment).set({ state: fulfillment.stateBeforeHold, stateBeforeHold: null, updatedAt: now })
-          .where(eq(orderItemFulfillment.orderItemId, offer.orderItemId));
-      }
       await appendAuditEvent(tx, { organizationId, actorUserId: actor.userId, action: "SUPPLIER_EQUIVALENT_OFFER_DECLINED",
         targetType: "CUSTOMER_ORDER_ITEM", targetId: offer.orderItemId, metadata: { result: "DECLINED", offerId: offer.id } });
       return { state: "DECLINED" as const };

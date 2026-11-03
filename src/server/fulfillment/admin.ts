@@ -202,12 +202,24 @@ export async function updateFulfillmentState(headers: Headers, input: { itemId: 
     if (!item) throw new Error("Item unavailable");
     if ((input.to as ItemState) === "IN_FULFILLMENT") {
       const [fulfillmentSupplier] = await tx.select({ supplierId: orderItemFulfillmentSupplier.supplierId })
-        .from(orderItemFulfillmentSupplier).where(eq(orderItemFulfillmentSupplier.orderItemId, input.itemId)).limit(1);
+        .from(orderItemFulfillmentSupplier).where(eq(orderItemFulfillmentSupplier.orderItemId, input.itemId)).for("share").limit(1);
       if (fulfillmentSupplier?.supplierId) {
         const handoffResult = await tx.execute(sql`select exists (
           select 1 from public.supplier_packet_item pi
+          join public.supplier_packet packet on packet.id = pi.packet_id
+          join public.order_item_fulfillment_supplier route on route.order_item_id = pi.order_item_id
           join public.supplier_packet_attempt attempt on attempt.packet_id = pi.packet_id
           where pi.order_item_id = ${input.itemId}
+            and packet.supplier_id = route.supplier_id
+            and packet.superseded_at is null
+            and packet.version = (
+              select max(latest.version)
+              from public.supplier_packet latest
+              join public.supplier_packet_item latest_item on latest_item.packet_id = latest.id
+              where latest_item.order_item_id = pi.order_item_id
+                and latest.supplier_id = route.supplier_id
+                and latest.superseded_at is null
+            )
             and ((attempt.type = 'SEND' and attempt.state = 'DELIVERED' and attempt.delivered_at is not null)
               or (attempt.type in ('MANUAL_SENT','MANUAL_SEND') and attempt.state = 'MANUAL_SENT' and attempt.sent_at is not null))
         ) as confirmed`);

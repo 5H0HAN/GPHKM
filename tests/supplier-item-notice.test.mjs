@@ -6,6 +6,7 @@ import { buildSupplierNotice, renderSupplierNoticeEml } from "../src/modules/ful
 const schemaMigration = await readFile(new URL("../src/db/migrations/0109_supplier_item_notices.sql", import.meta.url), "utf8");
 const securityMigration = await readFile(new URL("../src/db/migrations/0110_supplier_item_notice_security.sql", import.meta.url), "utf8");
 const manualOutcomeMigration = await readFile(new URL("../src/db/migrations/0113_supplier_notice_manual_outcome_evidence.sql", import.meta.url), "utf8");
+const scopedSecurityMigration = await readFile(new URL("../src/db/migrations/0163_order_scoped_support.sql", import.meta.url), "utf8");
 const service = await readFile(new URL("../src/server/fulfillment/supplier-notices.ts", import.meta.url), "utf8");
 
 test("supplier notices state the requested action without claiming it happened", () => {
@@ -36,6 +37,24 @@ test("database and service keep notice snapshots tied to assigned handed-off ite
   assert.doesNotMatch(service, /update\(orderItemFulfillment\)/);
   assert.match(service, /UNKNOWN/);
   assert.match(service, /postHandoffRefundRequest\.state, "APPROVED"/);
+});
+
+test("notice preparation requires proof for the current supplier route, while existing records remain reconcilable", () => {
+  const insertGuard = scopedSecurityMigration.split("CREATE OR REPLACE FUNCTION public.gphkm_supplier_notice_insert_guard")[1].split("$$;")[0];
+  assert.match(insertGuard, /FOR UPDATE[\s\S]*FOR KEY SHARE/);
+  assert.match(insertGuard, /route_supplier_id[\s\S]*route_generation_value/);
+  assert.match(insertGuard, /attempt\.type = 'SEND' AND attempt\.state = 'DELIVERED' AND attempt\.delivered_at IS NOT NULL/);
+  assert.match(insertGuard, /attempt\.type IN \('MANUAL_SENT','MANUAL_SEND'\) AND attempt\.state = 'MANUAL_SENT' AND attempt\.sent_at IS NOT NULL/);
+  assert.doesNotMatch(insertGuard, /handed_off_at IS NOT NULL/,
+    "a later route change must not hide an immutable notice that still needs reconciliation");
+  assert.match(service, /eq\(supplierPacketItem\.routeGeneration, orderItemFulfillmentSupplier\.routeGeneration\)/);
+  assert.match(service, /attempt\.state = 'DELIVERED'[\s\S]*attempt\.delivered_at is not null/);
+  assert.match(service, /selectDistinctOn\(\[supplierItemNoticeAttempt\.noticeId\]/,
+    "reconciliation loads latest attempts in a batch rather than issuing a query per notice");
+  assert.match(service, /attempt\.packet_id = public\.supplier_packet\.id[\s\S]*attempt\.recipient\) = lower\(public\.supplier_packet\.recipient\)/,
+    "notice preparation correlates delivery proof to the selected outer packet");
+  assert.match(service, /refund\.case_id = public\.supplier_item_notice\.case_id[\s\S]*refund\.order_item_id = public\.supplier_item_notice\.order_item_id/,
+    "refund reconciliation correlates each approved exception to its exact notice");
 });
 
 test("manual send evidence remains valid when its supplier outcome is reconciled", () => {

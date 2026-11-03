@@ -35,7 +35,7 @@ export default async function CustomerSupportDetail({ params, searchParams }: { 
         <h1>Support request</h1>
         <div className={styles.detailMeta}>
           <span className={`${styles.statusBadge} ${customerStatus(item.status) === "Resolved" ? styles.statusResolved : customerStatus(item.status) === "Waiting on you" ? styles.statusWaiting : ""}`}>{customerStatus(item.status)}</span>
-          <span>Order #{item.orderId.slice(0, 8).toUpperCase()}</span>
+          <span>{item.orderId ? `Order #${item.orderId.slice(0, 8).toUpperCase()}` : "General Support · no order attached"}</span>
           <span>Updated {new Date(item.updatedAt).toLocaleDateString("en-US", { dateStyle: "medium", timeZone: "UTC" })}</span>
         </div>
       </div>
@@ -61,8 +61,8 @@ export default async function CustomerSupportDetail({ params, searchParams }: { 
         <label>Your message<textarea name="body" maxLength={4000} rows={5} required placeholder="Write a reply…" /></label><button type="submit">Send reply</button>
       </form>
     </section> : <div className={styles.closedNotice}>
-      <p>This request is resolved and closed. If you still need help, open a new Support request for this placement.</p>
-      <Link href={`/customer/support?organizationId=${encodeURIComponent(organizationId)}&itemId=${item.orderItemId}`}>Open a new request</Link>
+      <p>This request is resolved and closed. You can open a new case for a later issue.</p>
+      <Link href={`/customer/support?organizationId=${encodeURIComponent(organizationId)}${item.orderId ? `&orderId=${encodeURIComponent(item.orderId)}` : ""}`}>Open a new request</Link>
     </div>}
   </div>;
 }
