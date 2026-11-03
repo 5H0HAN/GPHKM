@@ -48,10 +48,13 @@ export default async function FulfillmentPage({ searchParams }: { searchParams: 
             <div className={styles.controls}>
               <form action={assignFulfillmentAction} className={styles.assignForm}>
                 <input type="hidden" name="itemId" value={row.orderItemId} />
-                <label htmlFor={`assign-${row.orderItemId}`}>Assigned Admin</label>
+                <label htmlFor={`assign-${row.orderItemId}`}>Assigned staff</label>
                 <div className={styles.assignLine}>
                   <select id={`assign-${row.orderItemId}`} name="assignedAdminId" defaultValue={row.assignedAdminId ?? ""}>
                     <option value="">Unassigned</option>
+                    {actorRole === "SUPER_ADMIN" ? <option value={actorUserId}>Super Admin (you)</option> : null}
+                    {row.assignedAdminId && row.assignedAdminId !== actorUserId && !assignees.some((person) => person.id === row.assignedAdminId)
+                      ? <option value={row.assignedAdminId}>Current assignee: {row.assignedAdminName ?? "Staff"}</option> : null}
                     {assignees.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}
                   </select>
                   <button type="submit">Save assignment</button>

@@ -254,6 +254,7 @@ try {
   const adminB = randomUUID();
   const financeA = randomUUID();
   const superAdminA = randomUUID();
+  const superAdminB = randomUUID();
   const organizationA = randomUUID();
   const organizationB = randomUUID();
   const ownerOrderA = randomUUID();
@@ -345,16 +346,18 @@ try {
        ($1, 'RLS Fixture Owner A', $2, true), ($3, 'RLS Fixture Owner B', $4, true),
        ($5, 'RLS Fixture Member A', $6, true), ($7, 'RLS Fixture Admin A', $8, true),
        ($9, 'RLS Fixture Admin B', $10, true), ($11, 'RLS Fixture Finance A', $12, true),
-       ($13, 'RLS Fixture Super Admin', $14, true)`,
+       ($13, 'RLS Fixture Super Admin A', $14, true), ($15, 'RLS Fixture Super Admin B', $16, true)`,
     [userA, `rls-owner-a-${suffix}@example.invalid`, userB, `rls-owner-b-${suffix}@example.invalid`,
       memberA, `rls-member-a-${suffix}@example.invalid`, adminA, `rls-admin-a-${suffix}@example.invalid`,
       adminB, `rls-admin-b-${suffix}@example.invalid`, financeA, `rls-finance-a-${suffix}@example.invalid`,
-      superAdminA, `rls-super-admin-${suffix}@example.invalid`],
+      superAdminA, `rls-super-admin-a-${suffix}@example.invalid`,
+      superAdminB, `rls-super-admin-b-${suffix}@example.invalid`],
   );
   await migration.query(
     `insert into staff_account (user_id, role, active) values
-       ($1, 'ADMIN', true), ($2, 'ADMIN', true), ($3, 'FINANCE', true), ($4, 'SUPER_ADMIN', true)`,
-    [adminA, adminB, financeA, superAdminA],
+       ($1, 'ADMIN', true), ($2, 'ADMIN', true), ($3, 'FINANCE', true),
+       ($4, 'SUPER_ADMIN', true), ($5, 'SUPER_ADMIN', true)`,
+    [adminA, adminB, financeA, superAdminA, superAdminB],
   );
   phase = "checking staff Overview dismissals are private to the active staff user";
   const attentionTaskKey = `rls-smoke:${suffix}`;
@@ -1685,6 +1688,9 @@ try {
     "select public.gphkm_assign_fulfillment_item($1, $2)", [orderItemFixture, financeA],
   ));
   await migration.query("select set_config('app.user_id', $1, true)", [adminB]);
+  await expectCheckConstraint(migration, "Admin assignment to a Super Admin", () => migration.query(
+    "select public.gphkm_assign_fulfillment_item($1, $2)", [orderItemFixture, superAdminA],
+  ));
   await expectWriteDenied(migration, "assigned Admin cannot change fulfillment listing identity", () => migration.query(
     "update order_item_fulfillment set listing_title = 'tampered' where order_item_id = $1",
     [orderItemFixture],
@@ -1711,13 +1717,39 @@ try {
     [orderItemFixture, adminA],
   );
   assert.equal(superAdminAssignment.rows[0]?.order_item_id, orderItemFixture, "Super Admin can use the dedicated assignment command");
+  await migration.query("select public.gphkm_assign_fulfillment_item($1, $2)", [orderItemFixture, superAdminA]);
+  await migration.query("select set_config('app.user_id', $1, true)", [adminB]);
+  const retainedAdminAssignment = await migration.query<{ order_item_id: string }>(
+    "select public.gphkm_assign_fulfillment_item($1, $2) as order_item_id",
+    [orderItemFixture, superAdminA],
+  );
+  assert.equal(retainedAdminAssignment.rows[0]?.order_item_id, orderItemFixture,
+    "an Admin can safely retain an existing Super Admin assignment without changing it");
+  await migration.query("select set_config('app.user_id', $1, true)", [superAdminB]);
+  const retainedSuperAdminAssignment = await migration.query<{ order_item_id: string }>(
+    "select public.gphkm_assign_fulfillment_item($1, $2) as order_item_id",
+    [orderItemFixture, superAdminA],
+  );
+  assert.equal(retainedSuperAdminAssignment.rows[0]?.order_item_id, orderItemFixture,
+    "another Super Admin can safely retain an existing Super Admin assignment without changing it");
+  await migration.query("select set_config('app.user_id', $1, true)", [superAdminA]);
+  await expectCheckConstraint(migration, "Super Admin assignment to another Super Admin", () => migration.query(
+    "select public.gphkm_assign_fulfillment_item($1, $2)", [orderItemFixture, superAdminB],
+  ));
+  await migration.query("select public.gphkm_assign_fulfillment_item($1, $2)", [orderItemFixture, adminA]);
   await migration.query("RESET ROLE");
   const assignmentAudit = await migration.query<{ count: number }>(
     `select count(*)::int as count from audit_event where target_type = 'CUSTOMER_ORDER_ITEM'
        and target_id = $1 and action = 'FULFILLMENT_ASSIGNMENT_CHANGED'`,
     [orderItemFixture],
   );
-  assert.equal(assignmentAudit.rows[0]?.count, 2, "database assignment command records each actual change exactly once");
+  assert.equal(assignmentAudit.rows[0]?.count, 4, "database assignment command records each actual change exactly once");
+  const selfAssignmentAudit = await migration.query<{ count: number }>(
+    `select count(*)::int as count from audit_event where target_type = 'CUSTOMER_ORDER_ITEM'
+       and target_id = $1 and action = 'FULFILLMENT_ASSIGNMENT_CHANGED' and reason_code = 'SUPER_ADMIN_SELF_ASSIGNMENT'`,
+    [orderItemFixture],
+  );
+  assert.equal(selfAssignmentAudit.rows[0]?.count, 1, "Super Admin self-assignment has an explicit audit reason");
 
   phase = "checking Support reply lifecycle, terminal-case denial, and customer membership scope";
   const supportOwnerOpenKey = randomUUID();
