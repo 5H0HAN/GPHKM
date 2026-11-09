@@ -41,7 +41,7 @@
     "read-excel-file": "9.3.12",
     "saxen": "11.2.0",
     "server-only": "0.0.1",
-    "stripe": "23.0.1"
+    "stripe": "23.1.0"
   },
   "devDependencies": {
     "@eslint-react/eslint-plugin": "5.28.8",
