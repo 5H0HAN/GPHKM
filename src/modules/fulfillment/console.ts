@@ -87,7 +87,7 @@ const transitions: Record<string, { value: string; label: string }[]> = {
   CONFIRMED: [{ value: "CONTENT_PREPARATION", label: "Start content review" }, { value: "ON_HOLD", label: "Place on hold" }],
   CONTENT_PREPARATION: [{ value: "AWAITING_CUSTOMER_APPROVAL", label: "Request customer approval" }, { value: "READY_FOR_HANDOFF", label: "Mark ready for placement" }, { value: "ON_HOLD", label: "Place on hold" }],
   AWAITING_CUSTOMER_APPROVAL: [{ value: "CONTENT_PREPARATION", label: "Resume content review" }, { value: "READY_FOR_HANDOFF", label: "Mark ready for placement" }, { value: "ON_HOLD", label: "Place on hold" }],
-  READY_FOR_HANDOFF: [{ value: "HANDOFF_PENDING", label: "Prepare placement" }, { value: "IN_FULFILLMENT", label: "Start placement work" }, { value: "ON_HOLD", label: "Place on hold" }],
+  READY_FOR_HANDOFF: [{ value: "IN_FULFILLMENT", label: "Start placement work" }, { value: "ON_HOLD", label: "Place on hold" }],
   HANDOFF_PENDING: [{ value: "IN_FULFILLMENT", label: "Start placement work" }, { value: "ON_HOLD", label: "Place on hold" }],
   IN_FULFILLMENT: [{ value: "PUBLICATION_PENDING", label: "Start link verification" }, { value: "ON_HOLD", label: "Place on hold" }],
   PUBLICATION_PENDING: [{ value: "EVIDENCE_REVIEW", label: "Review evidence" }, { value: "ON_HOLD", label: "Place on hold" }],
@@ -95,9 +95,9 @@ const transitions: Record<string, { value: string; label: string }[]> = {
   ON_HOLD: [{ value: "CONFIRMED", label: "Resume order received" }, { value: "CONTENT_PREPARATION", label: "Resume content review" }, { value: "AWAITING_CUSTOMER_APPROVAL", label: "Resume customer approval" }, { value: "READY_FOR_HANDOFF", label: "Resume placement preparation" }, { value: "HANDOFF_PENDING", label: "Resume placement preparation" }, { value: "IN_FULFILLMENT", label: "Resume placement work" }, { value: "PUBLICATION_PENDING", label: "Resume link verification" }, { value: "EVIDENCE_REVIEW", label: "Resume evidence review" }],
 };
 
-export function fulfillmentTransitionChoices(state: string, stateBeforeHold: string | null, hasSupplier: boolean, writingApproved = true) {
+export function fulfillmentTransitionChoices(state: string, stateBeforeHold: string | null, hasSupplier: boolean, writingApproved = true, supplierHandoffConfirmed = false) {
   return (transitions[state] ?? []).filter((choice) =>
     (state !== "ON_HOLD" || choice.value === stateBeforeHold)
     && (writingApproved || !["READY_FOR_HANDOFF", "HANDOFF_PENDING", "IN_FULFILLMENT"].includes(choice.value))
-    && (choice.value !== "IN_FULFILLMENT" || !hasSupplier || state === "ON_HOLD"));
+    && (choice.value !== "IN_FULFILLMENT" || !hasSupplier || state === "ON_HOLD" || (state === "HANDOFF_PENDING" && supplierHandoffConfirmed)));
 }

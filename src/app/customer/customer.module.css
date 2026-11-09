@@ -995,6 +995,7 @@
 .progressCurrent { color: var(--text-primary) !important; font-weight: 570; }
 .progressCurrent .progressDot { outline: 2px solid color-mix(in srgb, var(--accent) 30%, transparent); outline-offset: 2px; }
 .completeNote { margin: 18px 0; color: var(--success); font-size: 13px; }
+.orderWorkflowNotice { margin: 16px 0; padding: 12px 14px; border: 1px solid var(--warning-border, var(--border-strong)); border-radius: 8px; background: color-mix(in srgb, var(--warning, #b7791f) 10%, var(--surface-1)); color: var(--text-primary); font-size: 13px; line-height: 1.55; }
 .updateRow { display: flex; flex-wrap: wrap; gap: 10px 36px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); }
 .updateRow p { display: grid; gap: 3px; margin: 0; color: var(--text-primary); font-size: 12px; }
 .updateRow p > span:first-child { color: var(--text-muted); font-size: 10px; }
@@ -1046,6 +1047,7 @@
 .liveLinks p { margin-top: 8px !important; color: var(--text-muted); }
 .subDetails > summary { width: fit-content; cursor: pointer; color: var(--text-primary); text-decoration: underline; text-underline-offset: 3px; }
 .subDetails pre, .detailsBody pre { max-height: 360px; overflow: auto; margin: 10px 0 0; padding: 13px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); color: var(--text-primary); font: inherit; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.placementCard > section[aria-labelledby^="change-"] pre { max-height: 360px; overflow: auto; margin: 10px 0 0; padding: 13px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); color: var(--text-primary); font: inherit; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
 .writingPanel { border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
 .writingPanel > summary { color: var(--warning); }
 .writingActions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }

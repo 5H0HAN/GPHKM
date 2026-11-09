@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { contentReviewReasonOptions, fulfillmentTransitionChoices } from "@/modules/fulfillment/console";
 import { getFulfillmentItem } from "@/server/fulfillment/admin";
-import { createEquivalentOfferAction, recordPublicationEvidenceAction, recordSupplierFailureAction, saveWritingDraftAction, updateFulfillmentAction, updateFulfillmentFollowUpAction } from "../actions";
+import { createEquivalentOfferAction, recoverSupplierFailureAction, recordPublicationEvidenceAction, recordSupplierFailureAction, saveWritingDraftAction, updateFulfillmentAction, updateFulfillmentFollowUpAction } from "../actions";
 import { ContentChangeReview } from "./content-change-review";
 import { listContentChangesForStaff } from "@/server/orders/content-changes";
 import { listEquivalentOfferCandidates } from "@/server/fulfillment/equivalent-offers";
@@ -16,25 +16,35 @@ export default async function FulfillmentItemPage({ params, searchParams }: { pa
   const [{ itemId }, query] = await Promise.all([params, searchParams]);
   let result;
   const requestHeaders = await headers();
-  try { result = await getFulfillmentItem(requestHeaders, itemId); } catch { notFound(); }
+  try { result = await getFulfillmentItem(requestHeaders, itemId); }
+  catch (error) {
+    if (error instanceof Error && error.message === "Unauthorized") redirect("/staff/sign-in");
+    if (error instanceof Error && error.message === "Forbidden") redirect("/staff");
+    if (error instanceof Error && error.message === "Item unavailable") notFound();
+    throw error;
+  }
   const contentChanges = await listContentChangesForStaff(requestHeaders, itemId).catch(() => []);
   const corrections = await listPublicationCorrections(requestHeaders, itemId).catch(() => []);
-  const equivalentCandidates = result.outcomes.length ? await listEquivalentOfferCandidates(requestHeaders, itemId).catch(() => []) : [];
+  const equivalentCandidates = result.canOfferEquivalent ? await listEquivalentOfferCandidates(requestHeaders, itemId).catch(() => []) : [];
   const writingApproved = !result.item.writingSelected || result.writing?.state === "APPROVED_FIRST" || result.writing?.state === "APPROVED_FINAL";
-  const choices = fulfillmentTransitionChoices(result.fulfillment.state, result.fulfillment.stateBeforeHold, Boolean(result.supplier), writingApproved);
+  const choices = fulfillmentTransitionChoices(result.fulfillment.state, result.fulfillment.stateBeforeHold, Boolean(result.supplier), writingApproved, result.supplierHandoffConfirmed);
   const listing = result.item.listingSnapshot as Record<string, unknown>;
   return <>
     <header className={styles.header}>
       <div><p className={styles.eyebrow}>FULFILLMENT ITEM</p><h1>{String(listing.title ?? result.fulfillment.listingTitle)}</h1><p className={styles.lede}>Internal work record. Customer updates use GPHKM milestone names and never include sourcing details.</p></div>
       <Link className={styles.open} href="/staff/fulfillment">Back to queue</Link>
     </header>
-    {query.error && <p className={styles.error}>The update could not be saved. Check the current item state and required fields.</p>}
+    {query.error === "update-failed" && <p className={styles.error} role="alert">The update could not be saved. Check the current item state and required fields.</p>}
+    {query.error === "packet-required" && <p className={styles.error} role="alert">Prepare the supplier packet before moving this item into Preparing. The packet step records the approved content and current recipient consent.</p>}
+    {query.error === "delivery-required" && <p className={styles.error} role="alert">Placement work cannot start until supplier delivery is confirmed. For a manual send, record the supplier’s receipt on the packet page.</p>}
     {query.updated && <p className={styles.success}>Fulfillment update saved.</p>}
     {query.verified && <p className={styles.success}>The live URL was recorded and the item marked complete.</p>}
     {query.correctionOpened && <p className={styles.success}>The incorrect verification was recorded. The item is back in link verification.</p>}
     {query.error === "publication-correction-failed" && <p className={styles.error}>The correction could not be recorded. Refresh the item and review its current verification state.</p>}
     {query.writing && <p className={styles.success}>The writing draft was saved for customer review.</p>}
     {query.supplierOutcome && <p className={styles.success}>The supplier outcome was recorded and a GPHKM Support case was opened for the customer.</p>}
+    {query.supplierRecovered && <p className={styles.success}>Renewed availability was recorded. The previous supplier failure remains in the audit history, and a customer-visible Support update was added. The item is still on hold; resume it through the fulfillment workflow after reviewing its current content and recipient consent.</p>}
+    {query.error === "supplier-recovery-failed" && <p className={styles.error}>Recovery was not recorded. Confirm this item is still assigned to you, on hold, on the same active supplier route, and has no prior packet attempt or handoff.</p>}
     {query.equivalentOffered && <p className={styles.success}>The same-price alternative was sent to the customer for approval. Handoff remains blocked until the customer decides.</p>}
     {query.error === "equivalent-offer-failed" && <p className={styles.error}>The alternative could not be offered. Check the listing, current item state, and Support case before trying again.</p>}
     <div className={styles.detailGrid}>
@@ -67,7 +77,18 @@ export default async function FulfillmentItemPage({ params, searchParams }: { pa
             <button type="submit">Record outcome and open Support case</button>
           </form>
           {result.outcomes.length > 0 && <><h3>Outcome history</h3><ul className={styles.evidence}>{result.outcomes.map((outcome) => <li key={outcome.id}><strong>{outcome.outcome.replaceAll("_", " ")}</strong><span>{outcome.reason}</span><time dateTime={outcome.createdAt.toISOString()}>{outcome.createdAt.toLocaleString()}</time><Link href={`/staff/support/${outcome.supportCaseId}`}>Open Support case</Link></li>)}</ul></>}
-          {result.outcomes[0] && equivalentCandidates.length > 0 && <><h3>Offer a same-price alternative</h3><p>Select an active listing whose customer-facing terms meet the purchased offer. The order’s original price remains locked; the customer must approve before any new handoff.</p><form action={createEquivalentOfferAction} className={styles.form}>
+          {result.canRecoverSameSupplier && <div className={styles.recovery}>
+            <h3>Confirm renewed supplier availability</h3>
+            <p>This Super Admin action resolves the current supplier failure while preserving it in history. It does not change the route, release the hold, or send a supplier packet. The customer receives a neutral update in the order Support conversation.</p>
+            <p className={styles.help}>Before preparing a packet, review the latest approved article, placement requirements, current primary recipient, and sharing consent. Packet preparation checks the exact current content and route again.</p>
+            <form action={recoverSupplierFailureAction} className={styles.form}>
+              <input type="hidden" name="itemId" value={itemId} /><input type="hidden" name="idempotencyKey" value={randomUUID()} />
+              <label>Availability confirmation and internal evidence<textarea name="reason" required minLength={5} maxLength={2000} rows={4} /></label>
+              <button type="submit">Record recovery and update customer</button>
+            </form>
+          </div>}
+          {result.recoveries.length > 0 && <><h3>Same-supplier recovery history</h3><ul className={styles.evidence}>{result.recoveries.map((recovery) => <li key={recovery.id}><strong>Route generation {recovery.routeGeneration} · recorded by {recovery.actorName}</strong><span>{recovery.reason}</span><time dateTime={recovery.createdAt.toISOString()}>{recovery.createdAt.toLocaleString()}</time><Link href={`/staff/support/${recovery.supportCaseId}`}>Open Support case</Link></li>)}</ul></>}
+          {result.canOfferEquivalent && result.outcomes[0] && equivalentCandidates.length > 0 && <><h3>Offer a same-price alternative</h3><p>Select an active listing whose customer-facing terms meet the purchased offer. The order’s original price remains locked; the customer must approve before any new handoff.</p><form action={createEquivalentOfferAction} className={styles.form}>
             <input type="hidden" name="itemId" value={itemId} /><input type="hidden" name="caseId" value={result.outcomes[0].supportCaseId} />
             <label>Alternative listing<select name="listingId" required defaultValue=""> <option value="" disabled>Select a listing</option>{equivalentCandidates.map((candidate) => <option value={candidate.id} key={candidate.id}>{candidate.title} — {candidate.websiteUrl}</option>)}</select></label>
             <label>Why this meets the purchased placement terms<textarea name="equivalenceNote" required minLength={5} maxLength={1000} rows={3} /></label>

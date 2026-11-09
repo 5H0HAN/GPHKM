@@ -129,6 +129,8 @@ test("customer Orders view renders each item's projected dates and publication l
   assert.match(page, /const lastUpdatedAt = item\.lastUpdatedAt \?\? order\.createdAt/);
   assert.match(page, /<span>Last updated<\/span><time dateTime=\{lastUpdatedAt\}/);
   assert.match(page, /<span>Next update<\/span>\{item\.nextUpdateAt \? <time dateTime=\{item\.nextUpdateAt\}/);
+  assert.match(page, /Your approval was saved\. The placement below shows its latest progress\./);
+  assert.doesNotMatch(page, /order remains Preparing while GPHKM resends/);
   assert.match(page, /pendingDate}>To be scheduled<\/span>/);
   assert.match(page, /item\.publicationUrls\.map\(\(url, index\) =>/);
   assert.match(page, /Google indexing: \{item\.googleIndexingStatus === "UNKNOWN"/);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Client, Pool } from "pg";
@@ -30,6 +31,7 @@ isolatedRuntimeUrl.pathname = `/${databaseName}`;
 const administrator = new Client({ connectionString: migrationUrl.href, connectionTimeoutMillis: 5000 });
 let created = false;
 const connections: Client[] = [];
+let testPhase = "initialize isolated database";
 
 function sleep(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -75,10 +77,10 @@ async function expectAssignmentAuthorityRejected(query: Promise<{ rows: unknown[
 async function expectSupplierHandoffRejected(query: Promise<{ rows: unknown[] }>) {
   try {
     await query;
-    assert.fail("Work start must not pass with only the old supplier route's packet evidence");
+    assert.fail("Work start must not pass without current delivery or manual receipt evidence");
   } catch (error) {
     assert.equal(typeof error === "object" && error !== null && "code" in error ? error.code : null, "42501",
-      "work start must re-read the accepted current route after waiting for the item lock");
+      "work start must require current-route delivery or a matching supplier acknowledgement");
   }
 }
 
@@ -138,6 +140,125 @@ async function expectSupplierNoticeWithoutDeliveryRejected(query: Promise<{ rows
     assert.equal(typeof error === "object" && error !== null && "code" in error ? error.code : null, "23514");
     assert.match(error instanceof Error ? error.message : String(error), /current-route delivery evidence/);
   }
+}
+
+async function seedSyntheticPacketItem(client: Client, statement: string, values: unknown[]) {
+  // Route-race fixtures intentionally model packets created before a later route change.
+  // The dedicated packet-consent checks below exercise this trigger with real snapshots.
+  await client.query("ALTER TABLE public.supplier_packet_item DISABLE TRIGGER supplier_packet_item_guard");
+  try { await client.query(statement, values); }
+  finally { await client.query("ALTER TABLE public.supplier_packet_item ENABLE TRIGGER supplier_packet_item_guard"); }
+}
+
+async function packetConsentFixture(client: Client, input: {
+  packetId: string; version: number; organizationId: string; orderId: string; itemId: string;
+  supplierId: string; recipient: string; assignedAdminId: string; createdByUserId: string; contentHash: string;
+  consentEventId?: string; consentedAt?: string; routeGeneration?: number; snapshotRecipient?: string;
+  placementRequirements?: string[];
+}) {
+  const { rows: [source] } = await client.query<{
+    target_url: string; anchor_text: string; article: string | null; instructions: string;
+    notice_version: string; consent_event_id: string | null; accepted_at: string; route_generation: number;
+    listing_snapshot: Record<string, unknown>;
+  }>(
+    `select coalesce(consented.target_url, item.target_url) as target_url,
+            coalesce(consented.anchor_text, item.anchor_text) as anchor_text,
+            case when item.writing_selected then writing.approved_article_text
+                 else coalesce(consented.article_text, item.article_text) end as article,
+            coalesce(consented.instructions, btrim(coalesce(item.instructions, ''))) as instructions,
+            coalesce(consented.notice_version, item.consent_notice_version) as notice_version,
+            consented.event_id as consent_event_id,
+            to_char(coalesce(consented.event_created_at, item.consented_at) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as accepted_at,
+            route.route_generation,
+            coalesce((select offer.terms from public.order_item_equivalent_offer offer
+              join public.order_item_equivalent_offer_event accepted on accepted.offer_id = offer.id
+                and accepted.event_type = 'ACCEPTED' and accepted.content_hash = consented.content_hash
+              where offer.content_request_id = consented.request_id
+              order by accepted.created_at desc, accepted.id desc limit 1), item.customer_listing_snapshot) as listing_snapshot
+       from public.customer_order_item item
+       join public.order_item_fulfillment_supplier route on route.order_item_id = item.id
+       left join public.order_item_writing writing on writing.order_item_id = item.id
+       left join lateral (
+         select version.target_url, version.anchor_text, version.article_text, version.instructions,
+                version.request_id, version.content_hash, event.id as event_id, event.notice_version, event.created_at as event_created_at
+           from public.order_item_content_version version
+           join lateral (select candidate.id, candidate.event_type, candidate.version_id, candidate.content_hash,
+                                candidate.notice_version, candidate.created_at
+                           from public.order_item_content_change_event candidate
+                          where candidate.request_id = version.request_id
+                          order by candidate.created_at desc, candidate.id desc limit 1) event
+             on event.event_type = 'CONSENTED' and event.version_id = version.id and event.content_hash = version.content_hash
+          where version.order_item_id = item.id and version.supplier_id = route.supplier_id
+            and lower(btrim(version.recipient_email)) = lower(btrim($2))
+          order by version.version desc limit 1
+       ) consented on true
+      where item.id = $1`, [input.itemId, input.recipient],
+  );
+  assert.ok(source, `packet fixture source exists for ${input.itemId}`);
+  const snapshotRecipient = input.snapshotRecipient ?? input.recipient.toLowerCase();
+  const placementRequirements = input.placementRequirements ?? [
+    typeof source.listing_snapshot.linkType === "string" ? `Link type: ${source.listing_snapshot.linkType}` : null,
+    typeof source.listing_snapshot.linkValidity === "string" ? `Placement term: ${source.listing_snapshot.linkValidity}` : null,
+    source.listing_snapshot.sponsoredContentMarking === true ? "Mark the article as sponsored content." : null,
+    typeof source.listing_snapshot.buyerRequirements === "string" && source.listing_snapshot.buyerRequirements.trim()
+      ? source.listing_snapshot.buyerRequirements.trim() : null,
+  ].filter((value): value is string => value !== null);
+  const consent = {
+    disclosureVersion: source.notice_version,
+    contentHash: input.contentHash,
+    supplierId: input.supplierId,
+    recipient: snapshotRecipient,
+    consentEventId: input.consentEventId ?? source.consent_event_id,
+    acceptedAt: input.consentedAt ?? source.accepted_at,
+  };
+  return {
+    packet: {
+      id: input.packetId,
+      version: input.version,
+      organizationId: input.organizationId,
+      orderId: input.orderId,
+      supplierId: input.supplierId,
+      recipient: snapshotRecipient,
+      createdBy: input.createdByUserId,
+      createdAt: new Date().toISOString(),
+      items: [{ orderItemId: input.itemId, assignedAdminId: input.assignedAdminId,
+        placementRequirements: placementRequirements.length ? placementRequirements : ["Follow the agreed publication requirements."],
+        targetUrl: source.target_url, anchorText: source.anchor_text, article: source.article,
+        instructions: source.instructions, consent }],
+    },
+    consentedAt: consent.acceptedAt,
+    disclosureVersion: consent.disclosureVersion,
+    routeGeneration: input.routeGeneration ?? source.route_generation,
+  };
+}
+
+async function insertGuardedPacketItem(client: Client, input: Parameters<typeof packetConsentFixture>[1]) {
+  const fixture = await packetConsentFixture(client, input);
+  await client.query(
+    `insert into public.supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
+     values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)`,
+    [input.packetId, input.version, input.organizationId, input.orderId, input.supplierId,
+      fixture.packet.recipient, JSON.stringify(fixture.packet), input.contentHash, input.createdByUserId],
+  );
+  await client.query(
+    `insert into public.supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version,
+       consented_at, consent_content_hash, route_generation)
+     values ($1, $2, $3, $4, $5::timestamptz, $6, $7)`,
+    [input.packetId, input.itemId, input.assignedAdminId, fixture.disclosureVersion,
+      fixture.consentedAt, input.contentHash, fixture.routeGeneration],
+  );
+  return fixture;
+}
+
+async function expectPacketItemGuardRejected(client: Client, label: string, work: () => Promise<unknown>) {
+  await client.query("SAVEPOINT packet_item_guard_case");
+  let caught: unknown;
+  try { await work(); } catch (error) { caught = error; }
+  await client.query("ROLLBACK TO SAVEPOINT packet_item_guard_case");
+  await client.query("RELEASE SAVEPOINT packet_item_guard_case");
+  assert.ok(caught, `${label} must be rejected by the packet item trigger`);
+  assert.equal(typeof caught === "object" && caught !== null && "code" in caught ? caught.code : null, "23514");
+  assert.match(caught instanceof Error ? caught.message : String(caught), /packet item does not match/);
 }
 
 try {
@@ -321,9 +442,186 @@ try {
       [randomUUID(), requestIds[index], ownerId, versionIds[index], hash],
     );
   }
+  // Verify the forward-only historic backfill for external supplier routes on
+  // PLATFORM_OWNED items. The matching contact predates checkout; a contact
+  // created after checkout is intentionally insufficient evidence.
+  const historicPlatformItemId = randomUUID();
+  const lateContactPlatformItemId = randomUUID();
+  const historicPlatformListingId = randomUUID();
+  const lateContactPlatformListingId = randomUUID();
+  const lateSupplierId = randomUUID();
+  await setup.query(
+    "insert into supplier (id, name, status, created_by_user_id) values ($1, 'Late Contact Supplier', 'ACTIVE', $2)",
+    [lateSupplierId, adminId],
+  );
+  await setup.query(
+    "insert into supplier_contact (id, supplier_id, name, email, is_primary, created_at, updated_at) values ($1, $2, 'Late Contact', 'late@race-fixture.invalid', true, clock_timestamp(), clock_timestamp())",
+    [randomUUID(), lateSupplierId],
+  );
+  for (const [listingId, itemId, title] of [
+    [historicPlatformListingId, historicPlatformItemId, "Historic platform external supplier"],
+    [lateContactPlatformListingId, lateContactPlatformItemId, "Late contact platform external supplier"],
+  ]) {
+    await setup.query(
+      `insert into marketplace_listing (id, title, description, country_code, primary_language, categories,
+         retail_price_cents, link_type, link_validity, turnaround_days, sponsored_content_marking, status,
+         allows_sports_and_gaming, allows_pharmacy, allows_crypto, allows_foreign_language)
+       values ($1, $2, 'Historical recipient consent regression', 'US', 'English', ARRAY['General'],
+         1000, 'DOFOLLOW', 'PERMANENT', 30, false, 'DRAFT', false, false, false, false)`, [listingId, title],
+    );
+    await setup.query(
+      `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+         placement_price_minor, writing_selected, target_url, anchor_text, article_text,
+         supplier_sharing_consented, consent_notice_version)
+       values ($1, $2, $3, 1, jsonb_build_object('title', $4::text), 1000, false,
+         'https://example.invalid/historic', 'historic fixture', 'Synthetic historic article', true, 'race-fixture-v1')`,
+      [itemId, orderId, listingId, title],
+    );
+  }
+  await setup.query("alter table order_item_fulfillment_supplier disable trigger order_item_supplier_recipient_consent_capture");
+  await setup.query(
+    `insert into order_item_financial (order_item_id, commercial_source, supplier_id, fulfillment_supplier_id)
+     values ($1, 'PLATFORM_OWNED', null, $3), ($2, 'PLATFORM_OWNED', null, $4)`,
+    [historicPlatformItemId, lateContactPlatformItemId, supplierAId, lateSupplierId],
+  );
+  await setup.query("alter table order_item_fulfillment_supplier enable trigger order_item_supplier_recipient_consent_capture");
+  const migrationSql = await readFile(new URL("../src/db/migrations/0176_supplier_packet_consent_attempt_guard.sql", import.meta.url), "utf8");
+  const historicalBackfill = migrationSql.split("--> statement-breakpoint", 1)[0];
+  await setup.query(historicalBackfill);
+  const historicConsentRows = await setup.query<{ item_id: string; capture_source: string }>(
+    `select consent.order_item_id as item_id, consent.capture_source
+       from order_item_supplier_consent consent
+      where consent.order_item_id = any($1::text[])
+      order by consent.order_item_id`,
+    [[historicPlatformItemId, lateContactPlatformItemId]],
+  );
+  assert.deepEqual(historicConsentRows.rows, [
+    { item_id: historicPlatformItemId, capture_source: "VERIFIED_HISTORIC_CONTACT" },
+  ], "only an untouched pre-checkout supplier contact backfills for a platform-owned external route");
   await setup.query("alter table customer_order_item enable trigger customer_order_item_pending_only");
   await setup.query("alter table customer_order enable trigger customer_order_requires_debit");
   await setup.query("commit");
+
+  // Create a supplier item in the committed fixture and exercise membership
+  // insertion as the actual runtime role. The same role must not be able to
+  // read the internal recipient-consent table directly.
+  const runtimePacketItemId = randomUUID();
+  const runtimeListingId = randomUUID();
+  await setup.query("begin");
+  await setup.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
+  await setup.query(
+    `insert into marketplace_listing (id, title, description, country_code, primary_language, categories,
+       retail_price_cents, link_type, link_validity, turnaround_days, sponsored_content_marking, status,
+       allows_sports_and_gaming, allows_pharmacy, allows_crypto, allows_foreign_language)
+     values ($1, 'Runtime packet guard listing', 'Runtime role packet guard fixture', 'US', 'English', ARRAY['General'],
+       1000, 'DOFOLLOW', 'PERMANENT', 30, false, 'DRAFT', false, false, false, false)`, [runtimeListingId],
+  );
+  await setup.query(
+    `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+       placement_price_minor, writing_selected, target_url, anchor_text, article_text,
+       supplier_sharing_consented, consent_notice_version)
+     values ($1, $2, $3, 1, '{"title":"Runtime packet guard listing"}'::jsonb, 1000, false,
+       'https://example.invalid/runtime', 'runtime fixture', 'Synthetic runtime packet guard article', true, 'race-fixture-v1')`,
+    [runtimePacketItemId, orderId, runtimeListingId],
+  );
+  await setup.query(
+    `insert into order_item_financial (order_item_id, commercial_source, supplier_id, fulfillment_supplier_id)
+     values ($1, 'SUPPLIER_SOURCED', $2, $2)`, [runtimePacketItemId, supplierAId],
+  );
+  await setup.query(
+    `update order_item_fulfillment set state = 'READY_FOR_HANDOFF', assigned_admin_id = $2
+      where order_item_id = $1`, [runtimePacketItemId, targetAdminId],
+  );
+  await setup.query("commit");
+
+  const runtimePacketId = `pkt_${randomUUID()}`;
+  const runtimePacket = await packetConsentFixture(setup, {
+    packetId: runtimePacketId, version: 10, organizationId, orderId, itemId: runtimePacketItemId,
+    supplierId: supplierAId, recipient: "original@race-fixture.invalid", assignedAdminId: targetAdminId,
+    createdByUserId: superAdminId, contentHash: "c".repeat(64),
+  });
+  testPhase = "runtime-role packet membership honors RLS and private recipient consent";
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [superAdminId]);
+  const recipientSnapshotStatus = await handoff.query<{ current: boolean }>(
+    "select public.gphkm_staff_has_current_supplier_recipient_snapshot($1) as current", [runtimePacketItemId],
+  );
+  assert.equal(recipientSnapshotStatus.rows[0]?.current, true,
+    "runtime can query the scoped consent status without reading the private recipient snapshot");
+  await handoff.query("select set_config('app.user_id', $1, true)", [adminId]);
+  const unassignedRecipientSnapshotStatus = await handoff.query<{ current: boolean }>(
+    "select public.gphkm_staff_has_current_supplier_recipient_snapshot($1) as current", [runtimePacketItemId],
+  );
+  assert.equal(unassignedRecipientSnapshotStatus.rows[0]?.current, false,
+    "the app-facing consent status does not reveal an unassigned Admin's item readiness");
+  await handoff.query("select set_config('app.user_id', $1, true)", [superAdminId]);
+  await handoff.query("savepoint recipient_consent_private");
+  let recipientConsentReadError: unknown;
+  try {
+    await handoff.query("select order_item_id from order_item_supplier_consent where order_item_id = $1", [runtimePacketItemId]);
+  } catch (error) { recipientConsentReadError = error; }
+  await handoff.query("rollback to savepoint recipient_consent_private");
+  await handoff.query("release savepoint recipient_consent_private");
+  assert.equal(typeof recipientConsentReadError === "object" && recipientConsentReadError !== null && "code" in recipientConsentReadError
+    ? recipientConsentReadError.code : null, "42501", "runtime role cannot read private checkout recipient consent");
+  await handoff.query(
+    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash,
+       created_by_user_id, created_at)
+     values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::timestamptz)`,
+    [runtimePacketId, 10, organizationId, orderId, supplierAId, runtimePacket.packet.recipient,
+      JSON.stringify(runtimePacket.packet), "c".repeat(64), superAdminId, runtimePacket.packet.createdAt],
+  );
+  await handoff.query(
+    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version,
+       consented_at, consent_content_hash, route_generation)
+     values ($1, $2, $3, $4, $5::timestamptz, $6, $7)`,
+    [runtimePacketId, runtimePacketItemId, targetAdminId, runtimePacket.disclosureVersion,
+      runtimePacket.consentedAt, "c".repeat(64), runtimePacket.routeGeneration],
+  );
+  await handoff.query("commit");
+
+  await setup.query("begin");
+  await setup.query("update order_item_fulfillment set state = 'HANDOFF_PENDING', customer_status = 'PREPARING' where order_item_id = $1", [runtimePacketItemId]);
+  await setup.query("alter table order_item_supplier_consent disable trigger order_item_supplier_consent_immutable");
+  await setup.query("delete from order_item_supplier_consent where order_item_id = $1", [runtimePacketItemId]);
+  await setup.query("alter table order_item_supplier_consent enable trigger order_item_supplier_consent_immutable");
+  await setup.query("commit");
+
+  testPhase = "runtime packet attempts fail closed without private recipient consent";
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [superAdminId]);
+  const missingRecipientSnapshot = await handoff.query<{ current: boolean }>(
+    "select public.gphkm_staff_has_current_supplier_recipient_snapshot($1) as current", [runtimePacketItemId],
+  );
+  assert.equal(missingRecipientSnapshot.rows[0]?.current, false,
+    "the scoped consent status fails closed after private recipient evidence is removed");
+  await expectPacketAttemptRejected(handoff, runtimePacketId, randomUUID(), superAdminId,
+    /supplier packet recipient or content consent is unavailable or stale/);
+  await handoff.query("rollback");
+
+  await setup.query("begin");
+  await setup.query(
+    `insert into order_item_supplier_consent (order_item_id, supplier_id, recipient_email, notice_version, accepted_at, capture_source)
+     select item.id, route.supplier_id, contact.email, item.consent_notice_version, item.consented_at, 'CHECKOUT_ROUTE'
+       from customer_order_item item
+       join order_item_fulfillment_supplier route on route.order_item_id = item.id
+       join supplier_contact contact on contact.supplier_id = route.supplier_id and contact.is_primary
+      where item.id = $1`, [runtimePacketItemId],
+  );
+  await setup.query("commit");
+
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [superAdminId]);
+  await handoff.query(
+    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key, provider)
+     values ($1, $2, 'EML_EXPORT', 'EXPORTED', $3, 'original@race-fixture.invalid', $4, null)`,
+    [randomUUID(), runtimePacketId, superAdminId, `valid-base-export-${randomUUID()}`],
+  );
+  await handoff.query("update supplier_packet set superseded_at = clock_timestamp() where id = $1", [runtimePacketId]);
+  await handoff.query("commit");
 
   // Handoff locks the item first. The customer INSERT then begins with the old
   // statement snapshot and waits for that lock; after handoff commits, the
@@ -408,9 +706,9 @@ try {
   await setup.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
   await setup.query(
     `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
-       placement_price_minor, writing_selected, target_url, anchor_text, article_text, supplier_sharing_consented, consent_notice_version)
+       placement_price_minor, writing_selected, target_url, anchor_text, article_text, supplier_sharing_consented, consent_notice_version, consented_at)
      values ($1, $2, $3, 1, '{"title":"Equivalent route race listing"}'::jsonb, 1000, false,
-       'https://example.invalid/original', 'original', 'Synthetic original article for a local route race', true, 'race-fixture-v1')`,
+       'https://example.invalid/original', 'original', 'Synthetic original article for a local route race', true, 'race-fixture-v1', '2026-11-03T10:00:00.123456Z'::timestamptz)`,
     [routeItemId, orderId, routeListingId],
   );
   await setup.query(
@@ -421,6 +719,131 @@ try {
     "update order_item_fulfillment set state = 'READY_FOR_HANDOFF', assigned_admin_id = $2 where order_item_id = $1",
     [routeItemId, targetAdminId],
   );
+  const basePacket = (overrides: Partial<Parameters<typeof packetConsentFixture>[1]> = {}) => ({
+    packetId: `pkt_${randomUUID()}`, version: 1, organizationId, orderId, itemId: routeItemId,
+    supplierId: supplierAId, recipient: "original@race-fixture.invalid", assignedAdminId: targetAdminId,
+    createdByUserId: targetAdminId, contentHash: "b".repeat(64), ...overrides,
+  });
+  testPhase = "packet guard accepts exact checkout consent";
+  await setup.query("SAVEPOINT exact_checkout_packet_consent");
+  const exactCheckout = await insertGuardedPacketItem(setup, basePacket());
+  assert.match(exactCheckout.consentedAt, /\.123456Z$/, "checkout consent retains all six stored fractional digits");
+  await setup.query("ROLLBACK TO SAVEPOINT exact_checkout_packet_consent");
+  await setup.query("RELEASE SAVEPOINT exact_checkout_packet_consent");
+
+  testPhase = "packet guard rejects stale consent inputs";
+  const exactBase = await packetConsentFixture(setup, basePacket());
+  await expectPacketItemGuardRejected(setup, "millisecond-rounded checkout consent", async () => {
+    await insertGuardedPacketItem(setup, basePacket({ consentedAt: "2026-11-03T10:00:00.123000Z" }));
+  });
+  await expectPacketItemGuardRejected(setup, "stale route generation", async () => {
+    await insertGuardedPacketItem(setup, basePacket({ routeGeneration: exactBase.routeGeneration + 1 }));
+  });
+  await expectPacketItemGuardRejected(setup, "changed supplier recipient", async () => {
+    await insertGuardedPacketItem(setup, basePacket({ snapshotRecipient: "stale@race-fixture.invalid" }));
+  });
+  await expectPacketItemGuardRejected(setup, "unconsented placement requirement", async () => {
+    await insertGuardedPacketItem(setup, basePacket({ placementRequirements: ["Send a different publication term."] }));
+  });
+  await setup.query("savepoint supplier_recipient_changed_after_checkout");
+  await setup.query("update supplier_contact set email = 'changed@race-fixture.invalid' where supplier_id = $1 and is_primary", [supplierAId]);
+  await expectPacketItemGuardRejected(setup, "checkout consent after the supplier primary email changes", async () => {
+    await insertGuardedPacketItem(setup, basePacket({ recipient: "changed@race-fixture.invalid", snapshotRecipient: "changed@race-fixture.invalid" }));
+  });
+  await setup.query("rollback to savepoint supplier_recipient_changed_after_checkout");
+  await setup.query("release savepoint supplier_recipient_changed_after_checkout");
+
+  testPhase = "packet guard blocks pending customer content changes";
+  await setup.query("SAVEPOINT pending_content_change_packet_consent");
+  const pendingRequestId = randomUUID();
+  await setup.query("select set_config('app.user_id', $1, true)", [ownerId]);
+  await setup.query(
+    `insert into public.order_item_content_change_request (id, order_item_id, request_number, requested_by_user_id, target_url)
+     values ($1, $2, 1, $3, 'https://example.invalid/pending-consent')`,
+    [pendingRequestId, routeItemId, ownerId],
+  );
+  await setup.query(
+    `insert into public.order_item_content_change_event (id, request_id, actor_user_id, event_type, created_at)
+     values ($1, $2, $3, 'REQUESTED', clock_timestamp())`, [randomUUID(), pendingRequestId, ownerId],
+  );
+  await expectPacketItemGuardRejected(setup, "checkout consent with a pending content request", async () => {
+    await insertGuardedPacketItem(setup, basePacket());
+  });
+  await setup.query("ROLLBACK TO SAVEPOINT pending_content_change_packet_consent");
+  await setup.query("RELEASE SAVEPOINT pending_content_change_packet_consent");
+
+  testPhase = "packet guard accepts current approved content consent";
+  await setup.query("SAVEPOINT current_content_version_packet_consent");
+  const consentRequestId = randomUUID();
+  const consentVersionId = randomUUID();
+  const consentEventId = randomUUID();
+  const consentHash = "d".repeat(64);
+  const guardSupportCaseId = randomUUID();
+  await setup.query("alter table public.support_case disable trigger support_case_guard");
+  await setup.query(
+    `insert into public.support_case (id, organization_id, order_id, order_item_id, opened_by_user_id, summary, idempotency_key, request_hash)
+     values ($1, $2, $3, $4, $5, 'Synthetic packet-consent guard case', $6, repeat('a', 64))`,
+    [guardSupportCaseId, organizationId, orderId, routeItemId, ownerId, `guard-case-${guardSupportCaseId}`],
+  );
+  await setup.query("alter table public.support_case enable trigger support_case_guard");
+  await setup.query("select set_config('app.user_id', $1, true)", [targetAdminId]);
+  await setup.query(
+    `insert into public.order_item_content_change_request (id, order_item_id, request_number, requested_by_user_id,
+       base_version, target_url, anchor_text, article_text)
+     values ($1, $2, 1, $3, 1, 'https://example.invalid/approved-consent', 'approved anchor', 'Synthetic customer-consented packet article')`,
+    [consentRequestId, routeItemId, ownerId],
+  );
+  const normalRequestTarget = await setup.query<{ target_supplier_id: string | null }>(
+    "select target_supplier_id from public.order_item_content_change_request where id = $1", [consentRequestId],
+  );
+  assert.equal(normalRequestTarget.rows[0]?.target_supplier_id, null,
+    "ordinary customer change requests leave the optional target supplier unset");
+  await setup.query(
+    `insert into public.order_item_content_change_event (id, request_id, actor_user_id, event_type, created_at)
+     values ($1, $2, $3, 'REQUESTED', clock_timestamp())`, [randomUUID(), consentRequestId, ownerId],
+  );
+  await setup.query(
+    `insert into public.order_item_content_version (id, order_item_id, request_id, version, target_url, anchor_text,
+       article_text, instructions, supplier_id, recipient_email, content_hash, approved_by_user_id)
+     values ($1, $2, $3, 2, 'https://example.invalid/approved-consent', 'approved anchor',
+       'Synthetic customer-consented packet article', '', $4, 'original@race-fixture.invalid', $5, $6)`,
+    [consentVersionId, routeItemId, consentRequestId, supplierAId, consentHash, targetAdminId],
+  );
+  await setup.query(
+    `insert into public.order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, created_at)
+     values ($1, $2, $3, 'APPROVED', $4, $5, clock_timestamp())`,
+    [randomUUID(), consentRequestId, targetAdminId, consentVersionId, consentHash],
+  );
+  await setup.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
+  await setup.query(
+    `insert into public.order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version, created_at)
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1', clock_timestamp())`,
+    [consentEventId, consentRequestId, ownerId, consentVersionId, consentHash],
+  );
+  const versionPacket = basePacket({ contentHash: consentHash });
+  const exactVersionConsent = await insertGuardedPacketItem(setup, versionPacket);
+  assert.equal(exactVersionConsent.packet.items[0]?.consent.consentEventId, consentEventId,
+    "packet snapshot points to the exact customer consent event for the approved version");
+  assert.match(exactVersionConsent.consentedAt, /\.\d{6}Z$/, "content consent retains PostgreSQL microsecond precision");
+  testPhase = "packet guard rejects stale event and recipient after version consent";
+  await expectPacketItemGuardRejected(setup, "stale consent event identity", async () => {
+    await insertGuardedPacketItem(setup, basePacket({ version: 2, contentHash: consentHash, consentEventId: randomUUID() }));
+  });
+  await expectPacketItemGuardRejected(setup, "changed recipient after content consent", async () => {
+    await insertGuardedPacketItem(setup, basePacket({ version: 3, contentHash: consentHash, snapshotRecipient: "stale@race-fixture.invalid" }));
+  });
+  await setup.query("ROLLBACK TO SAVEPOINT current_content_version_packet_consent");
+  await setup.query("RELEASE SAVEPOINT current_content_version_packet_consent");
+
+  await setup.query("savepoint packet_preparation_required");
+  try {
+    await setup.query("update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [routeItemId]);
+    assert.fail("A supplier item must not enter handoff preparation without a packet");
+  } catch (error) {
+    assert.equal(typeof error === "object" && error !== null && "code" in error ? error.code : null, "42501");
+  }
+  await setup.query("rollback to savepoint packet_preparation_required");
+  await setup.query("release savepoint packet_preparation_required");
   // The fixture order deliberately remains PENDING_POST because this harness
   // does not exercise checkout. Acceptance only needs a same-item case ID, so
   // bypass the unrelated paid-order support-case guard for this one synthetic
@@ -439,34 +862,31 @@ try {
     [randomUUID(), routeSupportCaseId, caseOwnerId, `route-case-open-${routeItemId}`],
   );
   await setup.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
-  await setup.query(
-    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
-     values ($1, 1, $2, $3, $4, 'original@race-fixture.invalid', '{"items":[{"id":"original-a"}]}'::jsonb, $5, $6)`,
-    [routeOriginalPacketId, organizationId, orderId, supplierAId, hash, targetAdminId],
-  );
-  await setup.query(
-    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash, route_generation)
-     select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, $4, 1 from customer_order_item oi where oi.id = $2`,
-    [routeOriginalPacketId, routeItemId, targetAdminId, hash],
-  );
-  await setup.query(
-    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
-     values ($1, 2, $2, $3, $4, 'original@race-fixture.invalid', '{"items":[{"id":"original-a"}]}'::jsonb, $5, $6)`,
-    [routeUnsentPacketId, organizationId, orderId, supplierAId, hash, targetAdminId],
-  );
-  await setup.query(
-    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash, route_generation)
-     select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, $4, 1 from customer_order_item oi where oi.id = $2`,
-    [routeUnsentPacketId, routeItemId, targetAdminId, hash],
-  );
+  await insertGuardedPacketItem(setup, {
+    packetId: routeOriginalPacketId, version: 1, organizationId, orderId, itemId: routeItemId,
+    supplierId: supplierAId, recipient: "original@race-fixture.invalid", assignedAdminId: targetAdminId,
+    createdByUserId: targetAdminId, contentHash: hash,
+  });
+  await insertGuardedPacketItem(setup, {
+    packetId: routeUnsentPacketId, version: 2, organizationId, orderId, itemId: routeItemId,
+    supplierId: supplierAId, recipient: "original@race-fixture.invalid", assignedAdminId: targetAdminId,
+    createdByUserId: targetAdminId, contentHash: hash,
+  });
   await setup.query("update supplier_packet set superseded_at = clock_timestamp() where id = $1", [routeUnsentPacketId]);
+  await setup.query("update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [routeItemId]);
   await setup.query(
     `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key,
        manual_message_reference, sent_at, resolved_at)
      values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'original@race-fixture.invalid', $4, 'original-a-manual-send', now(), now())`,
     [routeOriginalPacketAttemptId, routeOriginalPacketId, targetAdminId, `original-a-${routeOriginalPacketAttemptId}`],
   );
-  await setup.query("update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [routeItemId]);
+  await setup.query("select set_config('app.user_id', $1, true)", [targetAdminId]);
+  await setup.query(
+    `insert into supplier_packet_acknowledgement (packet_id, attempt_id, recorded_by_user_id, acknowledged_at, reference)
+     values ($1, $2, $3, clock_timestamp(), 'synthetic original route receipt')`,
+    [routeOriginalPacketId, routeOriginalPacketAttemptId, targetAdminId],
+  );
+  testPhase = "start initial supplier-A work from manual receipt";
   await setup.query(
     `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS',
        handed_off_at = coalesce(handed_off_at, clock_timestamp()), work_started_at = coalesce(work_started_at, clock_timestamp()), updated_at = clock_timestamp()
@@ -526,7 +946,8 @@ try {
        turnaround_days, buyer_requirements, sponsored_content_marking, terms, locked_price_minor, offered_by_user_id)
      values ($1, $2, $3, $4, $5, 'Replacement listing', 'https://replacement.race-fixture.invalid/',
        'Synthetic replacement listing', 'Equivalent terms for local route race', ARRAY['General'], 'US', 'English',
-       'DOFOLLOW', 'PERMANENT', 30, null, false, '{"source":"race-test"}'::jsonb, 1000, $6)`,
+       'DOFOLLOW', 'PERMANENT', 30, 'Use the approved partner disclosure.', true,
+       '{"linkType":"DOFOLLOW","linkValidity":"PERMANENT","sponsoredContentMarking":true,"buyerRequirements":"Use the approved partner disclosure."}'::jsonb, 1000, $6)`,
     [routeOfferId, routeItemId, routeSupportCaseId, routeRequestId, routeVersionId, targetAdminId],
   );
   await setup.query(
@@ -619,27 +1040,34 @@ try {
      values ($1, 1, $2, $3, $4, 'replacement@race-fixture.invalid', '{"items":[{"id":"route-race-old"}]}'::jsonb, $5, $6)`,
     [routeOlderPacketId, organizationId, orderId, supplierBId, routeContentHash, targetAdminId],
   );
-  await setup.query(
+  await seedSyntheticPacketItem(setup,
     `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash, route_generation)
      select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, $4, 2 from customer_order_item oi where oi.id = $2`,
     [routeOlderPacketId, routeItemId, targetAdminId, routeContentHash],
   );
-  await setup.query(
-    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
-     values ($1, 2, $2, $3, $4, 'replacement@race-fixture.invalid', '{"items":[{"id":"route-race-current"}]}'::jsonb, $5, $6)`,
-    [routePacketId, organizationId, orderId, supplierBId, routeContentHash, targetAdminId],
-  );
-  await setup.query(
-    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash, route_generation)
-     select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, $4, 2 from customer_order_item oi where oi.id = $2`,
-    [routePacketId, routeItemId, targetAdminId, routeContentHash],
-  );
+  const acceptedEquivalentPacket = await insertGuardedPacketItem(setup, {
+    packetId: routePacketId, version: 2, organizationId, orderId, itemId: routeItemId,
+    supplierId: supplierBId, recipient: "replacement@race-fixture.invalid", assignedAdminId: targetAdminId,
+    createdByUserId: targetAdminId, contentHash: routeContentHash,
+  });
+  assert.deepEqual(acceptedEquivalentPacket.packet.items[0]?.placementRequirements, [
+    "Link type: DOFOLLOW", "Placement term: PERMANENT", "Mark the article as sponsored content.",
+    "Use the approved partner disclosure.",
+  ], "the runtime packet consent guard accepts the exact placement requirements from the customer-accepted equivalent offer");
+  await expectPacketItemGuardRejected(setup, "mismatched accepted equivalent placement requirements", async () => {
+    await insertGuardedPacketItem(setup, {
+      packetId: `pkt_${randomUUID()}`, version: 99, organizationId, orderId, itemId: routeItemId,
+      supplierId: supplierBId, recipient: "replacement@race-fixture.invalid", assignedAdminId: targetAdminId,
+      createdByUserId: targetAdminId, contentHash: routeContentHash,
+      placementRequirements: ["A different publication term."],
+    });
+  });
   await setup.query(
     `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id, hold_reason, held_at)
      values ($1, 3, $2, $3, $4, 'replacement@race-fixture.invalid', '{"items":[{"id":"route-race-held"}]}'::jsonb, $5, $6, 'PACKET_SIZE_REVIEW', now())`,
     [routeHeldPacketId, organizationId, orderId, supplierBId, routeContentHash, targetAdminId],
   );
-  await setup.query(
+  await seedSyntheticPacketItem(setup,
     `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash, route_generation)
      select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, $4, 2 from customer_order_item oi where oi.id = $2`,
     [routeHeldPacketId, routeItemId, targetAdminId, routeContentHash],
@@ -649,16 +1077,10 @@ try {
      values ($1, 4, $2, $3, $4, 'replacement@race-fixture.invalid', '{"items":[{"id":"route-race-superseded"}]}'::jsonb, $5, $6, now())`,
     [routeSupersededPacketId, organizationId, orderId, supplierBId, routeContentHash, targetAdminId],
   );
-  await setup.query(
+  await seedSyntheticPacketItem(setup,
     `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash, route_generation)
      select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, $4, 2 from customer_order_item oi where oi.id = $2`,
     [routeSupersededPacketId, routeItemId, targetAdminId, routeContentHash],
-  );
-  await setup.query(
-    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key,
-       manual_message_reference, sent_at, resolved_at)
-     values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'replacement@race-fixture.invalid', $4, 'route-race-manual-send', now(), now())`,
-    [routePacketAttemptId, routePacketId, targetAdminId, `route-race-${routePacketAttemptId}`],
   );
   await setup.query("update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [routeItemId]);
   await setup.query("commit");
@@ -666,15 +1088,39 @@ try {
   await handoff.query("begin");
   await handoff.query("set local role gphkm_runtime");
   await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
-  await expectPacketAttemptRejected(handoff, routeOriginalPacketId, randomUUID(), targetAdminId, /supplier packet route, recipient, or active version is stale/);
-  await expectPacketAttemptRejected(handoff, routeOlderPacketId, randomUUID(), targetAdminId, /supplier packet route, recipient, or active version is stale/);
+  await handoff.query("update order_item_fulfillment set state = 'HANDOFF_PENDING', updated_at = clock_timestamp() where order_item_id = $1", [routeItemId]);
+  await expectPacketAttemptRejected(handoff, routeOriginalPacketId, randomUUID(), targetAdminId,
+    /post-cutoff retry requires fresh consent and a Resend delivery attempt|supplier packet route, recipient, or active version is stale/);
+  await expectPacketAttemptRejected(handoff, routeOlderPacketId, randomUUID(), targetAdminId,
+    /post-cutoff retry requires fresh consent and a Resend delivery attempt|supplier packet route, recipient, or active version is stale/);
   await expectPacketAttemptRejected(handoff, routeHeldPacketId, randomUUID(), targetAdminId, /supplier packet is superseded, held, or unavailable/);
   await expectPacketAttemptRejected(handoff, routeSupersededPacketId, randomUUID(), targetAdminId, /supplier packet is superseded, held, or unavailable/);
   await handoff.query("rollback");
 
+  // The held v3 packet blocks the older v2 packet until it is explicitly
+  // superseded. Only then does the current v2 packet become eligible for its
+  // synthetic manual-send and matching receipt evidence.
+  testPhase = "record current supplier-B route manual send attempt";
+  await setup.query("begin");
+  await setup.query("update supplier_packet set superseded_at = clock_timestamp() where id = $1", [routeHeldPacketId]);
+  await setup.query(
+    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key,
+       manual_message_reference, sent_at, resolved_at)
+     values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'replacement@race-fixture.invalid', $4, 'route-race-manual-send', now(), now())`,
+    [routePacketAttemptId, routePacketId, targetAdminId, `route-race-${routePacketAttemptId}`],
+  );
+  await setup.query("select set_config('app.user_id', $1, true)", [targetAdminId]);
+  await setup.query(
+    `insert into supplier_packet_acknowledgement (packet_id, attempt_id, recorded_by_user_id, acknowledged_at, reference)
+     values ($1, $2, $3, clock_timestamp(), 'synthetic generation-2 route receipt')`,
+    [routePacketId, routePacketAttemptId, targetAdminId],
+  );
+  await setup.query("commit");
+
   await handoff.query("begin");
   await handoff.query("set local role gphkm_runtime");
   await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  testPhase = "start supplier-B work from matching manual receipt";
   await handoff.query(
     `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS',
        handed_off_at = coalesce(handed_off_at, clock_timestamp()), work_started_at = coalesce(work_started_at, clock_timestamp()), updated_at = clock_timestamp()
@@ -748,8 +1194,29 @@ try {
   await handoff.query("rollback to savepoint stale_generation_hold_release");
   await handoff.query("release savepoint stale_generation_hold_release");
   await expectPacketAttemptRejected(handoff, routePacketId, randomUUID(), targetAdminId,
-    /resolve the current supplier failure before sending or exporting a packet/);
+    /supplier packet attempts require an active handoff item/);
   await handoff.query("rollback");
+  // Put the held fixture into the packet-eligible state only inside this
+  // regression setup, then prove that an older generation-2 acceptance still
+  // cannot clear the later generation-2 supplier failure.
+  await setup.query("begin");
+  await setup.query("alter table order_item_fulfillment disable trigger user");
+  await setup.query("update order_item_fulfillment set state = 'HANDOFF_PENDING', state_before_hold = null where order_item_id = $1", [routeItemId]);
+  await setup.query("alter table order_item_fulfillment enable trigger user");
+  await setup.query("commit");
+  const packetEligibleFixture = await setup.query<{ state: string }>("select state from order_item_fulfillment where order_item_id = $1", [routeItemId]);
+  assert.equal(packetEligibleFixture.rows[0]?.state, "HANDOFF_PENDING", "the stale-acceptance attempt must reach the failure-resolution guard");
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  await expectPacketAttemptRejected(handoff, routePacketId, randomUUID(), targetAdminId,
+    /resolve the supplier failure through an accepted route or audited recovery before handoff/);
+  await handoff.query("rollback");
+  await setup.query("begin");
+  await setup.query("alter table order_item_fulfillment disable trigger user");
+  await setup.query("update order_item_fulfillment set state = 'ON_HOLD', state_before_hold = 'IN_FULFILLMENT' where order_item_id = $1", [routeItemId]);
+  await setup.query("alter table order_item_fulfillment enable trigger user");
+  await setup.query("commit");
   await setup.query("begin");
   await setup.query("select set_config('app.user_id', $1, true)", [targetAdminId]);
   await setup.query(
@@ -820,7 +1287,7 @@ try {
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
      values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
     [randomUUID(), routeReturnRequestId, ownerId, routeReturnVersionId, routeReturnContentHash],
-  ), /content consent closes after handoff unless bound to the current customer-approved supplier recovery/);
+  ), /content consent closes after handoff unless bound to a current customer-approved recovery/);
   await consent.query("rollback to savepoint pending_send_consent");
   await consent.query("release savepoint pending_send_consent");
   await consent.query("rollback");
@@ -1023,46 +1490,84 @@ try {
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
      values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
     [randomUUID(), routeRequestId, ownerId, routeVersionId, routeContentHash],
-  ), /content consent closes after handoff unless bound to the current customer-approved supplier recovery/);
+  ), /content consent closes after handoff unless bound to a current customer-approved recovery/);
   await consent.query("rollback");
+
+  // Keep the stale packet item in HANDOFF_PENDING only as a synthetic setup
+  // state; the current supplier route has no packet yet at this point.
+  await setup.query("begin");
+  await setup.query("alter table order_item_fulfillment disable trigger user");
+  await setup.query("update order_item_fulfillment set state = 'HANDOFF_PENDING', updated_at = clock_timestamp() where order_item_id = $1", [routeItemId]);
+  await setup.query("alter table order_item_fulfillment enable trigger user");
+  await setup.query("commit");
 
   await handoff.query("begin");
   await handoff.query("set local role gphkm_runtime");
   await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
-  await expectPacketAttemptRejected(handoff, routeOriginalPacketId, randomUUID(), targetAdminId, /supplier packet route, recipient, or active version is stale/);
+  await expectPacketAttemptRejected(handoff, routeOriginalPacketId, randomUUID(), targetAdminId,
+    /post-cutoff retry requires fresh consent and a Resend delivery attempt|supplier packet route, recipient, or active version is stale/);
   await handoff.query("rollback");
   await handoff.query("begin");
   await handoff.query("set local role gphkm_runtime");
   await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
-  await handoff.query("update order_item_fulfillment set state = 'HANDOFF_PENDING', updated_at = clock_timestamp() where order_item_id = $1", [routeItemId]);
+  testPhase = "reject generation-3 work before matching receipt";
   await expectSupplierHandoffRejected(handoff.query(
     `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS', updated_at = clock_timestamp()
      where order_item_id = $1`, [routeItemId],
   ));
   await handoff.query("rollback");
+  testPhase = "prepare current generation-3 packet";
 
   await setup.query("begin");
-  await setup.query(
-    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
-     values ($1, 3, $2, $3, $4, 'original@race-fixture.invalid', '{"items":[{"id":"return-a-generation-3"}]}'::jsonb, $5, $6)`,
-    [routeFreshAPacketId, organizationId, orderId, supplierAId, routeReturnContentHash, targetAdminId],
+  await setup.query("alter table order_item_fulfillment disable trigger user");
+  await setup.query("update order_item_fulfillment set state = 'READY_FOR_HANDOFF', updated_at = clock_timestamp() where order_item_id = $1", [routeItemId]);
+  await setup.query("alter table order_item_fulfillment enable trigger user");
+  const readyForFreshPacket = await setup.query<{ state: string; work_started_at: Date | null }>(
+    "select state, work_started_at from order_item_fulfillment where order_item_id = $1", [routeItemId],
   );
-  await setup.query(
-    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash, route_generation)
-     select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, $4, 3 from customer_order_item oi where oi.id = $2`,
-    [routeFreshAPacketId, routeItemId, targetAdminId, routeReturnContentHash],
+  assert.equal(readyForFreshPacket.rows[0]?.state, "READY_FOR_HANDOFF",
+    "the current route packet must be prepared from the ready state");
+  await insertGuardedPacketItem(setup, {
+    packetId: routeFreshAPacketId, version: 3, organizationId, orderId, itemId: routeItemId,
+    supplierId: supplierAId, recipient: "original@race-fixture.invalid", assignedAdminId: targetAdminId,
+    createdByUserId: targetAdminId, contentHash: routeReturnContentHash,
+  });
+  const beforePending = await setup.query<{ state: string; work_started_at: Date | null }>(
+    "select state, work_started_at from order_item_fulfillment where order_item_id = $1", [routeItemId],
   );
+  assert.equal(beforePending.rows[0]?.state, "READY_FOR_HANDOFF",
+    "packet membership insertion must leave the item ready until packet preparation is complete");
+  testPhase = "move generation-3 item into handoff pending";
+  await setup.query("update order_item_fulfillment set state = 'HANDOFF_PENDING', updated_at = clock_timestamp() where order_item_id = $1", [routeItemId]);
+  testPhase = "insert generation-3 manual send attempt";
   await setup.query(
     `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key,
        manual_message_reference, sent_at, resolved_at)
      values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'original@race-fixture.invalid', $4, 'return-a-generation-3-manual-send', now(), now())`,
     [routeFreshAAttemptId, routeFreshAPacketId, targetAdminId, `fresh-a-${routeFreshAAttemptId}`],
   );
+  testPhase = "commit generation-3 manual send fixture";
   await setup.query("commit");
   await handoff.query("begin");
   await handoff.query("set local role gphkm_runtime");
   await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
-  await handoff.query("update order_item_fulfillment set state = 'HANDOFF_PENDING', updated_at = clock_timestamp() where order_item_id = $1", [routeItemId]);
+  testPhase = "reject generation-3 work before matching receipt";
+  await expectSupplierHandoffRejected(handoff.query(
+    `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS',
+       handed_off_at = coalesce(handed_off_at, clock_timestamp()), work_started_at = coalesce(work_started_at, clock_timestamp()), updated_at = clock_timestamp()
+     where order_item_id = $1`, [routeItemId],
+  ));
+  await handoff.query("rollback");
+  testPhase = "record current generation-3 supplier receipt";
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  await handoff.query(
+    `insert into supplier_packet_acknowledgement (packet_id, attempt_id, recorded_by_user_id, acknowledged_at, reference)
+     values ($1, $2, $3, clock_timestamp(), 'synthetic current route receipt')`,
+    [routeFreshAPacketId, routeFreshAAttemptId, targetAdminId],
+  );
+  testPhase = "start generation-3 supplier-A work after matching receipt";
   await handoff.query(
     `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS',
        handed_off_at = coalesce(handed_off_at, clock_timestamp()), work_started_at = coalesce(work_started_at, clock_timestamp()), updated_at = clock_timestamp()
@@ -1172,7 +1677,7 @@ try {
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
      values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
     [randomUUID(), routeMismatchRequestId, ownerId, routeMismatchVersionId, routeMismatchContentHash],
-  ), /content consent closes after handoff unless bound to the current customer-approved supplier recovery/);
+  ), /content consent closes after handoff unless bound to a current customer-approved recovery/);
   await consent.query("rollback");
   const mismatchedRoute = await setup.query<{ supplier_id: string; route_generation: number }>(
     "select supplier_id, route_generation from order_item_fulfillment_supplier where order_item_id = $1", [routeItemId],
@@ -1402,6 +1907,7 @@ try {
     "both ordering permutations leave the handoff committed and reject any later consent event");
   console.log("Local two-session security races passed: an ordering member accepted recovery when a different Owner opened Support; concurrent supplier failure waited for a customer offer decision without deadlock; declined offers preserved item holds; unsent notices were rejected while delivered notices stayed reconcilable after rerouting; historical cancellation cutoffs were preserved; customer consent and work-start revalidated after handoff locks; a reserved SEND remained blocked until audited not-sent reconciliation; A→B→A rejected stale packet evidence and offer replay; and a deactivated assignment actor could not mutate work after waiting.");
 } catch (error) {
+  console.error(`Race check phase: ${testPhase}`);
   if (error instanceof Error) console.error(error.message);
   if (typeof error === "object" && error !== null) {
     const diagnostic = error as Record<string, unknown>;

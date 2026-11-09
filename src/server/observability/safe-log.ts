@@ -7,7 +7,9 @@ const SAFE_DATABASE_REASONS = new Set([
   "order unavailable", "marketplace access required", "order totals or item count invalid",
   "listing is unavailable or order snapshot is invalid", "listing source unavailable",
   "wallet unavailable", "insufficient available wallet balance", "checkout idempotency already consumed",
+  "packet item does not match the order-time fulfillment snapshot", "supplier packet must contain at least one item",
 ]);
+const SAFE_PERMISSION_TARGET = /^permission denied for (function|table|sequence|schema) ([A-Za-z][A-Za-z0-9_.]{0,127})$/;
 
 export function safeCorrelationFields(context: Record<string, unknown> = {}): Record<string, string> {
   const fields: Record<string, string> = {};
@@ -31,11 +33,16 @@ export function logSafeFailure(event: string, error: unknown, requestId: string,
   let candidate: unknown;
   const databaseLocation: Record<string, string> = {};
   let databaseReason: string | undefined;
+  let databaseObject: string | undefined;
   let current = error;
   for (let depth = 0; depth < 4 && current && typeof current === "object"; depth += 1) {
     const details = current as Record<string, unknown>;
     if (!candidate && typeof details.code === "string" && /^[0-9A-Z]{5}$/.test(details.code)) candidate = details.code;
     if (!databaseReason && typeof details.message === "string" && SAFE_DATABASE_REASONS.has(details.message)) databaseReason = details.message;
+    if (!databaseObject && typeof details.message === "string") {
+      const permissionTarget = SAFE_PERMISSION_TARGET.exec(details.message);
+      if (permissionTarget) databaseObject = `${permissionTarget[1]}:${permissionTarget[2]}`;
+    }
     for (const key of ["routine", "table", "column", "constraint"] as const) {
       const value = details[key];
       if (typeof value === "string" && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(value)) databaseLocation[key] = value;
@@ -50,5 +57,6 @@ export function logSafeFailure(event: string, error: unknown, requestId: string,
     ...(errorCode ? { errorCode } : {}),
     ...(Object.keys(databaseLocation).length ? { databaseLocation } : {}),
     ...(databaseReason ? { databaseReason } : {}),
+    ...(databaseObject ? { databaseObject } : {}),
   }));
 }

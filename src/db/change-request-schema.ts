@@ -12,6 +12,7 @@ export const orderItemContentChangeRequest = pgTable("order_item_content_change_
   requestNumber: integer("request_number").notNull(),
   requestedByUserId: text("requested_by_user_id").notNull().references(() => user.id),
   baseVersion: integer("base_version").notNull().default(1),
+  purpose: text("purpose").notNull().default("CONTENT_CHANGE"),
   targetSupplierId: text("target_supplier_id").references(() => supplier.id),
   targetUrl: text("target_url"),
   anchorText: text("anchor_text"),
@@ -22,6 +23,7 @@ export const orderItemContentChangeRequest = pgTable("order_item_content_change_
   unique("order_item_content_change_request_version_uq").on(t.orderItemId, t.requestNumber),
   index("order_item_content_change_request_item_idx").on(t.orderItemId, t.createdAt),
   check("order_item_content_change_request_base_valid", sql`${t.baseVersion} >= 1`),
+  check("order_item_content_change_request_purpose_valid", sql`${t.purpose} in ('CONTENT_CHANGE', 'RECIPIENT_RECONSENT')`),
 ]).enableRLS();
 
 export const orderItemContentVersion = pgTable("order_item_content_version", {

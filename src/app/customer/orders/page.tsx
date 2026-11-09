@@ -1,13 +1,15 @@
 import { headers } from "next/headers";
 import Link from "next/link";
+import { randomUUID } from "node:crypto";
 import { getMyOrdersPage } from "@/server/orders/checkout";
 import { updateCustomerWritingAction } from "./actions";
 import { OrderItemCancellationForm } from "./cancellation-form";
 import { ContentChangeForm } from "./content-change-form";
-import { listContentChangesForCustomer } from "@/server/orders/content-changes";
+import { listContentChangesForCustomerBatch, type CustomerContentChange } from "@/server/orders/content-changes";
 import { loadCustomerWorkspace, selectedOrganizationId } from "../workspace";
 import { listCustomerEquivalentOffers } from "@/server/fulfillment/equivalent-offers";
 import { EquivalentOfferCard } from "./equivalent-offer-card";
+import { logSafeFailure } from "@/server/observability/safe-log";
 import styles from "../customer.module.css";
 
 export const dynamic = "force-dynamic";
@@ -41,12 +43,13 @@ function date(value: string, withTime = false) {
   });
 }
 
-function feedbackMessage(params: { placed?: string; writingUpdated?: string; writingError?: string; cancellationRequested?: string; cancellationError?: string; cancellationUpdated?: string; changeSubmitted?: string; changeConsented?: string; changeError?: string; equivalentUpdated?: string; equivalentError?: string }) {
+function feedbackMessage(params: { placed?: string; writingUpdated?: string; writingError?: string; cancellationRequested?: string; cancellationError?: string; cancellationUpdated?: string; changeSubmitted?: string; changeConsented?: string; recipientConsented?: string; changeError?: string; equivalentUpdated?: string; equivalentError?: string }) {
   if (params.placed) return { kind: "success", text: "Your order is in. We’ll keep you updated as each placement moves forward." };
   if (params.writingUpdated) return { kind: "success", text: "Your writing decision was saved." };
   if (params.cancellationRequested) return { kind: "success", text: "Your cancellation request was sent for review." };
   if (params.cancellationUpdated) return { kind: "success", text: "The cancellation decision was saved. Check the placement for its latest status and any wallet credit." };
   if (params.changeSubmitted) return { kind: "success", text: "Your content change request was sent for review." };
+  if (params.changeConsented && params.recipientConsented) return { kind: "success", text: "Your approval was saved. The placement below shows its latest progress." };
   if (params.changeConsented) return { kind: "success", text: "Your approval was saved. GPHKM will prepare the updated placement instructions." };
   if (params.equivalentUpdated === "accepted") return { kind: "success", text: "Your approval was recorded at the same order price. GPHKM is preparing the placement." };
   if (params.equivalentUpdated === "declined") return { kind: "success", text: "Your decision was recorded. Check your Support request for next steps." };
@@ -57,7 +60,7 @@ function feedbackMessage(params: { placed?: string; writingUpdated?: string; wri
   return null;
 }
 
-export default async function OrdersPage({ searchParams }: { searchParams: Promise<{ organizationId?: string | string[]; page?: string | string[]; placed?: string; writingUpdated?: string; writingError?: string; cancellationRequested?: string; cancellationError?: string; cancellationUpdated?: string; changeSubmitted?: string; changeConsented?: string; changeError?: string; equivalentUpdated?: string; equivalentError?: string }> }) {
+export default async function OrdersPage({ searchParams }: { searchParams: Promise<{ organizationId?: string | string[]; page?: string | string[]; placed?: string; writingUpdated?: string; writingError?: string; cancellationRequested?: string; cancellationError?: string; cancellationUpdated?: string; changeSubmitted?: string; changeConsented?: string; recipientConsented?: string; changeError?: string; equivalentUpdated?: string; equivalentError?: string }> }) {
   const workspace = await loadCustomerWorkspace();
   if (!workspace.authenticated) return null;
   const params = await searchParams;
@@ -75,11 +78,14 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
   const pageHref = (target: number) => `/customer/orders?organizationId=${encodeURIComponent(organizationId)}&page=${target}`;
   const requestHeaders = await headers();
   const itemIds = orders.flatMap((order) => order.items.map((item) => item.id));
-  const contentChanges = new Map<string, Awaited<ReturnType<typeof listContentChangesForCustomer>>>();
-  await Promise.all(orders.flatMap((order) => order.items.map(async (item) => {
-    try { contentChanges.set(item.id, await listContentChangesForCustomer(requestHeaders, organizationId, item.id)); }
-    catch { contentChanges.set(item.id, []); }
-  })));
+  let contentChanges: Map<string, CustomerContentChange[]> = new Map();
+  let contentChangesUnavailable = false;
+  try {
+    contentChanges = await listContentChangesForCustomerBatch(requestHeaders, organizationId, itemIds);
+  } catch (error) {
+    contentChangesUnavailable = true;
+    logSafeFailure("customer_content_changes_load_failed", error, randomUUID(), { organizationId });
+  }
   const offerRows = await listCustomerEquivalentOffers(requestHeaders, organizationId, itemIds).catch(() => []);
   const offersByItem = new Map<string, typeof offerRows>();
   for (const offer of offerRows) offersByItem.set(offer.orderItemId, [...(offersByItem.get(offer.orderItemId) ?? []), offer]);
@@ -96,6 +102,7 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
     </header>
 
     {feedback && <p className={feedback.kind === "error" ? styles.ordersError : styles.ordersNotice} role={feedback.kind === "error" ? "alert" : "status"}>{feedback.text}</p>}
+    {contentChangesUnavailable && <p className={styles.ordersError} role="alert">Order approval details could not be loaded. Refresh this page before taking any approval action.</p>}
 
     {orders.length > 0 && <div className={styles.ordersContext}>
       <span>{placementCount} placement{placementCount === 1 ? "" : "s"} across {orders.length} order{orders.length === 1 ? "" : "s"} on this page</span>
@@ -127,9 +134,10 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
             const latestChange = changes[0];
             const latestConsented = changes.find((change) => change.status === "CONSENTED")?.approvedContent ?? null;
             const pendingConsent = latestChange?.status === "APPROVED_AWAITING_CONSENT" && latestChange.approvedContent
-              ? { requestId: latestChange.id, content: latestChange.approvedContent } : null;
+              ? { requestId: latestChange.id, purpose: latestChange.purpose, content: latestChange.approvedContent } : null;
+            const staleReconsent = latestChange?.purpose === "RECIPIENT_RECONSENT" && latestChange.status === "STALE";
             const canRequestChange = order.isOrderer && !pendingConsent && latestChange?.status !== "REQUESTED"
-              && !["IN_PROGRESS", "LINK_VERIFICATION", "COMPLETE", "RESOLVED"].includes(item.status);
+              && !["PREPARING", "IN_PROGRESS", "PUBLICATION_PENDING", "LINK_VERIFICATION", "COMPLETE", "RESOLVED", "CANCELED"].includes(item.status);
             const currentIndex = milestones.findIndex(([key]) => key === item.status);
             const terminal = item.status === "COMPLETE" || item.status === "RESOLVED";
             const writingNeedsReview = item.writingWorkflow?.state === "FIRST_DRAFT_READY" || item.writingWorkflow?.state === "FINAL_DRAFT_READY";
@@ -154,6 +162,9 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                 })}
               </ol>}
               {terminal && <p className={styles.completeNote}>{item.status === "RESOLVED" ? "This placement has been resolved." : "This placement is complete."}</p>}
+              {staleReconsent && <p role="status" className={styles.orderWorkflowNotice}>
+                The previous sharing approval is no longer valid because the fulfillment contact or delivery status changed. It did not authorize a new send. GPHKM must request fresh confirmation before continuing.
+              </p>}
 
               <div className={styles.updateRow}>
                 <p><span>Last updated</span><time dateTime={lastUpdatedAt}>{date(lastUpdatedAt, true)} UTC</time></p>
@@ -163,6 +174,11 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
               <div className={styles.placementActions}>
                 {writingNeedsReview && <a href={`#writing-${item.id}`}>Review your draft</a>}
               </div>
+
+              {pendingConsent?.purpose === "RECIPIENT_RECONSENT" && <ContentChangeForm organizationId={organizationId} itemId={item.id}
+                canAct={order.isOrderer} writingSelected={item.writingSelected} targetUrl={pendingConsent.content.targetUrl}
+                anchorText={pendingConsent.content.anchorText} articleText={pendingConsent.content.articleText}
+                canRequest={false} approvedChange={pendingConsent} />}
 
               <details className={styles.orderDetails}>
                 <summary>Placement details and updates</summary>
@@ -237,9 +253,9 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
                 <summary>Change or cancel this placement</summary>
                 <div className={styles.detailsBody}>
                   <OrderItemCancellationForm organizationId={organizationId} itemId={item.id} />
-                  <ContentChangeForm organizationId={organizationId} itemId={item.id} canAct={order.isOrderer} writingSelected={item.writingSelected} writingStopped={item.writingWorkflow?.state === "CUSTOMER_DECLINED_FINAL"}
+                  {pendingConsent?.purpose !== "RECIPIENT_RECONSENT" && <ContentChangeForm organizationId={organizationId} itemId={item.id} canAct={order.isOrderer} writingSelected={item.writingSelected} writingStopped={item.writingWorkflow?.state === "CUSTOMER_DECLINED_FINAL"}
                     targetUrl={latestConsented?.targetUrl ?? item.targetUrl} anchorText={latestConsented?.anchorText ?? item.anchorText}
-                    articleText={latestConsented?.articleText ?? item.articleText} canRequest={canRequestChange} approvedChange={pendingConsent} />
+                    articleText={latestConsented?.articleText ?? item.articleText} canRequest={canRequestChange} approvedChange={pendingConsent} />}
                 </div>
               </details>
             </section>;

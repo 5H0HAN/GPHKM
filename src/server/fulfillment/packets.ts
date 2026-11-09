@@ -1,20 +1,23 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, count, desc, eq, exists, inArray, isNotNull, notExists, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, exists, inArray, isNotNull, lt, notExists, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { getResendWebhookDb } from "@/db/resend-webhook";
 import { customerOrder, customerOrderItem, orderItemFulfillment, orderItemFulfillmentSupplier, orderItemWriting } from "@/db/order-schema";
+import { orderItemContentChangeEvent, orderItemContentChangeRequest, orderItemContentVersion } from "@/db/change-request-schema";
 import { supplierPacket, supplierPacketAcknowledgement, supplierPacketAttempt, supplierPacketAttemptEvent, supplierPacketItem, supplierPacketManualEvidence, supplierPacketProviderEvent } from "@/db/packet-schema";
 import { supplier, supplierContact } from "@/db/catalog-schema";
 import { supplierFulfillmentOutcome, supplierFulfillmentOutcomeResolution } from "@/db/supplier-outcome-schema";
-import { assertCompletePacketReplacement, assertPacketActionable, buildSupplierPacket, mayAccessSupplierPacket, mayStartManualPacketHandoff, monotonicProviderAttemptState, parseExplicitInstant, recordManualExportAttempt, recordManualHandoff, renderSupplierEmail, resolveUnknownAttempt, startPacketAttempt, supplierShareContentHash, transitionItem, type ItemState, type PacketAttempt, type PacketAttemptState, type PacketItemInput, type SupplierPacket } from "@/modules/fulfillment/workflow";
+import { assertCompletePacketReplacement, assertPacketActionable, buildSupplierPacket, confirmManualSupplierReceipt, mayAccessSupplierPacket, mayStartManualPacketHandoff, monotonicProviderAttemptState, parseExplicitInstant, recordManualExportAttempt, recordManualHandoff, recordManualHandoffCutoff, renderSupplierEmail, resolveUnknownAttempt, startPacketAttempt, supplierShareContentHash, transitionItem, type ItemState, type PacketAttempt, type PacketAttemptState, type PacketItemInput, type SupplierPacket } from "@/modules/fulfillment/workflow";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { appendAuditEvent } from "@/server/audit/append";
+import { logSafeFailure } from "@/server/observability/safe-log";
 import { MAX_SUPPLIER_PACKET_BYTES } from "@/modules/fulfillment/packet-policy";
 import { correlateResendAttempt } from "@/modules/fulfillment/resend-correlation";
 import { staffCatalogPagination } from "@/modules/catalog/pagination";
 import { buildSupplierPacketPdf } from "@/server/fulfillment/pdf";
 import { getConsentedSupplierPacketContentBatch } from "@/server/orders/content-changes";
+import { hashOrderContent } from "@/modules/orders/content-changes";
 import { readPrivateFile, savePrivateFile } from "@/server/storage/private-files";
 import { linkPrivateFileUpload, preparePrivateFileUpload, queuePrivateFileDeleteOutsideTransaction } from "@/server/storage/private-file-lifecycle";
 import { readSmallJsonResponse } from "@/modules/security/small-json-response";
@@ -28,7 +31,43 @@ const WEBHOOK_TYPES = ["email.delivered", "email.bounced", "email.failed", "emai
 const RESEND_ATTEMPT_TAG_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function validId(value: string) { return /^[0-9a-f-]{36}$/i.test(value); }
-function txActor(tx: Tx, actor: Actor) { return tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`); }
+async function txActor(tx: Tx, actor: Actor) {
+  await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+  await tx.execute(sql`select set_config('app.staff_role', ${actor.role}, true)`);
+}
+
+async function lockSupplierContact(tx: Tx, supplierId: string) {
+  await tx.execute(sql`select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${'gphkm:supplier-contact:' + supplierId}, 0::bigint))`);
+}
+
+async function lockPacketSupplierContact(tx: Tx, packetId: string) {
+  const [candidate] = await tx.select({ supplierId: supplierPacket.supplierId })
+    .from(supplierPacket).where(eq(supplierPacket.id, packetId)).limit(1);
+  if (!candidate) throw new Error("Packet unavailable");
+  await lockSupplierContact(tx, candidate.supplierId);
+}
+
+async function lockPacketRetryHistory(tx: Tx, packetId: string) {
+  const [candidate] = await tx.select({ orderId: supplierPacket.orderId, supplierId: supplierPacket.supplierId,
+    version: supplierPacket.version }).from(supplierPacket).where(eq(supplierPacket.id, packetId)).limit(1);
+  if (!candidate) throw new Error("Packet unavailable");
+  const itemRows = await tx.select({ itemId: supplierPacketItem.orderItemId }).from(supplierPacketItem)
+    .where(eq(supplierPacketItem.packetId, packetId));
+  const itemIds = itemRows.map((row) => row.itemId);
+  if (!itemIds.length) throw new Error("Packet has no order items");
+  const historyRows = await tx.select({ id: supplierPacket.id }).from(supplierPacket)
+    .innerJoin(supplierPacketItem, eq(supplierPacketItem.packetId, supplierPacket.id))
+    .where(and(eq(supplierPacket.orderId, candidate.orderId), eq(supplierPacket.supplierId, candidate.supplierId),
+      lt(supplierPacket.version, candidate.version), inArray(supplierPacketItem.orderItemId, itemIds)))
+    .orderBy(asc(supplierPacket.id));
+  const historyIds = [...new Set(historyRows.map((row) => row.id))].sort();
+  if (!historyIds.length) return;
+  await tx.select({ id: supplierPacket.id }).from(supplierPacket)
+    .where(inArray(supplierPacket.id, historyIds)).orderBy(asc(supplierPacket.id)).for("update");
+  await tx.select({ id: supplierPacketAttempt.id }).from(supplierPacketAttempt)
+    .where(inArray(supplierPacketAttempt.packetId, historyIds))
+    .orderBy(asc(supplierPacketAttempt.packetId), asc(supplierPacketAttempt.id)).for("update");
+}
 
 async function staffTx<T>(headers: Headers, work: (tx: Tx, actor: Actor) => Promise<T>): Promise<T> {
   const actor = await requireStaffAccess(headers, "fulfillment.manage");
@@ -54,7 +93,7 @@ function jsonPacket(value: unknown): SupplierPacket {
   return value as SupplierPacket;
 }
 
-class StaleSupplierPacketRouteError extends Error {}
+class StaleSupplierPacketSnapshotError extends Error {}
 
 function placementRequirements(snapshot: Record<string, unknown>): string[] {
   const requirements = [
@@ -73,7 +112,7 @@ function publicationInstructions(customerInstructions: string | null | undefined
 function packetItemInput(input: {
   itemId: string; orderId: string; organizationId: string; supplierId: string; assignedAdminId: string;
   listingSnapshot: Record<string, unknown>; targetUrl: string; anchorText: string; article: string;
-  instructions: string; consentNoticeVersion: string; consentedAt: Date; recipient: string;
+  instructions: string; consentNoticeVersion: string; consentEventId: string | null; consentedAt: Date | string; recipient: string;
 }): PacketItemInput {
   const content = {
     placementRequirements: placementRequirements(input.listingSnapshot),
@@ -96,7 +135,8 @@ function packetItemInput(input: {
       contentHash: supplierShareContentHash(content),
       supplierId: input.supplierId,
       recipient: input.recipient.trim().toLowerCase(),
-      acceptedAt: input.consentedAt.toISOString(),
+      consentEventId: input.consentEventId,
+      acceptedAt: typeof input.consentedAt === "string" ? input.consentedAt : input.consentedAt.toISOString(),
     },
   };
 }
@@ -109,6 +149,7 @@ export async function listPacketCandidates(headers: Headers, orderId: string) {
       orderId: customerOrder.id,
       listingTitle: orderItemFulfillment.listingTitle,
       state: orderItemFulfillment.state,
+      handedOffAt: orderItemFulfillment.handedOffAt,
       assignedAdminId: orderItemFulfillment.assignedAdminId,
       writingSelected: customerOrderItem.writingSelected,
       writingState: orderItemWriting.state,
@@ -116,6 +157,8 @@ export async function listPacketCandidates(headers: Headers, orderId: string) {
       supplierId: orderItemFulfillmentSupplier.supplierId,
       consent: customerOrderItem.supplierSharingConsented,
       consentNoticeVersion: customerOrderItem.consentNoticeVersion,
+      recipientSnapshotCurrent: sql<boolean>`public.gphkm_staff_has_current_supplier_recipient_snapshot(${customerOrderItem.id})`,
+      retryEligible: sql<boolean>`public.gphkm_supplier_packet_retry_eligible(${customerOrderItem.id}, NULL)`,
     }).from(customerOrderItem)
       .innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
       .innerJoin(orderItemFulfillment, eq(orderItemFulfillment.orderItemId, customerOrderItem.id))
@@ -123,51 +166,195 @@ export async function listPacketCandidates(headers: Headers, orderId: string) {
       .leftJoin(orderItemWriting, eq(orderItemWriting.orderItemId, customerOrderItem.id))
       .where(eq(customerOrderItem.orderId, orderId)).orderBy(asc(customerOrderItem.createdAt));
     const scopedRows = actor.role === "ADMIN" ? rows.filter((row) => row.assignedAdminId === actor.userId) : rows;
-    const contentByItem = await getConsentedSupplierPacketContentBatch(tx,
-      scopedRows.filter((row) => row.supplierId).map((row) => row.orderItemId));
+    let contentByItem: Awaited<ReturnType<typeof getConsentedSupplierPacketContentBatch>>;
+    try {
+      contentByItem = await getConsentedSupplierPacketContentBatch(tx,
+        scopedRows.filter((row) => row.supplierId).map((row) => row.orderItemId));
+    } catch (error) {
+      logSafeFailure("supplier_packet_candidate_content_failed", error, randomUUID(), { orderId, reasonCode: "CONTENT_BATCH" });
+      throw error;
+    }
     return scopedRows.map((row) => {
       const resolution = contentByItem.get(row.orderItemId);
       const contentAvailable = !resolution?.error;
       const consentedContent = resolution?.content ?? null;
+      const recipientConsentAvailable = row.recipientSnapshotCurrent || Boolean(consentedContent?.consentEventId);
       const replacementArticleReady = row.writingState === "CUSTOMER_DECLINED_FINAL" && Boolean(consentedContent?.articleText);
+      const handoffRetry = row.state === "HANDOFF_PENDING" && row.handedOffAt !== null && row.retryEligible;
       return {
         ...row,
-        eligible: row.state === "READY_FOR_HANDOFF" && row.assignedAdminId !== null && row.supplierId !== null
-          && (row.articleReady || replacementArticleReady) && row.consent && contentAvailable && (actor.role === "SUPER_ADMIN" || row.assignedAdminId === actor.userId),
-        blockReason: !contentAvailable ? "Resolve the content review and obtain consent for the exact supplier recipient first." :
+        retryEligible: handoffRetry,
+        requestReconsent: handoffRetry && !consentedContent?.consentEventId && actor.role === "SUPER_ADMIN",
+        eligible: (row.state === "READY_FOR_HANDOFF" || handoffRetry) && row.assignedAdminId !== null && row.supplierId !== null
+          && (row.articleReady || replacementArticleReady) && row.consent && contentAvailable && recipientConsentAvailable
+          && (!handoffRetry || Boolean(consentedContent?.consentEventId))
+          && (actor.role === "SUPER_ADMIN" || row.assignedAdminId === actor.userId),
+        blockReason: handoffRetry && !consentedContent?.consentEventId ? "The orderer must review and approve unchanged placement content for the current supplier contact before a replacement packet can be prepared." :
+          !recipientConsentAvailable ? "Customer consent for the current supplier recipient is not recorded. Request fresh content consent before preparing a packet." :
+          !contentAvailable ? "Resolve the content review and obtain consent for the exact supplier recipient first." :
+          !row.consent ? "Customer sharing consent is not recorded for this order." :
           row.writingSelected && !row.articleReady && !replacementArticleReady ? "GPHKM Writing must have a customer-approved article before handoff." :
           !row.assignedAdminId ? "Assign an Admin before preparing a packet." :
           !row.supplierId ? "This item uses internal fulfillment and has no supplier packet." :
-          row.state !== "READY_FOR_HANDOFF" ? "Move the item to ready for handoff first." : null,
+          row.state !== "READY_FOR_HANDOFF" && !handoffRetry ? "Move the item to ready for handoff first." : null,
       };
     });
+  });
+}
+
+export async function requestSupplierRecipientReconsent(headers: Headers, itemId: string) {
+  if (!validId(itemId)) throw new Error("Order item unavailable");
+  return staffTx(headers, async (tx, actor) => {
+    if (actor.role !== "SUPER_ADMIN") throw new Error("Only a Super Admin can request recipient re-consent after handoff");
+    const [candidate] = await tx.select({ orderId: customerOrder.id, ordererId: customerOrder.actorUserId,
+      supplierId: orderItemFulfillmentSupplier.supplierId, routeGeneration: orderItemFulfillmentSupplier.routeGeneration })
+      .from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
+      .innerJoin(orderItemFulfillment, eq(orderItemFulfillment.orderItemId, customerOrderItem.id))
+      .innerJoin(orderItemFulfillmentSupplier, eq(orderItemFulfillmentSupplier.orderItemId, customerOrderItem.id))
+      .where(eq(customerOrderItem.id, itemId)).limit(1);
+    if (!candidate?.supplierId) throw new Error("Order item is unavailable for supplier recovery");
+
+    await tx.execute(sql`select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${'supplier_packet_prepare:' + candidate.orderId}, 0::bigint))`);
+    await lockSupplierContact(tx, candidate.supplierId);
+    const linkedRows = await tx.select({ packetId: supplierPacketItem.packetId }).from(supplierPacketItem)
+      .innerJoin(supplierPacket, eq(supplierPacket.id, supplierPacketItem.packetId))
+      .where(and(eq(supplierPacketItem.orderItemId, itemId), eq(supplierPacketItem.routeGeneration, candidate.routeGeneration),
+        eq(supplierPacket.supplierId, candidate.supplierId)));
+    const packetIds = [...new Set(linkedRows.map((row) => row.packetId))].sort();
+    const lockedPackets = packetIds.length ? await tx.select().from(supplierPacket)
+      .where(inArray(supplierPacket.id, packetIds)).orderBy(asc(supplierPacket.id)).for("update") : [];
+    if (packetIds.length) await tx.select({ id: supplierPacketAttempt.id }).from(supplierPacketAttempt)
+      .where(inArray(supplierPacketAttempt.packetId, packetIds))
+      .orderBy(asc(supplierPacketAttempt.packetId), asc(supplierPacketAttempt.id)).for("update");
+
+    const [locked] = await tx.select({ item: customerOrderItem, fulfillment: orderItemFulfillment, order: customerOrder })
+      .from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
+      .innerJoin(orderItemFulfillment, eq(orderItemFulfillment.orderItemId, customerOrderItem.id))
+      .where(eq(customerOrderItem.id, itemId)).for("update", { of: orderItemFulfillment }).limit(1);
+    const [route] = await tx.select({ supplierId: orderItemFulfillmentSupplier.supplierId,
+      routeGeneration: orderItemFulfillmentSupplier.routeGeneration, recipient: supplierContact.email })
+      .from(orderItemFulfillmentSupplier)
+      .innerJoin(supplierContact, and(eq(supplierContact.supplierId, orderItemFulfillmentSupplier.supplierId), eq(supplierContact.isPrimary, true)))
+      .where(eq(orderItemFulfillmentSupplier.orderItemId, itemId)).limit(1);
+    const eligibility = await tx.execute(sql`select public.gphkm_supplier_packet_retry_eligible(${itemId}, NULL) as eligible`);
+    const eligible = (eligibility as unknown as { rows?: Array<{ eligible: boolean }> }).rows?.[0]?.eligible === true;
+    if (!locked || !route || route.supplierId !== candidate.supplierId || route.routeGeneration !== candidate.routeGeneration
+      || !eligible || locked.fulfillment.state !== "HANDOFF_PENDING" || !locked.fulfillment.handedOffAt
+      || locked.fulfillment.workStartedAt || locked.order.actorUserId !== candidate.ordererId) {
+      throw new Error("Recipient re-consent is unavailable. Refresh the order and review its current delivery status.");
+    }
+    const [latestRequest] = await tx.select().from(orderItemContentChangeRequest)
+      .where(eq(orderItemContentChangeRequest.orderItemId, itemId))
+      .orderBy(desc(orderItemContentChangeRequest.requestNumber)).limit(1);
+    let staleRequestId: string | null = null;
+    if (latestRequest) {
+      const [latestEvent] = await tx.select({ eventType: orderItemContentChangeEvent.eventType })
+        .from(orderItemContentChangeEvent).where(eq(orderItemContentChangeEvent.requestId, latestRequest.id))
+        .orderBy(desc(orderItemContentChangeEvent.createdAt), desc(orderItemContentChangeEvent.id)).limit(1);
+      const [latestVersion] = latestRequest.purpose === "RECIPIENT_RECONSENT"
+        ? await tx.select({ supplierId: orderItemContentVersion.supplierId, recipientEmail: orderItemContentVersion.recipientEmail })
+          .from(orderItemContentVersion).where(eq(orderItemContentVersion.requestId, latestRequest.id)).limit(1)
+        : [];
+      const requestMatchesCurrentRecipient = latestVersion?.supplierId === route.supplierId
+        && latestVersion.recipientEmail.trim().toLowerCase() === route.recipient.trim().toLowerCase();
+      if (latestRequest.purpose === "RECIPIENT_RECONSENT" && requestMatchesCurrentRecipient
+        && ["REQUESTED", "APPROVED"].includes(latestEvent?.eventType ?? "")) {
+        return { requestId: latestRequest.id, status: "AWAITING_CUSTOMER_CONSENT" as const };
+      }
+      if (["REQUESTED", "APPROVED"].includes(latestEvent?.eventType ?? "")) {
+        if (latestRequest.purpose !== "RECIPIENT_RECONSENT" || requestMatchesCurrentRecipient) {
+          throw new Error("Resolve the existing customer content review before requesting recipient re-consent");
+        }
+        staleRequestId = latestRequest.id;
+      }
+      if (latestRequest.purpose === "RECIPIENT_RECONSENT" && requestMatchesCurrentRecipient && latestEvent?.eventType === "CONSENTED") {
+        return { requestId: latestRequest.id, status: "ALREADY_CONSENTED" as const };
+      }
+      if (latestRequest.purpose === "RECIPIENT_RECONSENT" && latestEvent?.eventType === "CONSENTED" && !requestMatchesCurrentRecipient) {
+        staleRequestId = latestRequest.id;
+      }
+    }
+    const priorPacket = lockedPackets.filter((packet) => packet.supersededAt === null).sort((a, b) => b.version - a.version)[0];
+    if (!priorPacket || priorPacket.recipient.trim().toLowerCase() === route.recipient.trim().toLowerCase()) {
+      throw new Error("The current supplier contact already matches the last packet recipient");
+    }
+    const packetSnapshot = jsonPacket(priorPacket.packet);
+    const priorItem = packetSnapshot.items.find((item) => item.orderItemId === itemId);
+    if (!priorItem || !priorItem.targetUrl || !priorItem.anchorText || !priorItem.article) {
+      throw new Error("The approved packet content is unavailable for a safe re-consent request");
+    }
+    const [latestVersion] = await tx.select({ version: orderItemContentVersion.version })
+      .from(orderItemContentVersion).where(eq(orderItemContentVersion.orderItemId, itemId))
+      .orderBy(desc(orderItemContentVersion.version)).limit(1);
+    const requestId = randomUUID();
+    const versionId = randomUUID();
+    const at = new Date();
+    const approvedAt = new Date(at.getTime() + 1);
+    // The purchased order snapshot is implicit version 1; persisted change
+    // versions therefore start at 2 even when no prior change row exists.
+    const version = (latestVersion?.version ?? 1) + 1;
+    const requestNumber = Number(latestRequest?.requestNumber ?? 0) + 1;
+    const content = { targetUrl: priorItem.targetUrl, anchorText: priorItem.anchorText,
+      articleText: priorItem.article, instructions: priorItem.instructions ?? "" };
+    const contentHash = hashOrderContent(content, { supplierId: route.supplierId, recipientEmail: route.recipient });
+    await tx.insert(orderItemContentChangeRequest).values({
+      id: requestId, orderItemId: itemId, requestNumber, requestedByUserId: locked.order.actorUserId,
+      baseVersion: latestVersion?.version ?? 1, purpose: "RECIPIENT_RECONSENT", targetSupplierId: route.supplierId,
+      targetUrl: content.targetUrl, anchorText: content.anchorText, articleText: content.articleText,
+      instructions: content.instructions || null, createdAt: at,
+    });
+    await tx.insert(orderItemContentVersion).values({
+      id: versionId, orderItemId: itemId, requestId, version, ...content,
+      supplierId: route.supplierId, recipientEmail: route.recipient, contentHash,
+      approvedByUserId: actor.userId, approvedAt,
+    });
+    await tx.insert(orderItemContentChangeEvent).values([
+      { id: randomUUID(), requestId, actorUserId: actor.userId, eventType: "REQUESTED", createdAt: at },
+      { id: randomUUID(), requestId, actorUserId: actor.userId, eventType: "APPROVED", versionId, contentHash, createdAt: approvedAt },
+    ]);
+    await appendAuditEvent(tx, { organizationId: locked.order.organizationId, actorUserId: actor.userId,
+      action: "SUPPLIER_RECIPIENT_RECONSENT_REQUESTED", targetType: "CUSTOMER_ORDER_ITEM", targetId: itemId,
+      reasonCode: "CONFIRMED_NOT_DELIVERED", metadata: { requestId, priorPacketId: priorPacket.id,
+        ...(staleRequestId ? { supersededRequestId: staleRequestId } : {}), result: "ORDERER_ACTION_REQUIRED" } });
+    return { requestId, status: "AWAITING_CUSTOMER_CONSENT" as const };
   });
 }
 
 export async function prepareSupplierPackets(headers: Headers, orderId: string, itemIds: string[]) {
   if (!validId(orderId) || itemIds.length < 1 || itemIds.length > MAX_ITEMS || itemIds.some((value) => !validId(value)) || new Set(itemIds).size !== itemIds.length) throw new Error("Select one to 25 distinct order items");
   return staffTx(headers, async (tx, actor) => {
+    // Serialize packet versions per order without broadening the runtime role's UPDATE grant on customer_order.
+    await tx.execute(sql`SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${'supplier_packet_prepare:' + orderId}, 0::bigint))`);
     const [lockedOrder] = await tx.select({ id: customerOrder.id, organizationId: customerOrder.organizationId, createdAt: customerOrder.createdAt, checkoutState: customerOrder.checkoutState })
-      .from(customerOrder).where(eq(customerOrder.id, orderId)).for("update").limit(1);
+      .from(customerOrder).where(eq(customerOrder.id, orderId)).limit(1);
     if (!lockedOrder || lockedOrder.checkoutState !== "PAID") throw new Error("Order unavailable");
-    const linkedRows = await tx.select({ packetId: supplierPacketItem.packetId }).from(supplierPacketItem)
+    const supplierIds = await tx.select({ supplierId: orderItemFulfillmentSupplier.supplierId })
+      .from(orderItemFulfillmentSupplier).where(inArray(orderItemFulfillmentSupplier.orderItemId, itemIds))
+      .orderBy(asc(orderItemFulfillmentSupplier.supplierId));
+    const knownSupplierIds = [...new Set(supplierIds.flatMap((row) => row.supplierId ? [row.supplierId] : []))].sort();
+    for (const supplierId of knownSupplierIds) await lockSupplierContact(tx, supplierId);
+    const linkedRows = await tx.select({ packetId: supplierPacketItem.packetId, supersededAt: supplierPacket.supersededAt }).from(supplierPacketItem)
       .innerJoin(supplierPacket, eq(supplierPacket.id, supplierPacketItem.packetId))
-      .where(and(eq(supplierPacket.orderId, orderId), inArray(supplierPacketItem.orderItemId, itemIds), sql`${supplierPacket.supersededAt} is null`));
+      .where(and(eq(supplierPacket.orderId, orderId), inArray(supplierPacketItem.orderItemId, itemIds)));
     const linkedPacketIds = [...new Set(linkedRows.map((row) => row.packetId))].sort();
-    const priorPackets = linkedPacketIds.length ? await tx.select().from(supplierPacket)
+    const historyPackets = linkedPacketIds.length ? await tx.select().from(supplierPacket)
       .where(inArray(supplierPacket.id, linkedPacketIds)).orderBy(asc(supplierPacket.id)).for("update") : [];
+    if (linkedPacketIds.length) await tx.select({ id: supplierPacketAttempt.id }).from(supplierPacketAttempt)
+      .where(inArray(supplierPacketAttempt.packetId, linkedPacketIds))
+      .orderBy(asc(supplierPacketAttempt.packetId), asc(supplierPacketAttempt.id)).for("update");
+    const activePacketIds = new Set(linkedRows.filter((row) => row.supersededAt === null).map((row) => row.packetId));
+    const priorPackets = historyPackets.filter((packet) => activePacketIds.has(packet.id));
     const selectedItems = new Set(itemIds);
     for (const prior of priorPackets) {
       const priorItems = await tx.select({ orderItemId: supplierPacketItem.orderItemId }).from(supplierPacketItem)
         .where(eq(supplierPacketItem.packetId, prior.id));
       assertCompletePacketReplacement(priorItems.map(({ orderItemId }) => orderItemId), selectedItems);
-      await tx.update(supplierPacket).set({ supersededAt: new Date() }).where(eq(supplierPacket.id, prior.id));
-      await appendAuditEvent(tx, { organizationId: prior.organizationId, actorUserId: actor.userId,
-        action: "SUPPLIER_PACKET_SUPERSEDED", targetType: "SUPPLIER_PACKET", targetId: prior.id,
-        reasonCode: "REPLACEMENT_VERSION_PREPARED", metadata: { version: prior.version, result: "SUPERSEDED" } });
     }
     const rows = await tx.select({
       item: customerOrderItem,
+      consentedAtExact: sql<string>`to_char(${customerOrderItem.consentedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      recipientSnapshotCurrent: sql<boolean>`public.gphkm_staff_has_current_supplier_recipient_snapshot(${customerOrderItem.id})`,
+      retryEligible: sql<boolean>`public.gphkm_supplier_packet_retry_eligible(${customerOrderItem.id}, NULL)`,
       order: customerOrder,
       fulfillment: orderItemFulfillment,
       supplierId: orderItemFulfillmentSupplier.supplierId,
@@ -180,10 +367,11 @@ export async function prepareSupplierPackets(headers: Headers, orderId: string, 
       .where(and(eq(customerOrderItem.orderId, orderId), inArray(customerOrderItem.id, itemIds)))
       .orderBy(asc(customerOrderItem.id)).for("update", { of: orderItemFulfillment });
     if (rows.length !== itemIds.length) throw new Error("One or more items are unavailable");
+    // Route writers lock the fulfillment item first, so the item locks above make this read stable without UPDATE access to the route table.
     const routeSnapshots = await tx.select({ itemId: orderItemFulfillmentSupplier.orderItemId,
       supplierId: orderItemFulfillmentSupplier.supplierId, routeGeneration: orderItemFulfillmentSupplier.routeGeneration })
       .from(orderItemFulfillmentSupplier).where(inArray(orderItemFulfillmentSupplier.orderItemId, itemIds))
-      .orderBy(asc(orderItemFulfillmentSupplier.orderItemId)).for("share");
+      .orderBy(asc(orderItemFulfillmentSupplier.orderItemId));
     const routesByItem = new Map(routeSnapshots.map((route) => [route.itemId, route]));
     const currentRows = rows.map((row) => ({
       ...row,
@@ -196,11 +384,16 @@ export async function prepareSupplierPackets(headers: Headers, orderId: string, 
     const groups = new Map<string, typeof currentRows>();
     for (const row of currentRows) {
       const f = row.fulfillment;
-      if (f.state !== "READY_FOR_HANDOFF" || !f.assignedAdminId || !row.supplierId || !row.item.supplierSharingConsented) throw new Error("Every selected item must be ready, assigned, consented, and supplier-sourced for fulfillment");
+      const postCutoffRetry = f.state === "HANDOFF_PENDING" && f.handedOffAt !== null;
+      if ((f.state !== "READY_FOR_HANDOFF" && !postCutoffRetry) || !f.assignedAdminId || !row.supplierId || !row.item.supplierSharingConsented) throw new Error("Every selected item must be ready, assigned, consented, and supplier-sourced for fulfillment");
+      if (postCutoffRetry && !row.retryEligible) throw new Error("A replacement packet is available only after a confirmed, reconciled non-delivery with no conflicting evidence");
       if (actor.role === "ADMIN" && f.assignedAdminId !== actor.userId) throw new Error("Admin may prepare only currently assigned items");
       const resolution = packetContentByItem.get(row.item.id);
       if (resolution?.error) throw resolution.error;
       const consentedContent = resolution?.content ?? null;
+      if ((!row.recipientSnapshotCurrent || postCutoffRetry) && !consentedContent?.consentEventId) {
+        throw new Error("Customer consent for the current supplier recipient is not recorded. Request fresh content consent before preparing a packet.");
+      }
       const approvedArticle = row.item.writingSelected
         ? row.writing?.state === "APPROVED_FIRST" || row.writing?.state === "APPROVED_FINAL" ? row.writing.approvedArticleText
           : row.writing?.state === "CUSTOMER_DECLINED_FINAL" ? consentedContent?.articleText ?? null : null
@@ -208,6 +401,12 @@ export async function prepareSupplierPackets(headers: Headers, orderId: string, 
       if (!approvedArticle) throw new Error("Writing items require a customer-approved article before handoff");
       const groupKey = `${row.supplierId}:${f.assignedAdminId}`;
       groups.set(groupKey, [...(groups.get(groupKey) ?? []), row]);
+    }
+    for (const prior of priorPackets) {
+      await tx.update(supplierPacket).set({ supersededAt: new Date() }).where(eq(supplierPacket.id, prior.id));
+      await appendAuditEvent(tx, { organizationId: prior.organizationId, actorUserId: actor.userId,
+        action: "SUPPLIER_PACKET_SUPERSEDED", targetType: "SUPPLIER_PACKET", targetId: prior.id,
+        reasonCode: "REPLACEMENT_VERSION_PREPARED", metadata: { version: prior.version, result: "SUPERSEDED" } });
     }
     const packetIds: string[] = [];
     for (const group of groups.values()) {
@@ -225,7 +424,7 @@ export async function prepareSupplierPackets(headers: Headers, orderId: string, 
       const createdAt = new Date().toISOString();
       const packet = buildSupplierPacket({
         packetId, version, createdBy: actor.userId, createdByRole: actor.role, createdAt, recipient: supplierRow.email,
-        items: group.map(({ item, order, fulfillment, supplierId: itemSupplierId, writing }) => {
+        items: group.map(({ item, consentedAtExact, order, fulfillment, supplierId: itemSupplierId, writing }) => {
           const consentedContent = packetContentByItem.get(item.id)?.content ?? null;
           return packetItemInput({
             itemId: item.id, orderId: order.id, organizationId: order.organizationId, supplierId: itemSupplierId!,
@@ -235,14 +434,15 @@ export async function prepareSupplierPackets(headers: Headers, orderId: string, 
             article: item.writingSelected ? (writing?.state === "CUSTOMER_DECLINED_FINAL" ? consentedContent?.articleText ?? "" : writing?.approvedArticleText ?? "") : consentedContent?.articleText ?? item.articleText!,
             instructions: consentedContent?.instructions ?? publicationInstructions(item.instructions),
             consentNoticeVersion: consentedContent?.noticeVersion ?? item.consentNoticeVersion,
-            consentedAt: consentedContent?.consentedAt ?? item.consentedAt, recipient: supplierRow.email!,
+            consentEventId: consentedContent?.consentEventId ?? null,
+            consentedAt: consentedContent?.consentedAt ?? consentedAtExact, recipient: supplierRow.email!,
           });
         }),
       });
       await tx.insert(supplierPacket).values({
         id: packet.id, version, organizationId: packet.organizationId, orderId: packet.orderId,
         supplierId: packet.supplierId, recipient: packet.recipient, packet: packet as unknown as Record<string, unknown>,
-        contentHash: packet.contentHash, createdByUserId: actor.userId,
+        contentHash: packet.contentHash, createdByUserId: actor.userId, createdAt: new Date(createdAt),
       });
       await tx.insert(supplierPacketItem).values(group.map(({ item, fulfillment, routeGeneration }) => {
         const packetItem = packet.items.find((part) => part.orderItemId === item.id)!;
@@ -250,11 +450,17 @@ export async function prepareSupplierPackets(headers: Headers, orderId: string, 
           packetId, orderItemId: item.id, assignedAdminId: fulfillment.assignedAdminId!,
           routeGeneration,
           consentNoticeVersion: packetItem.consent.disclosureVersion,
-          consentedAt: new Date(packetItem.consent.acceptedAt),
+          consentedAt: sql`${packetItem.consent.acceptedAt}::timestamptz`,
           consentContentHash: packetItem.consent.contentHash,
         };
       }));
       for (const { item, order, fulfillment } of group) {
+        if (fulfillment.state === "HANDOFF_PENDING" && fulfillment.handedOffAt) {
+          await appendAuditEvent(tx, { organizationId: order.organizationId, actorUserId: actor.userId,
+            action: "SUPPLIER_PACKET_REPLACEMENT_PREPARED", targetType: "CUSTOMER_ORDER_ITEM", targetId: item.id,
+            reasonCode: "CONFIRMED_NOT_DELIVERED", metadata: { packetId, result: "CUTOFF_AND_PREPARING_PRESERVED" } });
+          continue;
+        }
         const transition = transitionItem({
           item: { id: item.id, organizationId: order.organizationId, orderId: order.id, orderedByUserId: order.actorUserId,
             state: fulfillment.state as ItemState, updatedAt: fulfillment.updatedAt.toISOString(), purchasedAt: order.createdAt.toISOString(),
@@ -262,7 +468,7 @@ export async function prepareSupplierPackets(headers: Headers, orderId: string, 
           to: "HANDOFF_PENDING", actorId: actor.userId, actorType: "STAFF", actorRole: actor.role,
           assignedAdminId: fulfillment.assignedAdminId ?? undefined, at: createdAt, reason: "PACKET_PREPARED", eventId: randomUUID(),
         });
-        await tx.update(orderItemFulfillment).set({ state: transition.item.state, updatedAt: new Date(createdAt) }).where(eq(orderItemFulfillment.orderItemId, item.id));
+        await tx.update(orderItemFulfillment).set({ state: transition.item.state, customerStatus: "PREPARING", updatedAt: new Date(createdAt) }).where(eq(orderItemFulfillment.orderItemId, item.id));
         await appendAuditEvent(tx, { organizationId: order.organizationId, actorUserId: actor.userId, action: "FULFILLMENT_STATE_CHANGED", targetType: "CUSTOMER_ORDER_ITEM", targetId: item.id, reasonCode: "PACKET_PREPARED", metadata: { fromState: transition.event.from, toState: transition.event.to, result: "UPDATED" } });
       }
       await appendAuditEvent(tx, { organizationId: lockedOrder.organizationId, actorUserId: actor.userId, action: "SUPPLIER_PACKET_PREPARED", targetType: "SUPPLIER_PACKET", targetId: packetId, metadata: { version, itemCount: packet.items.length, result: "READY" } });
@@ -280,13 +486,13 @@ export async function getSupplierPacket(headers: Headers, packetId: string) {
     await lockPacketItemRows(tx, jsonPacket(row.packet));
     await requirePacketAssignment(tx, packetId, actor);
     let packet: SupplierPacket;
-    let staleRoute = false;
+    let staleSnapshot = false;
     try {
       packet = await loadCurrentPacket(tx, row);
     } catch (error) {
-      if (!(error instanceof StaleSupplierPacketRouteError)) throw error;
+      if (!(error instanceof StaleSupplierPacketSnapshotError)) throw error;
       packet = jsonPacket(row.packet);
-      staleRoute = true;
+      staleSnapshot = true;
     }
     const [contact] = await tx.select({ name: supplier.name, status: supplier.status })
       .from(supplier).where(eq(supplier.id, row.supplierId)).limit(1);
@@ -308,7 +514,7 @@ export async function getSupplierPacket(headers: Headers, packetId: string) {
     const stuckAttemptIds = attempts
       .filter((attempt) => attempt.type === "SEND" && attempt.state === "SENDING" && Date.now() - attempt.createdAt.getTime() >= STUCK_SEND_REVIEW_AFTER_MS)
       .map((attempt) => attempt.id);
-    return { packet, holdReason: row.holdReason, heldAt: row.heldAt, supplier: contact ? { name: contact.name, contactName: contactRow?.name ?? null, email: row.recipient } : null, attempts, acknowledgement: acknowledgement ?? null, manualEvidence, events, providerEvents, stuckAttemptIds, actorId: actor.userId, actorRole: actor.role, superseded: row.supersededAt !== null, staleRoute };
+    return { packet, holdReason: row.holdReason, heldAt: row.heldAt, supplier: contact ? { name: contact.name, contactName: contactRow?.name ?? null, email: row.recipient } : null, attempts, acknowledgement: acknowledgement ?? null, manualEvidence, events, providerEvents, stuckAttemptIds, actorId: actor.userId, actorRole: actor.role, superseded: row.supersededAt !== null, staleSnapshot };
   });
 }
 
@@ -318,7 +524,18 @@ export async function recordSupplierAcknowledgement(headers: Headers, input: { p
     throw new Error("Supplier acknowledgement details are invalid");
   }
   return staffTx(headers, async (tx, actor) => {
-    await requirePacketAssignment(tx, input.packetId, actor);
+    const [candidate] = await tx.select({ type: supplierPacketAttempt.type }).from(supplierPacketAttempt)
+      .where(and(eq(supplierPacketAttempt.id, input.attemptId), eq(supplierPacketAttempt.packetId, input.packetId))).limit(1);
+    if (!candidate) throw new Error("Only a confirmed delivery or recorded manual handoff can be acknowledged");
+
+    let packetRow: typeof supplierPacket.$inferSelect | null = null;
+    let itemRows: Awaited<ReturnType<typeof lockPacketItemRows>> = [];
+    if (candidate.type === "MANUAL_SENT" || candidate.type === "MANUAL_SEND") {
+      const locked = await lockPacketRowAndItemRows(tx, input.packetId);
+      packetRow = locked.row;
+      itemRows = locked.items;
+      await requirePacketAssignment(tx, input.packetId, actor);
+    }
     const [attempt] = await tx.select().from(supplierPacketAttempt)
       .where(and(eq(supplierPacketAttempt.id, input.attemptId), eq(supplierPacketAttempt.packetId, input.packetId)))
       .for("update").limit(1);
@@ -326,12 +543,31 @@ export async function recordSupplierAcknowledgement(headers: Headers, input: { p
       || ((attempt.type === "MANUAL_SENT" || attempt.type === "MANUAL_SEND") && attempt.state === "MANUAL_SENT" && attempt.sentAt))) {
       throw new Error("Only a confirmed delivery or recorded manual handoff can be acknowledged");
     }
+    if (attempt.type === "SEND") await requirePacketAssignment(tx, input.packetId, actor);
     const at = new Date();
     const [record] = await tx.insert(supplierPacketAcknowledgement).values({
       packetId: input.packetId, attemptId: input.attemptId, recordedByUserId: actor.userId,
       acknowledgedAt: at, reference: input.reference.trim(),
     }).onConflictDoNothing().returning({ packetId: supplierPacketAcknowledgement.packetId });
     if (!record) throw new Error("Supplier acknowledgement was already recorded for this packet");
+    if (packetRow && await isCurrentSupplierPacketRoute(tx, packetRow.id)) {
+      for (const item of itemRows) {
+        if (item.state !== "HANDOFF_PENDING") continue;
+        const progress = confirmManualSupplierReceipt({
+          state: item.state as ItemState,
+          updatedAt: item.updatedAt.toISOString(),
+          ...(item.handedOffAt ? { handedOffAt: item.handedOffAt.toISOString() } : {}),
+          ...(item.workStartedAt ? { workStartedAt: item.workStartedAt.toISOString() } : {}),
+        }, at.toISOString());
+        await tx.update(orderItemFulfillment).set({
+          state: progress.state, customerStatus: progress.customerStatus,
+          workStartedAt: new Date(progress.workStartedAt!), updatedAt: new Date(progress.updatedAt),
+        }).where(and(eq(orderItemFulfillment.orderItemId, item.orderItemId), eq(orderItemFulfillment.state, "HANDOFF_PENDING")));
+        await appendAuditEvent(tx, { organizationId: packetRow.organizationId, actorUserId: actor.userId,
+          action: "FULFILLMENT_STATE_CHANGED", targetType: "CUSTOMER_ORDER_ITEM", targetId: item.orderItemId,
+          reasonCode: "SUPPLIER_RECEIPT_CONFIRMED", metadata: { fromState: "HANDOFF_PENDING", toState: "IN_FULFILLMENT", packetId: packetRow.id, attemptId: attempt.id, result: "MANUAL_SUPPLIER_RECEIPT_CONFIRMED" } });
+      }
+    }
     await appendAuditEvent(tx, { actorUserId: actor.userId, action: "SUPPLIER_ACKNOWLEDGEMENT_RECORDED", targetType: "SUPPLIER_PACKET", targetId: input.packetId, reasonCode: "SUPPLIER_ACKNOWLEDGED", metadata: { attemptId: input.attemptId, acknowledgedAt: at.toISOString(), result: "RECORDED" } });
     return { packetId: input.packetId, acknowledgedAt: at };
   });
@@ -395,7 +631,8 @@ async function lockPacketItemRows(tx: Tx, packet: SupplierPacket) {
   const itemIds = packet.items.map((item) => item.orderItemId);
   if (!itemIds.length) throw new Error("Packet has no order items");
   const rows = await tx.select({ orderItemId: orderItemFulfillment.orderItemId, state: orderItemFulfillment.state,
-    handedOffAt: orderItemFulfillment.handedOffAt, workStartedAt: orderItemFulfillment.workStartedAt })
+    handedOffAt: orderItemFulfillment.handedOffAt, workStartedAt: orderItemFulfillment.workStartedAt,
+    updatedAt: orderItemFulfillment.updatedAt })
     .from(orderItemFulfillment).where(inArray(orderItemFulfillment.orderItemId, itemIds))
     .orderBy(asc(orderItemFulfillment.orderItemId)).for("update");
   if (rows.length !== itemIds.length) {
@@ -413,6 +650,41 @@ async function lockPacketRowAndItems(tx: Tx, packetId: string) {
   }
   await lockPacketItemRows(tx, jsonPacket(row.packet));
   return row;
+}
+
+async function lockPacketRowAndItemRows(tx: Tx, packetId: string) {
+  const [candidate] = await tx.select().from(supplierPacket).where(eq(supplierPacket.id, packetId)).limit(1);
+  if (!candidate) throw new Error("Packet unavailable");
+  const [row] = await tx.select().from(supplierPacket).where(eq(supplierPacket.id, packetId)).for("update").limit(1);
+  if (!row || row.version !== candidate.version || row.contentHash !== candidate.contentHash) {
+    throw new Error("Packet changed while its order items were being locked; refresh and try again");
+  }
+  const items = await lockPacketItemRows(tx, jsonPacket(row.packet));
+  return { row, items };
+}
+
+async function isCurrentSupplierPacketRoute(tx: Tx, packetId: string): Promise<boolean> {
+  const result = await tx.execute(sql`select exists (
+    select 1 from public.supplier_packet packet
+     where packet.id = ${packetId} and packet.superseded_at is null
+       and not exists (
+         select 1 from public.supplier_packet_item pi
+         left join public.order_item_fulfillment_supplier route on route.order_item_id = pi.order_item_id
+          where pi.packet_id = packet.id
+            and (route.order_item_id is null or route.supplier_id is distinct from packet.supplier_id
+              or route.route_generation is distinct from pi.route_generation)
+       )
+       and not exists (
+         select 1 from public.supplier_packet_item pi
+         join public.supplier_packet newer on newer.order_id = packet.order_id
+           and newer.supplier_id = packet.supplier_id and newer.superseded_at is null
+           and newer.version > packet.version
+         join public.supplier_packet_item newer_item on newer_item.packet_id = newer.id
+           and newer_item.order_item_id = pi.order_item_id
+          where pi.packet_id = packet.id
+       )
+  ) as current`);
+  return (result as unknown as { rows?: Array<{ current: boolean }> }).rows?.[0]?.current === true;
 }
 
 async function recordProviderAcceptanceCutoff(tx: Tx, input: { itemIds: string[]; actorId: string; acceptedAt: Date }) {
@@ -448,7 +720,10 @@ async function recordWebhookAcceptanceCutoff(tx: Tx, input: { itemIds: string[];
 
 async function loadCurrentPacket(tx: Tx, row: typeof supplierPacket.$inferSelect, options: { blockUnresolvedSupplierFailure?: boolean } = {}): Promise<SupplierPacket> {
   const stored = jsonPacket(row.packet);
-  const links = await tx.select({ item: customerOrderItem, order: customerOrder, fulfillment: orderItemFulfillment,
+  const links = await tx.select({ item: customerOrderItem,
+    consentedAtExact: sql<string>`to_char(${customerOrderItem.consentedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+    recipientSnapshotCurrent: sql<boolean>`public.gphkm_staff_has_current_supplier_recipient_snapshot(${customerOrderItem.id})`,
+    order: customerOrder, fulfillment: orderItemFulfillment,
     snapshotRouteGeneration: supplierPacketItem.routeGeneration, writing: orderItemWriting })
     .from(supplierPacketItem).innerJoin(customerOrderItem, eq(customerOrderItem.id, supplierPacketItem.orderItemId))
     .innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
@@ -456,10 +731,11 @@ async function loadCurrentPacket(tx: Tx, row: typeof supplierPacket.$inferSelect
     .leftJoin(orderItemWriting, eq(orderItemWriting.orderItemId, customerOrderItem.id))
     .where(eq(supplierPacketItem.packetId, row.id)).orderBy(asc(customerOrderItem.id))
     .for("update", { of: orderItemFulfillment });
+  // `links` locked each fulfillment item; route mutations follow the same item-then-route lock order.
   const currentRoutes = links.length ? await tx.select({ itemId: orderItemFulfillmentSupplier.orderItemId,
     supplierId: orderItemFulfillmentSupplier.supplierId, routeGeneration: orderItemFulfillmentSupplier.routeGeneration })
     .from(orderItemFulfillmentSupplier).where(inArray(orderItemFulfillmentSupplier.orderItemId, links.map(({ item }) => item.id)))
-    .orderBy(asc(orderItemFulfillmentSupplier.orderItemId)).for("share") : [];
+    .orderBy(asc(orderItemFulfillmentSupplier.orderItemId)) : [];
   const routeByItem = new Map(currentRoutes.map((route) => [route.itemId, route]));
   if (options.blockUnresolvedSupplierFailure && links.length) {
     const unresolvedFailures = await tx.select({ itemId: supplierFulfillmentOutcome.orderItemId })
@@ -472,21 +748,29 @@ async function loadCurrentPacket(tx: Tx, row: typeof supplierPacket.$inferSelect
   }
   const [contact] = await tx.select({ email: supplierContact.email }).from(supplierContact)
     .where(and(eq(supplierContact.supplierId, row.supplierId), eq(supplierContact.isPrimary, true))).limit(1);
-  if (!contact || contact.email.trim().toLowerCase() !== row.recipient.trim().toLowerCase() || links.length !== stored.items.length) throw new Error("Packet recipient or included items changed; prepare a new version and obtain fresh consent");
+  if (!contact || contact.email.trim().toLowerCase() !== row.recipient.trim().toLowerCase() || links.length !== stored.items.length) {
+    throw new StaleSupplierPacketSnapshotError("Packet recipient or included items changed; prepare a new version and obtain fresh consent");
+  }
   if (links.some(({ item, snapshotRouteGeneration }) => {
     const route = routeByItem.get(item.id);
     return !route || route.routeGeneration !== snapshotRouteGeneration;
-  })) throw new StaleSupplierPacketRouteError("Supplier route changed; prepare a packet for the current route before sending or exporting");
+  })) throw new StaleSupplierPacketSnapshotError("Supplier route changed; prepare a packet for the current route before sending or exporting");
   const packetContentByItem = await getConsentedSupplierPacketContentBatch(tx, links.map(({ item }) => item.id));
   const rebuilt = buildSupplierPacket({
     packetId: row.id, version: row.version, createdBy: row.createdByUserId, createdByRole: "SUPER_ADMIN",
-    createdAt: row.createdAt.toISOString(), recipient: contact.email,
-    items: links.map(({ item, order, fulfillment, snapshotRouteGeneration, writing }) => {
+    // The packet JSON is the immutable snapshot and includes this exact time
+    // in its content hash. Older rows were created before created_at was set
+    // explicitly, so their database default can differ by a few milliseconds.
+    createdAt: stored.createdAt, recipient: contact.email,
+    items: links.map(({ item, consentedAtExact, recipientSnapshotCurrent, order, fulfillment, snapshotRouteGeneration, writing }) => {
       const route = routeByItem.get(item.id);
       const supplierId = route?.supplierId ?? null;
       const resolution = packetContentByItem.get(item.id);
       if (resolution?.error) throw resolution.error;
       const consentedContent = resolution?.content ?? null;
+      if (!recipientSnapshotCurrent && !consentedContent?.consentEventId) {
+        throw new Error("Customer consent for the current supplier recipient is not recorded. Request fresh content consent before preparing a packet.");
+      }
       if (!supplierId || supplierId !== row.supplierId || order.id !== row.orderId || order.organizationId !== row.organizationId
         || !["HANDOFF_PENDING", "IN_FULFILLMENT"].includes(fulfillment.state) || !fulfillment.assignedAdminId || !item.supplierSharingConsented
         || route?.routeGeneration !== snapshotRouteGeneration
@@ -504,7 +788,8 @@ async function loadCurrentPacket(tx: Tx, row: typeof supplierPacket.$inferSelect
         anchorText: consentedContent?.anchorText ?? item.anchorText, article: versionArticle,
         instructions: consentedContent?.instructions ?? publicationInstructions(item.instructions),
         consentNoticeVersion: consentedContent?.noticeVersion ?? item.consentNoticeVersion,
-        consentedAt: consentedContent?.consentedAt ?? item.consentedAt, recipient: contact.email,
+        consentEventId: consentedContent?.consentEventId ?? null,
+        consentedAt: consentedContent?.consentedAt ?? consentedAtExact, recipient: contact.email,
       });
     }),
   });
@@ -587,6 +872,8 @@ export async function sendSupplierPacket(headers: Headers, packetId: string, res
   if (!config) throw new Error("Resend is not fully configured or approved");
   await resendPreflight(config);
   const prepared = await staffTx(headers, async (tx, actor) => {
+    await lockPacketSupplierContact(tx, packetId);
+    await lockPacketRetryHistory(tx, packetId);
     const row = await lockPacketRowAndItems(tx, packetId);
     assertPacketActionable({ superseded: row.supersededAt !== null, holdReason: row.holdReason }, true);
     await requirePacketAssignment(tx, packetId, actor);
@@ -640,6 +927,8 @@ export async function sendSupplierPacket(headers: Headers, packetId: string, res
 
 export async function exportSupplierPacketEml(headers: Headers, packetId: string, attachPdf = false) {
   return staffTx(headers, async (tx, actor) => {
+    await lockPacketSupplierContact(tx, packetId);
+    await lockPacketRetryHistory(tx, packetId);
     const row = await lockPacketRowAndItems(tx, packetId);
     assertPacketActionable({ superseded: row.supersededAt !== null, holdReason: row.holdReason }, true);
     await requirePacketAssignment(tx, packetId, actor);
@@ -662,6 +951,8 @@ export async function exportSupplierPacketEml(headers: Headers, packetId: string
 
 export async function exportSupplierPacketPdf(headers: Headers, packetId: string) {
   return staffTx(headers, async (tx, actor) => {
+    await lockPacketSupplierContact(tx, packetId);
+    await lockPacketRetryHistory(tx, packetId);
     const row = await lockPacketRowAndItems(tx, packetId);
     assertPacketActionable({ superseded: row.supersededAt !== null, holdReason: row.holdReason }, true);
     await requirePacketAssignment(tx, packetId, actor);
@@ -684,6 +975,8 @@ export async function exportSupplierPacketPdf(headers: Headers, packetId: string
 export async function beginManualSupplierHandoff(headers: Headers, packetId: string, resendReason?: string) {
   if (!/^pkt_[A-Za-z0-9_-]{6,80}$/.test(packetId) || (resendReason?.length ?? 0) > 1000) throw new Error("Manual handoff is invalid");
   return staffTx(headers, async (tx, actor) => {
+    await lockPacketSupplierContact(tx, packetId);
+    await lockPacketRetryHistory(tx, packetId);
     const row = await lockPacketRowAndItems(tx, packetId);
     if (row.supersededAt || row.holdReason) throw new Error("Packet unavailable for handoff");
     await requirePacketAssignment(tx, packetId, actor);
@@ -728,6 +1021,8 @@ export async function recordManualSupplierHandoff(headers: Headers, input: { pac
   let transactionCallbackReturned = false;
   try {
     const result = await staffTx(headers, async (tx, actor) => {
+    await lockPacketSupplierContact(tx, input.packetId);
+    await lockPacketRetryHistory(tx, input.packetId);
     const row = await lockPacketRowAndItems(tx, input.packetId);
     await requirePacketAssignment(tx, input.packetId, actor);
     if (row.supersededAt || row.holdReason) throw new Error("Packet is no longer eligible for handoff");
@@ -758,7 +1053,23 @@ export async function recordManualSupplierHandoff(headers: Headers, input: { pac
       });
       await linkPrivateFileUpload(tx, storageKey);
     }
-    await markItemsHandedOff(tx, { itemIds: packet.items.map((item) => item.orderItemId), actorId: actor.userId, actorRole, at: sentAt, reason: "MANUAL_HANDOFF_RECORDED" });
+    for (const item of itemRows) {
+      const cutoff = recordManualHandoffCutoff({
+        state: item.state as ItemState,
+        updatedAt: item.updatedAt.toISOString(),
+        ...(item.handedOffAt ? { handedOffAt: item.handedOffAt.toISOString() } : {}),
+        ...(item.workStartedAt ? { workStartedAt: item.workStartedAt.toISOString() } : {}),
+      }, sentAt.toISOString());
+      await tx.update(orderItemFulfillment).set({
+        handedOffAt: new Date(cutoff.handedOffAt!),
+        customerStatus: item.state === "HANDOFF_PENDING" ? "PREPARING" : "IN_PROGRESS",
+        updatedAt: new Date(cutoff.updatedAt),
+      }).where(eq(orderItemFulfillment.orderItemId, item.orderItemId));
+      await appendAuditEvent(tx, { organizationId: row.organizationId, actorUserId: actor.userId,
+        action: "SUPPLIER_HANDOFF_CUTOFF_SET", targetType: "CUSTOMER_ORDER_ITEM", targetId: item.orderItemId,
+        reasonCode: "MANUAL_HANDOFF_RECORDED", metadata: { packetId: row.id, attemptId: attempt.id,
+          handedOffAt: cutoff.handedOffAt, result: item.handedOffAt ? "EXISTING_CUTOFF_PRESERVED" : "CANCELLATION_LOCKED" } });
+    }
     await appendAuditEvent(tx, { actorUserId: actor.userId, action: "SUPPLIER_PACKET_MANUAL_HANDOFF_RECORDED", targetType: "SUPPLIER_PACKET", targetId: input.packetId, metadata: {
       version: row.version, itemCount: packet.items.length, evidenceId: evidenceAudit?.id ?? null,
       evidenceKind: evidenceAudit?.kind ?? null, evidenceBytes: evidenceAudit?.bytes ?? null,
@@ -781,6 +1092,8 @@ export async function reconcileManualSupplierHandoffUnsent(headers: Headers, inp
   if (!/^pkt_[A-Za-z0-9_-]{6,80}$/.test(input.packetId) || !validId(input.attemptId)
       || !input.reason.trim() || input.reason.trim().length > 1000) throw new Error("Manual reconciliation details are required");
   return staffTx(headers, async (tx, actor) => {
+    await lockPacketSupplierContact(tx, input.packetId);
+    await lockPacketRetryHistory(tx, input.packetId);
     const row = await lockPacketRowAndItems(tx, input.packetId);
     await requirePacketAssignment(tx, input.packetId, actor);
     await lockPacketFulfillmentRows(tx, jsonPacket(row.packet));
@@ -963,24 +1276,23 @@ export async function listSupplierPacketReconciliation(headers: Headers, request
     const acknowledgements = packetIds.length ? await tx.select({ packetId: supplierPacketAcknowledgement.packetId })
       .from(supplierPacketAcknowledgement).where(inArray(supplierPacketAcknowledgement.packetId, packetIds)) : [];
     const acknowledgedPackets = new Set(acknowledgements.map((item) => item.packetId));
-    const [latestManualSent, latestManualPending, latestExport, latestDelivered] = packetIds.length ? await Promise.all([
-      tx.selectDistinctOn([supplierPacketAttempt.packetId], {
+    // These reads share one transaction connection, so Promise.all only queues concurrent pg client queries.
+    const latestManualSent = packetIds.length ? await tx.selectDistinctOn([supplierPacketAttempt.packetId], {
         packetId: supplierPacketAttempt.packetId, attemptId: supplierPacketAttempt.id, at: supplierPacketAttempt.sentAt,
       }).from(supplierPacketAttempt).where(and(inArray(supplierPacketAttempt.packetId, packetIds), inArray(supplierPacketAttempt.type, ["MANUAL_SENT", "MANUAL_SEND"]), eq(supplierPacketAttempt.state, "MANUAL_SENT"), isNotNull(supplierPacketAttempt.sentAt)))
-        .orderBy(supplierPacketAttempt.packetId, desc(supplierPacketAttempt.sentAt), desc(supplierPacketAttempt.id)),
-      tx.selectDistinctOn([supplierPacketAttempt.packetId], {
+        .orderBy(supplierPacketAttempt.packetId, desc(supplierPacketAttempt.sentAt), desc(supplierPacketAttempt.id)) : [];
+    const latestManualPending = packetIds.length ? await tx.selectDistinctOn([supplierPacketAttempt.packetId], {
         packetId: supplierPacketAttempt.packetId, createdAt: supplierPacketAttempt.createdAt,
       }).from(supplierPacketAttempt).where(and(inArray(supplierPacketAttempt.packetId, packetIds), eq(supplierPacketAttempt.type, "MANUAL_SEND"), eq(supplierPacketAttempt.state, "SENDING")))
-        .orderBy(supplierPacketAttempt.packetId, desc(supplierPacketAttempt.createdAt), desc(supplierPacketAttempt.id)),
-      tx.selectDistinctOn([supplierPacketAttempt.packetId], {
+        .orderBy(supplierPacketAttempt.packetId, desc(supplierPacketAttempt.createdAt), desc(supplierPacketAttempt.id)) : [];
+    const latestExport = packetIds.length ? await tx.selectDistinctOn([supplierPacketAttempt.packetId], {
         packetId: supplierPacketAttempt.packetId, attemptId: supplierPacketAttempt.id, at: supplierPacketAttempt.createdAt,
       }).from(supplierPacketAttempt).where(and(inArray(supplierPacketAttempt.packetId, packetIds), eq(supplierPacketAttempt.state, "EXPORTED")))
-        .orderBy(supplierPacketAttempt.packetId, desc(supplierPacketAttempt.createdAt), desc(supplierPacketAttempt.id)),
-      tx.selectDistinctOn([supplierPacketAttempt.packetId], {
+        .orderBy(supplierPacketAttempt.packetId, desc(supplierPacketAttempt.createdAt), desc(supplierPacketAttempt.id)) : [];
+    const latestDelivered = packetIds.length ? await tx.selectDistinctOn([supplierPacketAttempt.packetId], {
         packetId: supplierPacketAttempt.packetId, attemptId: supplierPacketAttempt.id, at: supplierPacketAttempt.deliveredAt,
       }).from(supplierPacketAttempt).where(and(inArray(supplierPacketAttempt.packetId, packetIds), eq(supplierPacketAttempt.state, "DELIVERED"), isNotNull(supplierPacketAttempt.deliveredAt)))
-        .orderBy(supplierPacketAttempt.packetId, desc(supplierPacketAttempt.deliveredAt), desc(supplierPacketAttempt.id)),
-    ]) : [[], [], [], []];
+        .orderBy(supplierPacketAttempt.packetId, desc(supplierPacketAttempt.deliveredAt), desc(supplierPacketAttempt.id)) : [];
     const latestManualSentByPacket = new Map(latestManualSent.map((attempt) => [attempt.packetId, attempt.at!]));
     const pendingManualPackets = new Set(latestManualPending.map((attempt) => attempt.packetId));
     const latestExportByPacket = new Map(latestExport.map((attempt) => [attempt.packetId, { id: attempt.attemptId, at: attempt.at }]));
@@ -1120,12 +1432,32 @@ export async function processResendWebhook(input: { body: string; eventId: strin
 
     const tagPresent = input.taggedAttemptId !== undefined && input.taggedAttemptId !== null;
     const tagValid = !tagPresent || RESEND_ATTEMPT_TAG_ID.test(input.taggedAttemptId!);
-    const [tagAttempt] = tagPresent && tagValid ? await tx.select().from(supplierPacketAttempt).where(and(
+    const [tagSeed] = tagPresent && tagValid ? await tx.select().from(supplierPacketAttempt).where(and(
       eq(supplierPacketAttempt.id, input.taggedAttemptId!), eq(supplierPacketAttempt.provider, "RESEND"), eq(supplierPacketAttempt.type, "SEND"),
-    )).for("update").limit(1) : [];
-    const [referenceAttempt] = await tx.select().from(supplierPacketAttempt).where(and(
+    )).limit(1) : [];
+    const [referenceSeed] = await tx.select().from(supplierPacketAttempt).where(and(
       eq(supplierPacketAttempt.provider, "RESEND"), eq(supplierPacketAttempt.providerReference, input.emailId),
     )).limit(1);
+    const seedAttemptIds = [...new Set([tagSeed?.id, referenceSeed?.id].filter((id): id is string => Boolean(id)))].sort();
+    const supplierRows = seedAttemptIds.length ? await tx.select({ supplierId: supplierPacket.supplierId })
+      .from(supplierPacketAttempt).innerJoin(supplierPacket, eq(supplierPacket.id, supplierPacketAttempt.packetId))
+      .where(inArray(supplierPacketAttempt.id, seedAttemptIds)) : [];
+    for (const supplierId of [...new Set(supplierRows.map((row) => row.supplierId))].sort()) {
+      await lockSupplierContact(tx, supplierId);
+    }
+    const [duplicateAfterLock] = await tx.select().from(supplierPacketProviderEvent)
+      .where(eq(supplierPacketProviderEvent.providerEventId, input.eventId)).limit(1);
+    if (duplicateAfterLock) {
+      const tagMatches = !input.taggedAttemptId || duplicateAfterLock.attemptId === input.taggedAttemptId;
+      if (duplicateAfterLock.providerEmailId !== input.emailId || !tagMatches || duplicateAfterLock.payloadHash !== input.payloadHash) {
+        return { matched: false, duplicate: true, conflict: true };
+      }
+      return { matched: duplicateAfterLock.attemptId !== null, duplicate: true };
+    }
+    const lockedCandidates = seedAttemptIds.length ? await tx.select().from(supplierPacketAttempt)
+      .where(inArray(supplierPacketAttempt.id, seedAttemptIds)).orderBy(asc(supplierPacketAttempt.id)).for("update") : [];
+    const tagAttempt = tagSeed ? lockedCandidates.find((candidate) => candidate.id === tagSeed.id) : undefined;
+    const referenceAttempt = lockedCandidates.find((candidate) => candidate.providerReference === input.emailId);
     const correlation = correlateResendAttempt({ emailId: input.emailId, taggedAttemptId: tagValid ? input.taggedAttemptId : "",
       taggedAttempt: tagAttempt, referenceAttempt });
     const correlationConflict = correlation.conflict;

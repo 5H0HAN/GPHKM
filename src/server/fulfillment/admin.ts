@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, lte, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, lte, notInArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { customerOrder, customerOrderItem, orderItemFulfillment, orderItemFulfillmentSupplier, orderItemWriting, publicationEvidence } from "@/db/order-schema";
 import { staffAccount, user } from "@/db/schema";
@@ -11,7 +11,7 @@ import { requireStaffAccess } from "@/server/auth/staff";
 import { appendAuditEvent } from "@/server/audit/append";
 import { nextWritingState, validateWritingText } from "@/modules/orders/writing";
 import { getConsentedSupplierPacketContent } from "@/server/orders/content-changes";
-import { supplierFulfillmentOutcome } from "@/db/supplier-outcome-schema";
+import { supplierFulfillmentOutcome, supplierFulfillmentOutcomeResolution, supplierFulfillmentRecovery } from "@/db/supplier-outcome-schema";
 import { recordCorrectionReverification } from "@/server/fulfillment/publication-corrections";
 import { FULFILLMENT_QUEUE_PAGE_SIZE, fulfillmentQueuePagination, fulfillmentQueueView } from "@/modules/fulfillment/queue-pagination";
 
@@ -30,6 +30,40 @@ async function staffTx<T>(headers: Headers, work: (tx: Parameters<Parameters<typ
     await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
     return work(tx, actor);
   });
+}
+
+async function currentSupplierHandoffEvidence(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], itemId: string) {
+  // Route writers lock the fulfillment item first; this scoped projection reads the route without requiring UPDATE access.
+  const result = await tx.execute(sql`select route.supplier_id is not null as has_supplier, exists (
+    select 1
+      from public.supplier_packet_item pi
+      join public.supplier_packet packet on packet.id = pi.packet_id
+      join public.supplier_packet_attempt attempt on attempt.packet_id = packet.id
+     where pi.order_item_id = route.order_item_id
+       and pi.route_generation = route.route_generation
+       and packet.supplier_id = route.supplier_id
+       and packet.superseded_at is null
+       and packet.version = (
+         select max(latest.version)
+           from public.supplier_packet latest
+           join public.supplier_packet_item latest_item on latest_item.packet_id = latest.id
+          where latest_item.order_item_id = pi.order_item_id
+            and latest.supplier_id = route.supplier_id
+            and latest.superseded_at is null
+       )
+       and (
+         (attempt.type = 'SEND' and attempt.state = 'DELIVERED' and attempt.delivered_at is not null)
+         or (attempt.type in ('MANUAL_SENT','MANUAL_SEND') and attempt.state = 'MANUAL_SENT'
+           and attempt.sent_at is not null and exists (
+             select 1 from public.supplier_packet_acknowledgement acknowledgement
+              where acknowledgement.packet_id = packet.id and acknowledgement.attempt_id = attempt.id
+           ))
+       )
+  ) as confirmed
+    from public.order_item_fulfillment_supplier route
+   where route.order_item_id = ${itemId}`);
+  return (result as unknown as { rows?: Array<{ has_supplier: boolean; confirmed: boolean }> }).rows?.[0]
+    ?? { has_supplier: false, confirmed: false };
 }
 
 export async function listFulfillmentQueue(headers: Headers, requestedPage?: unknown, requestedView?: unknown) {
@@ -100,18 +134,39 @@ export async function getFulfillmentItem(headers: Headers, itemId: string) {
     }).from(orderItemWriting).where(eq(orderItemWriting.orderItemId, itemId)).limit(1) : [];
     let currentContent: Awaited<ReturnType<typeof getConsentedSupplierPacketContent>> = null;
     try { currentContent = await getConsentedSupplierPacketContent(tx, itemId); } catch { /* Pending review or consent keeps the immutable original visible until approval. */ }
-    const [supplierRow] = await tx.select({ id: supplier.id, name: supplier.name, status: supplier.status, contactName: supplierContact.name, email: supplierContact.email })
+    const [supplierRow] = await tx.select({ id: supplier.id, name: supplier.name, status: supplier.status,
+      routeGeneration: orderItemFulfillmentSupplier.routeGeneration, contactName: supplierContact.name, email: supplierContact.email })
       .from(orderItemFulfillmentSupplier)
       .innerJoin(supplier, eq(supplier.id, orderItemFulfillmentSupplier.supplierId))
       .leftJoin(supplierContact, and(eq(supplierContact.supplierId, supplier.id), eq(supplierContact.isPrimary, true)))
       .where(eq(orderItemFulfillmentSupplier.orderItemId, itemId)).limit(1);
+    const handoffEvidence = fulfillment.state === "HANDOFF_PENDING"
+      ? await currentSupplierHandoffEvidence(tx, itemId) : { has_supplier: Boolean(supplierRow), confirmed: false };
     const evidence = await tx.select({ id: publicationEvidence.id, liveUrl: publicationEvidence.liveUrl, verifiedAt: publicationEvidence.verifiedAt })
       .from(publicationEvidence).where(eq(publicationEvidence.orderItemId, itemId)).orderBy(desc(publicationEvidence.verifiedAt)).limit(10);
     const outcomes = await tx.select({ id: supplierFulfillmentOutcome.id, outcome: supplierFulfillmentOutcome.outcome,
       reason: supplierFulfillmentOutcome.reason, createdAt: supplierFulfillmentOutcome.createdAt,
       supportCaseId: supplierFulfillmentOutcome.supportCaseId })
       .from(supplierFulfillmentOutcome).where(eq(supplierFulfillmentOutcome.orderItemId, itemId))
-      .orderBy(desc(supplierFulfillmentOutcome.createdAt)).limit(20);
+      .orderBy(desc(supplierFulfillmentOutcome.createdAt), desc(supplierFulfillmentOutcome.id)).limit(20);
+    const [unresolved] = await tx.select({ total: sql<number>`count(*)::int`,
+      currentRoute: sql<number>`count(*) filter (where ${supplierFulfillmentOutcome.supplierId} = ${supplierRow?.id ?? ""} and ${supplierFulfillmentOutcome.routeGeneration} = ${supplierRow?.routeGeneration ?? 0})::int`,
+      cases: sql<number>`count(distinct ${supplierFulfillmentOutcome.supportCaseId})::int` })
+      .from(supplierFulfillmentOutcome).leftJoin(supplierFulfillmentOutcomeResolution,
+        eq(supplierFulfillmentOutcomeResolution.outcomeId, supplierFulfillmentOutcome.id))
+      .where(and(eq(supplierFulfillmentOutcome.orderItemId, itemId), isNull(supplierFulfillmentOutcomeResolution.outcomeId)));
+    const canRecoverSameSupplier = actor.role === "SUPER_ADMIN" && fulfillment.state === "ON_HOLD"
+      && fulfillment.assignedAdminId === actor.userId && supplierRow?.status === "ACTIVE"
+      && Boolean(supplierRow.email) && unresolved.total > 0 && unresolved.total === unresolved.currentRoute && unresolved.cases === 1;
+    const canOfferEquivalent = fulfillment.state === "ON_HOLD"
+      && mayReadFulfillmentContent({ role: actor.role, userId: actor.userId, assignedAdminId: fulfillment.assignedAdminId })
+      && unresolved.total > 0 && unresolved.total === unresolved.currentRoute && unresolved.cases === 1;
+    const recoveries = await tx.select({ id: supplierFulfillmentRecovery.id, reason: supplierFulfillmentRecovery.reason,
+      routeGeneration: supplierFulfillmentRecovery.routeGeneration, createdAt: supplierFulfillmentRecovery.createdAt,
+      actorName: user.name, supportCaseId: supplierFulfillmentRecovery.supportCaseId })
+      .from(supplierFulfillmentRecovery).innerJoin(user, eq(user.id, supplierFulfillmentRecovery.actorUserId))
+      .where(eq(supplierFulfillmentRecovery.orderItemId, itemId))
+      .orderBy(desc(supplierFulfillmentRecovery.createdAt), desc(supplierFulfillmentRecovery.id)).limit(20);
     await appendAuditEvent(tx, {
       actorUserId: actor.userId,
       action: "FULFILLMENT_ITEM_CONTENT_VIEWED",
@@ -123,7 +178,9 @@ export async function getFulfillmentItem(headers: Headers, itemId: string) {
       ...item, targetUrl: currentContent.targetUrl, anchorText: currentContent.anchorText,
       articleText: currentContent.articleText ?? item.articleText,
     } : item;
-    return { fulfillment, item: effectiveItem, writing: writing ?? null, supplier: supplierRow ?? null, evidence, outcomes, actorRole: actor.role };
+    return { fulfillment, item: effectiveItem, writing: writing ?? null, supplier: supplierRow ?? null,
+      supplierHandoffConfirmed: handoffEvidence.confirmed,
+      evidence, outcomes, recoveries, canRecoverSameSupplier, canOfferEquivalent, actorRole: actor.role };
   });
 }
 
@@ -197,34 +254,16 @@ export async function updateFulfillmentState(headers: Headers, input: { itemId: 
     const [fulfillment] = await tx.select().from(orderItemFulfillment)
       .where(eq(orderItemFulfillment.orderItemId, input.itemId)).for("update").limit(1);
     if (!fulfillment || !mayReadFulfillmentContent({ role: actor.role, userId: actor.userId, assignedAdminId: fulfillment.assignedAdminId })) throw new Error("Item unavailable");
+    if (input.to === "HANDOFF_PENDING" && fulfillment.state === "READY_FOR_HANDOFF") {
+      throw new Error("Prepare the supplier packet before entering handoff preparation");
+    }
     const [item] = await tx.select().from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
       .where(eq(customerOrderItem.id, input.itemId)).limit(1);
     if (!item) throw new Error("Item unavailable");
     if ((input.to as ItemState) === "IN_FULFILLMENT") {
-      const [fulfillmentSupplier] = await tx.select({ supplierId: orderItemFulfillmentSupplier.supplierId })
-        .from(orderItemFulfillmentSupplier).where(eq(orderItemFulfillmentSupplier.orderItemId, input.itemId)).for("share").limit(1);
-      if (fulfillmentSupplier?.supplierId) {
-        const handoffResult = await tx.execute(sql`select exists (
-          select 1 from public.supplier_packet_item pi
-          join public.supplier_packet packet on packet.id = pi.packet_id
-          join public.order_item_fulfillment_supplier route on route.order_item_id = pi.order_item_id
-          join public.supplier_packet_attempt attempt on attempt.packet_id = pi.packet_id
-          where pi.order_item_id = ${input.itemId}
-            and packet.supplier_id = route.supplier_id
-            and packet.superseded_at is null
-            and packet.version = (
-              select max(latest.version)
-              from public.supplier_packet latest
-              join public.supplier_packet_item latest_item on latest_item.packet_id = latest.id
-              where latest_item.order_item_id = pi.order_item_id
-                and latest.supplier_id = route.supplier_id
-                and latest.superseded_at is null
-            )
-            and ((attempt.type = 'SEND' and attempt.state = 'DELIVERED' and attempt.delivered_at is not null)
-              or (attempt.type in ('MANUAL_SENT','MANUAL_SEND') and attempt.state = 'MANUAL_SENT' and attempt.sent_at is not null))
-        ) as confirmed`);
-        const confirmed = (handoffResult as unknown as { rows?: Array<{ confirmed: boolean }> }).rows?.[0]?.confirmed === true;
-        if (!confirmed) throw new Error("Record confirmed supplier delivery or manual handoff before starting placement work");
+      const handoffEvidence = await currentSupplierHandoffEvidence(tx, input.itemId);
+      if (handoffEvidence.has_supplier && !handoffEvidence.confirmed) {
+        throw new Error("Confirm supplier delivery before starting placement work");
       }
     }
     const orderItem = item.customer_order_item;

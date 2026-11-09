@@ -155,7 +155,7 @@ export function transitionItem(input: {
     ...item,
     state: to,
     updatedAt: input.at,
-    ...(to === "IN_FULFILLMENT" && item.state === "HANDOFF_PENDING" ? { handedOffAt: input.at } : {}),
+    ...(to === "IN_FULFILLMENT" && item.state === "HANDOFF_PENDING" ? { handedOffAt: item.handedOffAt ?? input.at } : {}),
     ...(to === "IN_FULFILLMENT" && item.state === "READY_FOR_HANDOFF" ? { workStartedAt: input.at } : {}),
     ...(to === "COMPLETED" ? { completedAt: input.at } : {}),
     ...(to === "ON_HOLD" ? { stateBeforeHold: item.state } : {}),
@@ -167,6 +167,31 @@ export function transitionItem(input: {
     item: updated,
     event: { id: input.eventId, itemId: item.id, actorId: input.actorId, at: input.at, from: item.state, to, reason: input.reason.trim(), ...(input.correctionCaseId ? { correctionCaseId: input.correctionCaseId } : {}) },
   };
+}
+
+export function recordManualHandoffCutoff(
+  item: Pick<ItemSnapshot, "state" | "updatedAt" | "handedOffAt" | "workStartedAt">,
+  sentAt: string,
+) {
+  if (!Number.isFinite(Date.parse(sentAt)) || !["HANDOFF_PENDING", "IN_FULFILLMENT"].includes(item.state)) {
+    throw new Error("Manual handoff cutoff requires an eligible item and valid send time");
+  }
+  const updatedAt = new Date(Math.max(Date.parse(item.updatedAt), Date.parse(sentAt))).toISOString();
+  return { ...item, handedOffAt: item.handedOffAt ?? sentAt, updatedAt };
+}
+
+export function confirmManualSupplierReceipt(
+  item: Pick<ItemSnapshot, "state" | "updatedAt" | "handedOffAt" | "workStartedAt">,
+  acknowledgedAt: string,
+) {
+  if (item.state !== "HANDOFF_PENDING" || !item.handedOffAt
+      || !Number.isFinite(Date.parse(item.handedOffAt)) || !Number.isFinite(Date.parse(acknowledgedAt))) {
+    throw new Error("Manual supplier receipt requires a sent handoff that is still preparing");
+  }
+  const workStartedAt = item.workStartedAt
+    ?? new Date(Math.max(Date.parse(item.handedOffAt), Date.parse(acknowledgedAt))).toISOString();
+  const updatedAt = new Date(Math.max(Date.parse(item.updatedAt), Date.parse(workStartedAt))).toISOString();
+  return { ...item, state: "IN_FULFILLMENT" as const, workStartedAt, updatedAt, customerStatus: "IN_PROGRESS" as const };
 }
 
 export function customerMilestone(state: ItemState): CustomerMilestone {
@@ -214,6 +239,7 @@ export type PacketItemInput = Readonly<{
     contentHash: string;
     supplierId: string;
     recipient: string;
+    consentEventId: string | null;
     acceptedAt: string;
   }>;
 }>;
@@ -242,6 +268,7 @@ export type SupplierPacket = Readonly<{
       contentHash: string;
       supplierId: string;
       recipient: string;
+      consentEventId: string | null;
       acceptedAt: string;
     }>;
   }>>;
@@ -301,7 +328,8 @@ export function buildSupplierPacket(input: {
     if (seen.has(item.orderItemId)) throw new Error("Packet cannot repeat an order item");
     seen.add(item.orderItemId);
     if (!item.approvedArticle) throw new Error("Only customer-provided or approved final articles may be handed off");
-    if (!item.consent.disclosureVersion.trim() || !Number.isFinite(Date.parse(item.consent.acceptedAt))) throw new Error("Content-sharing consent evidence is incomplete");
+    if (!item.consent.disclosureVersion.trim() || !Number.isFinite(Date.parse(item.consent.acceptedAt))
+      || (item.consent.consentEventId !== null && !safeId(item.consent.consentEventId))) throw new Error("Content-sharing consent evidence is incomplete");
     if (item.consent.supplierId !== item.supplierId || normalizeEmail(item.consent.recipient) !== normalizeEmail(input.recipient)) {
       throw new Error("Content-sharing consent does not match supplier and recipient");
     }

@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { customerOrder, customerOrderItem, orderItemFulfillment, orderItemFulfillmentSupplier, orderItemWriting } from "@/db/order-schema";
 import { orderItemContentChangeEvent, orderItemContentChangeRequest, orderItemContentVersion } from "@/db/change-request-schema";
@@ -9,7 +9,8 @@ import { supplierContact } from "@/db/catalog-schema";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganizationContext } from "@/server/identity/customer-context";
 import { appendAuditEvent } from "@/server/audit/append";
-import { contentChangeStatus, hashOrderContent, mayRequestContentChange, mergeContentChange, validateContentChangePatch, type OrderContent } from "@/modules/orders/content-changes";
+import { logSafeFailure } from "@/server/observability/safe-log";
+import { contentChangeStatus, hashOrderContent, isStaleRecipientReconsent, mayRequestContentChange, mergeContentChange, validateContentChangePatch, type ContentChangeStatus, type OrderContent } from "@/modules/orders/content-changes";
 import { mayReadFulfillmentContent } from "@/modules/fulfillment/console";
 import { CONTENT_SHARING_NOTICE_VERSION } from "@/modules/orders/checkout";
 import { resolvePacketContentRows, type PacketContent as BatchPacketContent } from "@/modules/orders/packet-content";
@@ -17,12 +18,26 @@ import { resolvePacketContentRows, type PacketContent as BatchPacketContent } fr
 const validId = (value: string) => /^[0-9a-f-]{36}$/i.test(value);
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+function packetRead<T>(stage: string, buildQuery: () => PromiseLike<T>): Promise<T> {
+  let query: PromiseLike<T>;
+  try {
+    query = buildQuery();
+  } catch (error) {
+    logSafeFailure("supplier_packet_content_query_failed", error, randomUUID(), { reasonCode: stage });
+    throw error;
+  }
+  return Promise.resolve(query).catch((error: unknown) => {
+    logSafeFailure("supplier_packet_content_query_failed", error, randomUUID(), { reasonCode: stage });
+    throw error;
+  });
+}
+
 function toContent(row: { targetUrl: string; anchorText: string; articleText: string | null; instructions?: string | null }): OrderContent {
   return Object.freeze({ targetUrl: row.targetUrl, anchorText: row.anchorText, articleText: row.articleText, instructions: row.instructions ?? "" });
 }
 
 async function latestRequestEvents(tx: Tx, requestId: string) {
-  return tx.select({ eventType: orderItemContentChangeEvent.eventType, versionId: orderItemContentChangeEvent.versionId, contentHash: orderItemContentChangeEvent.contentHash, noticeVersion: orderItemContentChangeEvent.noticeVersion, reason: orderItemContentChangeEvent.reason, createdAt: orderItemContentChangeEvent.createdAt })
+  return tx.select({ id: orderItemContentChangeEvent.id, eventType: orderItemContentChangeEvent.eventType, versionId: orderItemContentChangeEvent.versionId, contentHash: orderItemContentChangeEvent.contentHash, noticeVersion: orderItemContentChangeEvent.noticeVersion, reason: orderItemContentChangeEvent.reason, createdAt: orderItemContentChangeEvent.createdAt, createdAtExact: sql<string>`to_char(${orderItemContentChangeEvent.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')` })
     .from(orderItemContentChangeEvent).where(eq(orderItemContentChangeEvent.requestId, requestId))
     .orderBy(desc(orderItemContentChangeEvent.createdAt), desc(orderItemContentChangeEvent.id));
 }
@@ -162,49 +177,144 @@ export async function reviewContentChangeRequest(headers: Headers, requestId: st
 }
 
 export async function consentToContentChange(headers: Headers, organizationId: string, requestId: string) {
-  if (!validId(requestId) || !organizationId || organizationId.length > 128) throw new Error("Content consent is unavailable");
+  const correlationId = randomUUID();
+  let stage = "INPUT_VALIDATION";
+  try {
+    if (!validId(requestId) || !organizationId || organizationId.length > 128) throw new Error("Content consent is unavailable");
+    stage = "CUSTOMER_AUTH";
+    const actor = await requireVerifiedCustomer(headers);
+    stage = "ORGANIZATION_CONTEXT";
+    return await withProtectedOrganizationContext(headers, organizationId, async (tx) => {
+      stage = "REQUEST_LOOKUP";
+      const [request] = await tx.select().from(orderItemContentChangeRequest).where(eq(orderItemContentChangeRequest.id, requestId)).limit(1);
+      if (!request || request.requestedByUserId !== actor.userId) throw new Error("Content consent is unavailable");
+      stage = "ORDERER_CHECK";
+      const [orderRow] = await tx.select({ orderId: customerOrder.id, ordererId: customerOrder.actorUserId })
+        .from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
+        .where(and(eq(customerOrderItem.id, request.orderItemId), eq(customerOrder.organizationId, organizationId))).limit(1);
+      if (!orderRow || orderRow.ordererId !== actor.userId) throw new Error("Content consent is unavailable");
+      // Match packet preparation's order -> supplier -> item lock order. The
+      // scoped SECURITY DEFINER helper can see the current route without
+      // exposing staff-only supplier data through customer RLS.
+      stage = "RECIPIENT_LOCKS";
+      await tx.execute(sql`select public.gphkm_lock_customer_recipient_reconsent(${requestId})`);
+      // The consent-event trigger locks this fulfillment row and rechecks that
+      // handoff has not started. Customer row writes stay read-only until the
+      // consent event, where the trigger revalidates this locked recipient.
+      stage = "FULFILLMENT_GATE";
+      const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, request.orderItemId)).limit(1);
+      const recipientReconsent = request.purpose === "RECIPIENT_RECONSENT";
+      if (!fulfillment || (recipientReconsent
+        ? fulfillment.state !== "HANDOFF_PENDING" || !fulfillment.handedOffAt || Boolean(fulfillment.workStartedAt)
+        : fulfillment.handedOffAt || ["IN_FULFILLMENT", "PUBLICATION_PENDING", "EVIDENCE_REVIEW", "COMPLETED", "CANCELED_REFUNDED"].includes(fulfillment.state))) {
+        throw new Error("Content consent is closed after handoff");
+      }
+      if (recipientReconsent) {
+        stage = "RETRY_ELIGIBILITY";
+        const eligibleResult = await tx.execute(sql`select public.gphkm_supplier_packet_retry_eligible(${request.orderItemId}, NULL) as eligible`);
+        const eligible = (eligibleResult as unknown as { rows?: Array<{ eligible: boolean }> }).rows?.[0]?.eligible === true;
+        if (!eligible) throw new Error("Recipient re-consent is no longer available");
+      }
+      stage = "APPROVED_CONTENT";
+      const events = await latestRequestEvents(tx, requestId);
+      if (contentChangeStatus(events) !== "APPROVED_AWAITING_CONSENT" || !events[0]?.versionId) throw new Error("No approved content version is awaiting consent");
+      const consentRows = await tx.execute(sql`select version_id, version, content_hash from public.gphkm_customer_approved_content(${requestId}, ${actor.userId}, ${organizationId})`);
+      const version = (consentRows as unknown as { rows?: Array<{ version_id: string; version: number; content_hash: string }> }).rows?.[0];
+      if (!version || version.version_id !== events[0].versionId || version.content_hash !== events[0].contentHash) throw new Error("Approved content version is unavailable");
+      stage = "CONSENT_EVENT_INSERT";
+      await tx.insert(orderItemContentChangeEvent).values({ id: randomUUID(), requestId, actorUserId: actor.userId, eventType: "CONSENTED", versionId: version.version_id, contentHash: version.content_hash, noticeVersion: CONTENT_SHARING_NOTICE_VERSION, createdAt: new Date() });
+      stage = "AUDIT_EVENT_INSERT";
+      await appendAuditEvent(tx, { organizationId, actorUserId: actor.userId, action: "ORDER_CONTENT_CHANGE_CONSENTED", targetType: "CUSTOMER_ORDER_ITEM", targetId: request.orderItemId, reasonCode: "SUPPLIER_SHARING_CONSENT", metadata: { result: "CONSENTED", version: version.version } });
+      return { requestId, status: "CONSENTED" as const, version: version.version, purpose: request.purpose };
+    });
+  } catch (error) {
+    logSafeFailure("customer_content_consent_failed", error, correlationId, { organizationId, reasonCode: stage });
+    throw error;
+  }
+}
+
+export type CustomerContentChange = Readonly<{
+  id: string;
+  requestNumber: number;
+  purpose: string;
+  status: ContentChangeStatus | "STALE";
+  reviewNote: string | null;
+  createdAt: Date;
+  approvedContent: { version: number; targetUrl: string; anchorText: string; articleText: string | null; instructions: string } | null;
+}>;
+
+// Explicit safe projection for UI use; callers never spread database rows into responses.
+export async function listContentChangesForCustomerBatch(headers: Headers, organizationId: string, itemIds: string[]): Promise<Map<string, CustomerContentChange[]>> {
+  const ids = [...new Set(itemIds)];
+  if (!organizationId || organizationId.length > 128 || ids.length > 500 || ids.some((id) => !validId(id))) {
+    throw new Error("Order content is unavailable");
+  }
   const actor = await requireVerifiedCustomer(headers);
-  return withProtectedOrganizationContext(headers, organizationId, async (tx) => {
-    const [request] = await tx.select().from(orderItemContentChangeRequest).where(eq(orderItemContentChangeRequest.id, requestId)).limit(1);
-    if (!request || request.requestedByUserId !== actor.userId) throw new Error("Content consent is unavailable");
-    // The consent-event trigger locks this fulfillment row and rechecks that
-    // handoff has not started. Keep the customer command on a read-only RLS
-    // path and retain the serialization guard at the database boundary.
-    const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, request.orderItemId)).limit(1);
-    if (!fulfillment || fulfillment.handedOffAt || ["IN_FULFILLMENT", "PUBLICATION_PENDING", "EVIDENCE_REVIEW", "COMPLETED", "CANCELED_REFUNDED"].includes(fulfillment.state)) throw new Error("Content consent is closed after handoff");
-    const events = await latestRequestEvents(tx, requestId);
-    if (contentChangeStatus(events) !== "APPROVED_AWAITING_CONSENT" || !events[0]?.versionId) throw new Error("No approved content version is awaiting consent");
-    const consentRows = await tx.execute(sql`select version_id, version, content_hash from public.gphkm_customer_approved_content(${requestId}, ${actor.userId}, ${organizationId})`);
-    const version = (consentRows as unknown as { rows?: Array<{ version_id: string; version: number; content_hash: string }> }).rows?.[0];
-    if (!version || version.version_id !== events[0].versionId || version.content_hash !== events[0].contentHash) throw new Error("Approved content version is unavailable");
-    await tx.insert(orderItemContentChangeEvent).values({ id: randomUUID(), requestId, actorUserId: actor.userId, eventType: "CONSENTED", versionId: version.version_id, contentHash: version.content_hash, noticeVersion: CONTENT_SHARING_NOTICE_VERSION, createdAt: new Date() });
-    await appendAuditEvent(tx, { organizationId, actorUserId: actor.userId, action: "ORDER_CONTENT_CHANGE_CONSENTED", targetType: "CUSTOMER_ORDER_ITEM", targetId: request.orderItemId, reasonCode: "SUPPLIER_SHARING_CONSENT", metadata: { result: "CONSENTED", version: version.version } });
-    return { requestId, status: "CONSENTED" as const, version: version.version };
+  return withOrganizationContext(headers, organizationId, async (tx) => {
+    const items = ids.length ? await tx.select({ itemId: customerOrderItem.id, state: orderItemFulfillment.state,
+      handedOffAt: orderItemFulfillment.handedOffAt, workStartedAt: orderItemFulfillment.workStartedAt })
+      .from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
+      .innerJoin(orderItemFulfillment, eq(orderItemFulfillment.orderItemId, customerOrderItem.id))
+      .where(and(inArray(customerOrderItem.id, ids), eq(customerOrder.organizationId, organizationId), eq(customerOrder.actorUserId, actor.userId))) : [];
+    const changesByItem = new Map<string, CustomerContentChange[]>(items.map((item) => [item.itemId, []]));
+    if (!items.length) return changesByItem;
+
+    const rankedRequests = tx.select({ id: orderItemContentChangeRequest.id,
+      itemId: orderItemContentChangeRequest.orderItemId, requestNumber: orderItemContentChangeRequest.requestNumber,
+      purpose: orderItemContentChangeRequest.purpose, createdAt: orderItemContentChangeRequest.createdAt,
+      rowNumber: sql<number>`row_number() over (partition by ${orderItemContentChangeRequest.orderItemId} order by ${orderItemContentChangeRequest.requestNumber} desc)`.as("row_number"),
+    }).from(orderItemContentChangeRequest).where(inArray(orderItemContentChangeRequest.orderItemId, [...changesByItem.keys()])).as("ranked_customer_content_requests");
+    const requests = await tx.select({ id: rankedRequests.id, itemId: rankedRequests.itemId,
+      requestNumber: rankedRequests.requestNumber, purpose: rankedRequests.purpose, createdAt: rankedRequests.createdAt })
+      .from(rankedRequests).where(lte(rankedRequests.rowNumber, 10))
+      .orderBy(asc(rankedRequests.itemId), desc(rankedRequests.requestNumber));
+    if (!requests.length) return changesByItem;
+
+    const requestIds = requests.map((request) => request.id);
+    const [latestEvents, approvedResult] = await Promise.all([
+      tx.selectDistinctOn([orderItemContentChangeEvent.requestId], {
+        requestId: orderItemContentChangeEvent.requestId, eventType: orderItemContentChangeEvent.eventType,
+        reason: orderItemContentChangeEvent.reason,
+      }).from(orderItemContentChangeEvent).where(inArray(orderItemContentChangeEvent.requestId, requestIds))
+        .orderBy(orderItemContentChangeEvent.requestId, desc(orderItemContentChangeEvent.createdAt), desc(orderItemContentChangeEvent.id)),
+      tx.execute(sql`select request.id as request_id, approved.version, approved.target_url, approved.anchor_text,
+          approved.article_text, approved.instructions
+        from public.order_item_content_change_request request
+        left join lateral public.gphkm_customer_approved_content(request.id, ${actor.userId}, ${organizationId}) approved on true
+        where request.id in (${sql.join(requestIds.map((requestId) => sql`${requestId}`), sql`, `)})`),
+    ]);
+    const eventByRequest = new Map(latestEvents.map((event) => [event.requestId, event]));
+    const approvedRows = (approvedResult as unknown as { rows?: Array<{ request_id: string; version: number | null;
+      target_url: string | null; anchor_text: string | null; article_text: string | null; instructions: string | null }> }).rows ?? [];
+    const approvedByRequest = new Map(approvedRows.filter((row) => row.version !== null).map((row) => [row.request_id, row]));
+    const itemById = new Map(items.map((item) => [item.itemId, item]));
+    for (const request of requests) {
+      const event = eventByRequest.get(request.id);
+      const status = contentChangeStatus(event ? [event] : []);
+      if (!status) continue;
+      const approved = approvedByRequest.get(request.id);
+      const item = itemById.get(request.itemId);
+      const staleReconsent = request.purpose === "RECIPIENT_RECONSENT"
+        && (status === "APPROVED_AWAITING_CONSENT" || status === "CONSENTED") && !approved
+        && item?.state === "HANDOFF_PENDING" && item.handedOffAt !== null && item.workStartedAt === null;
+      changesByItem.get(request.itemId)?.push({
+        id: request.id, requestNumber: request.requestNumber, purpose: request.purpose,
+        status: staleReconsent ? "STALE" : status,
+        reviewNote: staleReconsent ? "The fulfillment contact or delivery status changed. This approval is no longer valid; wait for a refreshed request."
+          : status === "REJECTED" ? event?.reason ?? null : null,
+        createdAt: request.createdAt,
+        approvedContent: approved ? { version: approved.version!, targetUrl: approved.target_url!,
+          anchorText: approved.anchor_text!, articleText: approved.article_text, instructions: approved.instructions! } : null,
+      });
+    }
+    return changesByItem;
   });
 }
 
-// Explicit safe projection for UI use; callers never spread database rows into responses.
 export async function listContentChangesForCustomer(headers: Headers, organizationId: string, itemId: string) {
   if (!validId(itemId)) throw new Error("Order item unavailable");
-  const actor = await requireVerifiedCustomer(headers);
-  return withOrganizationContext(headers, organizationId, async (tx) => {
-    const [item] = await tx.select({ ordererId: customerOrder.actorUserId, writingSelected: customerOrderItem.writingSelected })
-      .from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId)).where(and(eq(customerOrderItem.id, itemId), eq(customerOrder.organizationId, organizationId))).limit(1);
-    if (!item || item.ordererId !== actor.userId) return [];
-    const requests = await tx.select({ id: orderItemContentChangeRequest.id, requestNumber: orderItemContentChangeRequest.requestNumber, createdAt: orderItemContentChangeRequest.createdAt })
-      .from(orderItemContentChangeRequest).where(eq(orderItemContentChangeRequest.orderItemId, itemId)).orderBy(desc(orderItemContentChangeRequest.requestNumber)).limit(10);
-    const result = [];
-    for (const request of requests) {
-      const events = await latestRequestEvents(tx, request.id);
-      const status = contentChangeStatus(events);
-      const contentResult = status === "APPROVED_AWAITING_CONSENT" || status === "CONSENTED"
-        ? await tx.execute(sql`select version, target_url, anchor_text, article_text, instructions from public.gphkm_customer_approved_content(${request.id}, ${actor.userId}, ${organizationId})`)
-        : null;
-      const versions = contentResult ? (contentResult as unknown as { rows?: Array<{ version: number; target_url: string; anchor_text: string; article_text: string | null; instructions: string }> }).rows ?? [] : [];
-      result.push({ id: request.id, requestNumber: request.requestNumber, status, reviewNote: status === "REJECTED" ? events[0]?.reason ?? null : null, createdAt: request.createdAt, approvedContent: versions[0] ? { version: versions[0].version, targetUrl: versions[0].target_url, anchorText: versions[0].anchor_text, articleText: versions[0].article_text, instructions: versions[0].instructions } : null });
-    }
-    return result;
-  });
+  const changes = await listContentChangesForCustomerBatch(headers, organizationId, [itemId]);
+  return changes.get(itemId) ?? [];
 }
 
 export async function listContentChangesForStaff(headers: Headers, itemId: string) {
@@ -215,14 +325,56 @@ export async function listContentChangesForStaff(headers: Headers, itemId: strin
     const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, itemId)).limit(1);
     if (!fulfillment || !mayReadFulfillmentContent({ role: actor.role, userId: actor.userId, assignedAdminId: fulfillment.assignedAdminId })) throw new Error("Order item unavailable");
     const requests = await tx.select().from(orderItemContentChangeRequest).where(eq(orderItemContentChangeRequest.orderItemId, itemId)).orderBy(desc(orderItemContentChangeRequest.requestNumber)).limit(10);
-    const result = [];
-    for (const request of requests) {
-      const events = await latestRequestEvents(tx, request.id);
-      const status = contentChangeStatus(events);
-      const version = status === "APPROVED_AWAITING_CONSENT" || status === "CONSENTED" ? (await tx.select().from(orderItemContentVersion).where(eq(orderItemContentVersion.requestId, request.id)).limit(1))[0] : null;
-      result.push({ id: request.id, requestNumber: request.requestNumber, status, requestedByUserId: request.requestedByUserId, createdAt: request.createdAt, patch: { targetUrl: request.targetUrl, anchorText: request.anchorText, articleText: request.articleText, instructions: request.instructions }, approvedVersion: version ? { version: version.version, contentHash: version.contentHash, recipientEmail: version.recipientEmail, targetUrl: version.targetUrl, anchorText: version.anchorText, articleText: version.articleText, instructions: version.instructions } : null });
-    }
-    return result;
+    if (!requests.length) return [];
+    const requestIds = requests.map((request) => request.id);
+    const [latestEvents, versions, currentRoute, latestContentVersions] = await Promise.all([
+      tx.selectDistinctOn([orderItemContentChangeEvent.requestId], {
+        requestId: orderItemContentChangeEvent.requestId, id: orderItemContentChangeEvent.id,
+        eventType: orderItemContentChangeEvent.eventType, versionId: orderItemContentChangeEvent.versionId,
+        contentHash: orderItemContentChangeEvent.contentHash, noticeVersion: orderItemContentChangeEvent.noticeVersion,
+        reason: orderItemContentChangeEvent.reason, createdAt: orderItemContentChangeEvent.createdAt,
+        createdAtExact: sql<string>`to_char(${orderItemContentChangeEvent.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
+      }).from(orderItemContentChangeEvent).where(inArray(orderItemContentChangeEvent.requestId, requestIds))
+        .orderBy(orderItemContentChangeEvent.requestId, desc(orderItemContentChangeEvent.createdAt), desc(orderItemContentChangeEvent.id)),
+      tx.select().from(orderItemContentVersion).where(inArray(orderItemContentVersion.requestId, requestIds)),
+      tx.select({ supplierId: orderItemFulfillmentSupplier.supplierId, recipientEmail: supplierContact.email })
+        .from(orderItemFulfillmentSupplier)
+        .leftJoin(supplierContact, and(eq(supplierContact.supplierId, orderItemFulfillmentSupplier.supplierId), eq(supplierContact.isPrimary, true)))
+        .where(eq(orderItemFulfillmentSupplier.orderItemId, itemId)).limit(1),
+      tx.select({ version: orderItemContentVersion.version }).from(orderItemContentVersion)
+        .where(eq(orderItemContentVersion.orderItemId, itemId)).orderBy(desc(orderItemContentVersion.version)).limit(1),
+    ]);
+    const eventByRequest = new Map(latestEvents.map((event) => [event.requestId, event]));
+    const versionByRequest = new Map(versions.map((version) => [version.requestId, version]));
+    const route = currentRoute[0];
+    const latestContentVersionNumber = latestContentVersions[0]?.version ?? null;
+    return requests.map((request) => {
+      const status = contentChangeStatus(eventByRequest.has(request.id) ? [eventByRequest.get(request.id)!] : []);
+      const version = versionByRequest.get(request.id);
+      const stale = isStaleRecipientReconsent({
+        purpose: request.purpose, status, versionNumber: version?.version ?? null,
+        latestContentVersionNumber, versionSupplierId: version?.supplierId ?? null,
+        versionRecipientEmail: version?.recipientEmail ?? null, currentSupplierId: route?.supplierId ?? null,
+        currentRecipientEmail: route?.recipientEmail ?? null, fulfillmentState: fulfillment.state,
+        handedOffAt: fulfillment.handedOffAt, workStartedAt: fulfillment.workStartedAt,
+      });
+      const reviewNote = stale
+        ? !version || !route || version.supplierId !== route.supplierId
+          || version.recipientEmail.trim().toLowerCase() !== (route.recipientEmail ?? "").trim().toLowerCase()
+          ? "This version is not bound to the current supplier contact. The orderer must approve a version for the current contact before a packet can be prepared."
+          : status !== "CONSENTED" && (fulfillment.state !== "HANDOFF_PENDING" || fulfillment.workStartedAt !== null)
+            ? "The handoff or work status changed. This recipient approval is no longer active."
+            : status === "APPROVED_AWAITING_CONSENT" && latestContentVersionNumber !== null && version.version !== latestContentVersionNumber
+              ? "A newer approved content version superseded this approval. Only the current version can be approved for a supplier packet."
+              : "This re-consent has no current recipient-bound approval. Refresh it before preparing a supplier packet."
+        : status === "REJECTED" ? eventByRequest.get(request.id)?.reason ?? null : null;
+      return {
+        id: request.id, requestNumber: request.requestNumber, status: stale ? "STALE" : status,
+        reviewNote, requestedByUserId: request.requestedByUserId, createdAt: request.createdAt,
+        patch: { targetUrl: request.targetUrl, anchorText: request.anchorText, articleText: request.articleText, instructions: request.instructions },
+        approvedVersion: version ? { version: version.version, contentHash: version.contentHash, recipientEmail: version.recipientEmail, targetUrl: version.targetUrl, anchorText: version.anchorText, articleText: version.articleText, instructions: version.instructions } : null,
+      };
+    });
   });
 }
 
@@ -275,7 +427,8 @@ export async function getConsentedSupplierPacketContent(tx: Tx, itemId: string) 
     articleText: latestVersion.articleText,
     instructions: latestVersion.instructions, supplierId: latestVersion.supplierId,
     recipientEmail: latestVersion.recipientEmail, contentHash: latestVersion.contentHash,
-    noticeVersion: matchingConsent.noticeVersion, consentedAt: matchingConsent.createdAt,
+    noticeVersion: matchingConsent.noticeVersion, consentEventId: matchingConsent.id,
+    consentedAt: matchingConsent.createdAtExact,
     ...(acceptedEquivalent ? { listingTerms: acceptedEquivalent.terms } : {}),
   });
 }
@@ -300,24 +453,23 @@ export async function getConsentedSupplierPacketContentBatch(tx: Tx, itemIds: st
     supplierId: orderItemContentVersion.supplierId,
     recipientEmail: orderItemContentVersion.recipientEmail,
     contentHash: orderItemContentVersion.contentHash,
-    rowNumber: sql<number>`row_number() over (partition by ${orderItemContentVersion.orderItemId} order by ${orderItemContentVersion.version} desc)`,
+    rowNumber: sql<number>`row_number() over (partition by ${orderItemContentVersion.orderItemId} order by ${orderItemContentVersion.version} desc)`.as("row_number"),
   }).from(orderItemContentVersion).where(inArray(orderItemContentVersion.orderItemId, ids)).as("ranked_packet_content_versions");
 
-  const [latestRequests, routes, versions] = await Promise.all([
-    tx.selectDistinctOn([orderItemContentChangeRequest.orderItemId], {
+  const latestRequests = await packetRead("LATEST_REQUESTS", () => tx.selectDistinctOn([orderItemContentChangeRequest.orderItemId], {
       itemId: orderItemContentChangeRequest.orderItemId,
       requestId: orderItemContentChangeRequest.id,
     }).from(orderItemContentChangeRequest)
       .where(inArray(orderItemContentChangeRequest.orderItemId, ids))
-      .orderBy(orderItemContentChangeRequest.orderItemId, desc(orderItemContentChangeRequest.requestNumber), desc(orderItemContentChangeRequest.id)),
-    tx.select({
+      .orderBy(orderItemContentChangeRequest.orderItemId, desc(orderItemContentChangeRequest.requestNumber), desc(orderItemContentChangeRequest.id)));
+  const routes = await packetRead("CURRENT_ROUTES", () => tx.select({
       itemId: orderItemFulfillmentSupplier.orderItemId,
       supplierId: orderItemFulfillmentSupplier.supplierId,
       email: supplierContact.email,
     }).from(orderItemFulfillmentSupplier)
       .leftJoin(supplierContact, and(eq(supplierContact.supplierId, orderItemFulfillmentSupplier.supplierId), eq(supplierContact.isPrimary, true)))
-      .where(inArray(orderItemFulfillmentSupplier.orderItemId, ids)),
-    tx.select({
+      .where(inArray(orderItemFulfillmentSupplier.orderItemId, ids)));
+  const versions = await packetRead("LATEST_VERSIONS", () => tx.select({
       id: rankedVersions.id,
       itemId: rankedVersions.itemId,
       requestId: rankedVersions.requestId,
@@ -331,31 +483,30 @@ export async function getConsentedSupplierPacketContentBatch(tx: Tx, itemIds: st
       contentHash: rankedVersions.contentHash,
     }).from(rankedVersions)
       .where(lte(rankedVersions.rowNumber, MAX_PACKET_CONTENT_VERSIONS_PER_ITEM))
-      .orderBy(rankedVersions.itemId, desc(rankedVersions.version)),
-  ]);
+      .orderBy(rankedVersions.itemId, desc(rankedVersions.version)));
 
   const requestIds = [...new Set([
     ...latestRequests.map((request) => request.requestId),
     ...versions.map((version) => version.requestId),
   ])];
-  const [latestEvents, declinedRequests] = await Promise.all([
-    requestIds.length ? tx.selectDistinctOn([orderItemContentChangeEvent.requestId], {
+  const latestEvents = requestIds.length ? await packetRead("LATEST_EVENTS", () => tx.selectDistinctOn([orderItemContentChangeEvent.requestId], {
       requestId: orderItemContentChangeEvent.requestId,
       eventType: orderItemContentChangeEvent.eventType,
       versionId: orderItemContentChangeEvent.versionId,
       contentHash: orderItemContentChangeEvent.contentHash,
       noticeVersion: orderItemContentChangeEvent.noticeVersion,
+      id: orderItemContentChangeEvent.id,
       createdAt: orderItemContentChangeEvent.createdAt,
+      createdAtExact: sql<string>`to_char(${orderItemContentChangeEvent.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
     }).from(orderItemContentChangeEvent)
       .where(inArray(orderItemContentChangeEvent.requestId, requestIds))
-      .orderBy(orderItemContentChangeEvent.requestId, desc(orderItemContentChangeEvent.createdAt), desc(orderItemContentChangeEvent.id)) : [],
-    latestRequests.length ? tx.selectDistinctOn([orderItemEquivalentOffer.contentRequestId], {
+      .orderBy(orderItemContentChangeEvent.requestId, desc(orderItemContentChangeEvent.createdAt), desc(orderItemContentChangeEvent.id))) : [];
+  const declinedRequests = latestRequests.length ? await packetRead("DECLINED_OFFERS", () => tx.selectDistinctOn([orderItemEquivalentOffer.contentRequestId], {
       requestId: orderItemEquivalentOffer.contentRequestId,
     }).from(orderItemEquivalentOffer)
       .innerJoin(orderItemEquivalentOfferEvent, eq(orderItemEquivalentOfferEvent.offerId, orderItemEquivalentOffer.id))
       .where(and(inArray(orderItemEquivalentOffer.contentRequestId, latestRequests.map((request) => request.requestId)), eq(orderItemEquivalentOfferEvent.eventType, "DECLINED")))
-      .orderBy(orderItemEquivalentOffer.contentRequestId) : [],
-  ]);
+      .orderBy(orderItemEquivalentOffer.contentRequestId)) : [];
 
   const selectedVersionHashes = versions.filter((version) => {
     const event = latestEvents.find((candidate) => candidate.requestId === version.requestId);
@@ -364,7 +515,7 @@ export async function getConsentedSupplierPacketContentBatch(tx: Tx, itemIds: st
       && version.supplierId === (route?.supplierId ?? null)
       && version.recipientEmail === (route?.email ?? "GPHKM_INTERNAL");
   });
-  const acceptedEquivalentRows = selectedVersionHashes.length ? await tx.selectDistinctOn(
+  const acceptedEquivalentRows = selectedVersionHashes.length ? await packetRead("ACCEPTED_TERMS", () => tx.selectDistinctOn(
     [orderItemEquivalentOffer.contentRequestId, orderItemEquivalentOfferEvent.contentHash],
     {
       requestId: orderItemEquivalentOffer.contentRequestId,
@@ -381,7 +532,7 @@ export async function getConsentedSupplierPacketContentBatch(tx: Tx, itemIds: st
       ))!),
     ))
     .orderBy(orderItemEquivalentOffer.contentRequestId, orderItemEquivalentOfferEvent.contentHash,
-      desc(orderItemEquivalentOfferEvent.createdAt), desc(orderItemEquivalentOfferEvent.id)) : [];
+      desc(orderItemEquivalentOfferEvent.createdAt), desc(orderItemEquivalentOfferEvent.id))) : [];
   return resolvePacketContentRows({
     itemIds: ids,
     latestRequests,

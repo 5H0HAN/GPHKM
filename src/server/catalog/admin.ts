@@ -12,6 +12,7 @@ export async function staffTransaction<T>(headers: Headers, permission: "catalog
   const actor = await requireStaffAccess(headers, permission);
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    await tx.execute(sql`select set_config('app.staff_role', ${actor.role}, true)`);
     return work(tx, actor.userId, actor.role);
   });
 }
@@ -392,6 +393,7 @@ export async function saveSupplierContact(headers: Headers, input: {
   }
   const contact = normalizeSupplierContact(input);
   return staffTransaction(headers, "supplier.manage", async (tx, userId) => {
+    await tx.execute(sql`select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(${'gphkm:supplier-contact:' + input.supplierId}, 0::bigint))`);
     const [parent] = await tx.select({ id: supplier.id }).from(supplier).where(eq(supplier.id, input.supplierId)).for("update").limit(1);
     if (!parent) throw new Error("Supplier unavailable");
     const currentContacts = await tx.select({ id: supplierContact.id, isPrimary: supplierContact.isPrimary })
