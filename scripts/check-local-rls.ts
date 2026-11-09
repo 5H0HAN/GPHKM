@@ -98,6 +98,66 @@ async function expectSqlState(client: Client, name: string, code: string, run: (
   }
 }
 
+async function seedSyntheticPacketItem(client: Client, statement: string, values: unknown[]) {
+  // This smoke check targets permissions and packet-attempt evidence; current consent binding is tested separately.
+  await client.query("ALTER TABLE public.supplier_packet_item DISABLE TRIGGER supplier_packet_item_guard");
+  try { await client.query(statement, values); }
+  finally { await client.query("ALTER TABLE public.supplier_packet_item ENABLE TRIGGER supplier_packet_item_guard"); }
+}
+
+async function insertCurrentBaseConsentPacket(client: Client, input: {
+  packetId: string; version: number; orderItemId: string; supplierId: string; recipient: string;
+  contentHash: string; createdByUserId: string; legacySnapshot?: boolean;
+}) {
+  const packet = await client.query(
+    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
+     select $1::text, $2::integer, order_row.organization_id, order_row.id, $4::text, $5::text,
+       jsonb_build_object(
+         'id', $1::text, 'version', $2::integer, 'organizationId', order_row.organization_id, 'orderId', order_row.id,
+         'supplierId', $4::text, 'recipient', $5::text, 'createdBy', $7::text, 'createdAt', clock_timestamp(),
+         'contentHash', $6::text,
+         'items', jsonb_build_array(jsonb_build_object(
+           'orderItemId', item.id, 'assignedAdminId', fulfillment.assigned_admin_id,
+           'reference', 'RLS-' || item.id, 'approvedArticle', true,
+           'placementRequirements', public.gphkm_packet_placement_requirements(item.customer_listing_snapshot),
+           'targetUrl', item.target_url, 'anchorText', item.anchor_text,
+           'article', case when item.writing_selected then writing.approved_article_text else item.article_text end,
+           'instructions', btrim(coalesce(item.instructions, '')),
+           'consent', jsonb_build_object(
+             'disclosureVersion', item.consent_notice_version, 'contentHash', $6::text, 'supplierId', $4::text,
+             'recipient', lower(btrim($5::text)), 'consentEventId', null,
+             'acceptedAt', to_char(item.consented_at at time zone 'UTC', case when $8::boolean
+               then 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"' else 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"' end)
+           ) - case when $8::boolean then 'consentEventId' else '' end
+         ))
+       ), $6::text, $7::text
+       from customer_order_item item
+       join customer_order order_row on order_row.id = item.order_id
+       join order_item_fulfillment fulfillment on fulfillment.order_item_id = item.id
+       join order_item_fulfillment_supplier route on route.order_item_id = item.id
+       left join order_item_writing writing on writing.order_item_id = item.id
+       join supplier_contact contact on contact.supplier_id = route.supplier_id and contact.is_primary
+      where item.id = $3::text and route.supplier_id = $4::text and lower(btrim(contact.email)) = lower(btrim($5::text))`,
+    [input.packetId, input.version, input.orderItemId, input.supplierId, input.recipient, input.contentHash, input.createdByUserId, input.legacySnapshot === true],
+  );
+  assert.equal(packet.rowCount, 1, "consent-bound packet fixture uses the current route and recipient");
+  if (input.legacySnapshot) await client.query("ALTER TABLE public.supplier_packet_item DISABLE TRIGGER supplier_packet_item_guard");
+  let membership;
+  try {
+    membership = await client.query(
+      `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
+       select $1, item.id, fulfillment.assigned_admin_id, item.consent_notice_version, item.consented_at, $3
+         from customer_order_item item join order_item_fulfillment fulfillment on fulfillment.order_item_id = item.id
+        where item.id = $2::text`, [input.packetId, input.orderItemId, input.contentHash],
+    );
+  } finally {
+    if (input.legacySnapshot) await client.query("ALTER TABLE public.supplier_packet_item ENABLE TRIGGER supplier_packet_item_guard");
+  }
+  assert.equal(membership.rowCount, 1, input.legacySnapshot
+    ? "historical packet fixture inserts one membership row"
+    : "consent-bound packet fixture inserts one guarded membership");
+}
+
 assertLocalDatabaseUrl(databaseUrl, "gphkm_migration");
 assertLocalDatabaseUrl(runtimeUrl, "gphkm_runtime");
 assertLocalDatabaseUrl(resendWebhookUrl, "gphkm_resend_webhook");
@@ -1981,34 +2041,29 @@ try {
   await migration.query("RESET ROLE");
 
   phase = "rejecting historical supplier handoff after an accepted equivalent route change";
+  // Create the third item through the same immutable financial/route snapshot
+  // path as checkout so the recipient-consent capture trigger is exercised.
   await migration.query(
-    `insert into order_item_fulfillment (order_item_id, order_id, listing_title)
-     select id, order_id, customer_listing_snapshot ->> 'title' from customer_order_item where id = $1`,
-    [orderItemFixtureThree],
+    `insert into order_item_financial (order_item_id, commercial_source, supplier_id, fulfillment_supplier_id)
+     values ($1, 'SUPPLIER_SOURCED', $2, $2)`, [orderItemFixtureThree, supplierFixture],
   );
   await migration.query(
     "update order_item_fulfillment set state = 'READY_FOR_HANDOFF', assigned_admin_id = $2 where order_item_id = $1",
     [orderItemFixtureThree, adminA],
   );
-  const originalFixtureRoute = await migration.query(
-    `insert into order_item_fulfillment_supplier (order_item_id, supplier_id) values ($1, $2)
-     on conflict (order_item_id) do update set supplier_id = excluded.supplier_id`,
-    [orderItemFixtureThree, supplierFixture],
+  const originalFixtureRoute = await migration.query<{ supplier_id: string }>(
+    "select supplier_id from order_item_fulfillment_supplier where order_item_id = $1",
+    [orderItemFixtureThree],
   );
-  assert.equal(originalFixtureRoute.rowCount, 1, "equivalent-route fixture starts with its original supplier route");
+  assert.equal(originalFixtureRoute.rows[0]?.supplier_id, supplierFixture,
+    "equivalent-route fixture starts with its original supplier route and captured recipient consent");
   phase = "creating original supplier packet";
+  await insertCurrentBaseConsentPacket(migration, {
+    packetId: staleRoutePacketId, version: 1, orderItemId: orderItemFixtureThree,
+    supplierId: supplierFixture, recipient: "old-supplier@example.invalid", contentHash: "a".repeat(64), createdByUserId: adminA,
+  });
   await migration.query(
-    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
-     select $1, 1, o.organization_id, o.id, $3, 'old-supplier@example.invalid', '{\"items\":[{\"id\":\"old-route\"}]}'::jsonb, repeat('a',64), $4
-       from customer_order_item oi join customer_order o on o.id = oi.order_id where oi.id = $2`,
-    [staleRoutePacketId, orderItemFixtureThree, supplierFixture, adminA],
-  );
-  phase = "recording the original supplier packet membership";
-  await migration.query(
-    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
-     select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, repeat('b',64)
-       from customer_order_item oi where oi.id = $2`,
-    [staleRoutePacketId, orderItemFixtureThree, adminA],
+    "update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [orderItemFixtureThree],
   );
   phase = "recording the original supplier handoff evidence";
   await migration.query(
@@ -2017,7 +2072,7 @@ try {
     [staleRouteAttemptId, staleRoutePacketId, adminA, `stale-route-${suffix}`],
   );
   await migration.query("update supplier_packet set superseded_at = now() where id = $1", [staleRoutePacketId]);
-  phase = "simulating accepted equivalent supplier route";
+  phase = "simulating a supplier route change without recipient-specific content consent";
   await migration.query("update order_item_fulfillment_supplier set supplier_id = $2 where order_item_id = $1", [orderItemFixtureThree, supplierOtherFixture]);
   await migration.query(
     `update order_item_fulfillment set state = 'READY_FOR_HANDOFF', customer_status = 'PREPARING',
@@ -2030,18 +2085,24 @@ try {
     [replacementPacketV1Id, orderItemFixtureThree, supplierOtherFixture, adminA],
   );
   phase = "recording the replacement supplier packet v1 membership";
-  await migration.query(
+  await seedSyntheticPacketItem(migration,
     `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
      select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, repeat('d',64)
        from customer_order_item oi where oi.id = $2`,
     [replacementPacketV1Id, orderItemFixtureThree, adminA],
   );
   await migration.query(
-    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key, manual_message_reference, sent_at, resolved_at)
-     values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'replacement-supplier@example.invalid', $4, 'superseded-manual-send', now(), now())`,
-    [replacementPacketV1AttemptId, replacementPacketV1Id, adminA, `stale-packet-${suffix}`],
+    "update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [orderItemFixtureThree],
   );
+  await expectPermissionDenied(migration, "manual send to a replacement supplier without recipient-specific content consent", () => migration.query(
+    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key, manual_message_reference, sent_at, resolved_at)
+     values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'replacement-supplier@example.invalid', $4, 'must-not-send', now(), now())`,
+    [replacementPacketV1AttemptId, replacementPacketV1Id, adminA, `stale-packet-${suffix}`],
+  ));
   await migration.query("update supplier_packet set superseded_at = now() where id = $1", [replacementPacketV1Id]);
+  await migration.query(
+    "update order_item_fulfillment set state = 'READY_FOR_HANDOFF' where order_item_id = $1", [orderItemFixtureThree],
+  );
   await migration.query(
     `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
      select $1, 2, o.organization_id, o.id, $3, 'replacement-supplier@example.invalid', '{\"items\":[{\"id\":\"replacement-v2\"}]}'::jsonb, repeat('e',64), $4
@@ -2049,58 +2110,53 @@ try {
     [replacementPacketV2Id, orderItemFixtureThree, supplierOtherFixture, adminA],
   );
   phase = "recording the replacement supplier packet v2 membership";
-  await migration.query(
+  await seedSyntheticPacketItem(migration,
     `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
      select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, repeat('f',64)
        from customer_order_item oi where oi.id = $2`,
     [replacementPacketV2Id, orderItemFixtureThree, adminA],
   );
   await migration.query("update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [orderItemFixtureThree]);
-  await expectPermissionDenied(migration, "work start using a superseded supplier packet after equivalent route acceptance", () => migration.query(
+  await expectPermissionDenied(migration, "work start on a supplier route without recipient-specific content consent", () => migration.query(
     `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS', handed_off_at = now(), work_started_at = now()
       where order_item_id = $1`, [orderItemFixtureThree],
   ));
-  await migration.query(
+  await expectPermissionDenied(migration, "manual send on a replacement supplier route without recipient-specific content consent", () => migration.query(
     `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key, manual_message_reference, sent_at, resolved_at)
-     values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'replacement-supplier@example.invalid', $4, 'current-manual-send', now(), now())`,
+     values ($1, $2, 'MANUAL_SENT', 'MANUAL_SENT', $3, 'replacement-supplier@example.invalid', $4, 'must-not-send', now(), now())`,
     [replacementPacketV2AttemptId, replacementPacketV2Id, adminA, `current-route-${suffix}`],
-  );
+  ));
   await migration.query(
-    `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS', handed_off_at = now(), work_started_at = now()
-      where order_item_id = $1`, [orderItemFixtureThree],
+    `update order_item_fulfillment set state = 'READY_FOR_HANDOFF', customer_status = 'PREPARING',
+       handed_off_at = null, work_started_at = null where order_item_id = $1`, [orderItemFixtureThree],
   );
-  const currentRouteHandoff = await migration.query<{ state: string }>(
-    "select state from order_item_fulfillment where order_item_id = $1", [orderItemFixtureThree],
+  const currentRouteHandoff = await migration.query<{ state: string; customer_status: string; handed_off_at: Date | null; work_started_at: Date | null }>(
+    "select state, customer_status, handed_off_at, work_started_at from order_item_fulfillment where order_item_id = $1", [orderItemFixtureThree],
   );
-  assert.equal(currentRouteHandoff.rows[0]?.state, "IN_FULFILLMENT", "manual evidence on the latest active packet for the accepted supplier route permits work start");
+  assert.deepEqual(currentRouteHandoff.rows[0], {
+    state: "READY_FOR_HANDOFF", customer_status: "PREPARING", handed_off_at: null, work_started_at: null,
+  }, "route changes without fresh recipient consent keep the item at preparation and do not start supplier work");
 
   phase = "checking manual handoff reservation, evidence, and acknowledgement guards";
-  await migration.query(
-    "update supplier_contact set email = 'manual-supplier@example.invalid' where supplier_id = $1 and is_primary",
-    [supplierFixture],
-  );
   await migration.query(
     "update order_item_fulfillment set state = 'READY_FOR_HANDOFF', assigned_admin_id = $2 where order_item_id = $1",
     [orderItemFixture, adminA],
   );
-  await migration.query(
-    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
-     select $1, 1, o.organization_id, o.id, $3, 'manual-supplier@example.invalid', '{\"items\":[{\"id\":\"manual-smoke\"}]}'::jsonb, repeat('f',64), $4
-       from customer_order_item oi join customer_order o on o.id = oi.order_id where oi.id = $2`,
-    [manualPacketId, orderItemFixture, supplierFixture, adminA],
-  );
-  await migration.query(
-    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
-     select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, repeat('a',64)
-       from customer_order_item oi where oi.id = $2`,
-    [manualPacketId, orderItemFixture, adminA],
-  );
+  await insertCurrentBaseConsentPacket(migration, {
+    packetId: manualPacketId, version: 1, orderItemId: orderItemFixture,
+    supplierId: supplierFixture, recipient: "old-supplier@example.invalid", contentHash: "f".repeat(64), createdByUserId: adminA,
+    legacySnapshot: true,
+  });
   await migration.query("update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [orderItemFixture]);
+  const legacyConsent = await migration.query<{ current: boolean }>(
+    "select public.gphkm_supplier_packet_item_consent_is_current($1, $2) as current", [manualPacketId, orderItemFixture],
+  );
+  assert.equal(legacyConsent.rows[0]?.current, true, "valid pre-event snapshots with millisecond consent timestamps remain current");
   await migration.query("SET LOCAL ROLE gphkm_runtime");
   await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [adminA, organizationA]);
   await migration.query(
     `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key)
-     values ($1, $2, 'MANUAL_SEND', 'SENDING', $3, 'manual-supplier@example.invalid', $4)`,
+     values ($1, $2, 'MANUAL_SEND', 'SENDING', $3, 'old-supplier@example.invalid', $4)`,
     [manualPacketAttemptId, manualPacketId, adminA, `manual-reservation-${suffix}`],
   );
   await migration.query(
@@ -2204,28 +2260,29 @@ try {
 
   phase = "proving isolated Resend packet and notification callbacks";
   await migration.query(
-    "update supplier_contact set email = 'supplier@example.invalid' where supplier_id = $1 and is_primary",
-    [supplierOtherFixture],
+    "update order_item_fulfillment_supplier set supplier_id = $2 where order_item_id = $1",
+    [orderItemFixtureTwo, supplierFixture],
+  );
+  await migration.query(
+    `insert into order_item_writing (order_item_id, state, first_draft_text, first_draft_submitted_at, approved_article_text, approved_at)
+     values ($1, 'APPROVED_FIRST', 'Synthetic approved draft for the isolated webhook fixture', now(),
+       'Synthetic approved draft for the isolated webhook fixture', now())`, [orderItemFixtureTwo],
   );
   await migration.query(
     `update order_item_fulfillment set state = 'READY_FOR_HANDOFF', assigned_admin_id = $2 where order_item_id = $1`,
     [orderItemFixtureTwo, superAdminA],
   );
+  await insertCurrentBaseConsentPacket(migration, {
+    packetId: resendPacketId, version: 1, orderItemId: orderItemFixtureTwo,
+    supplierId: supplierFixture, recipient: "old-supplier@example.invalid", contentHash: "c".repeat(64), createdByUserId: adminA,
+  });
   await migration.query(
-    `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
-     select $1, 1, o.organization_id, o.id, $3, 'supplier@example.invalid', '{"items":[{"id":"synthetic"}]}'::jsonb, repeat('c',64), $4
-       from customer_order_item oi join customer_order o on o.id = oi.order_id where oi.id = $2`,
-    [resendPacketId, orderItemFixtureTwo, supplierOtherFixture, adminA],
-  );
-  await migration.query(
-    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
-     select $1, oi.id, $3, oi.consent_notice_version, oi.consented_at, repeat('d',64)
-       from customer_order_item oi where oi.id = $2`,
-    [resendPacketId, orderItemFixtureTwo, superAdminA],
+    `update order_item_fulfillment set state = 'HANDOFF_PENDING', customer_status = 'PREPARING'
+      where order_item_id = $1`, [orderItemFixtureTwo],
   );
   await migration.query(
     `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key, provider)
-     values ($1, $2, 'SEND', 'SENDING', $3, 'supplier@example.invalid', $4, 'RESEND')`,
+     values ($1, $2, 'SEND', 'SENDING', $3, 'old-supplier@example.invalid', $4, 'RESEND')`,
     [resendPacketAttemptId, resendPacketId, adminA, `resend-smoke-${suffix}`],
   );
   await migration.query(
@@ -2291,6 +2348,11 @@ try {
   assert.deepEqual(resendTableAccess.rows[0], { notification_select: false, stripe_execute: false, stripe_attach: false },
     "Resend role has no notification table access and cannot call Stripe wallet commands");
   await migration.query("RESET ROLE");
+  // The mail callback fixture used the original, consented recipient. Restore
+  // the fixture's accepted replacement route for the separate Finance scope
+  // assertions below; no second packet attempt uses this changed route.
+  await migration.query("update order_item_fulfillment_supplier set supplier_id = $2 where order_item_id = $1",
+    [orderItemFixtureTwo, supplierOtherFixture]);
   phase = "checking supplier identity consistency on order financial snapshots";
   await expectCheckConstraint(migration, "order snapshot with different source and fulfillment suppliers", () =>
     migration.query(

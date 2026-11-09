@@ -1198,6 +1198,118 @@
       "when": 1793696820523,
       "tag": "0170_superadmin_self_assignment",
       "breakpoints": true
+    },
+    {
+      "idx": 171,
+      "version": "7",
+      "when": 1793701669954,
+      "tag": "0171_same_supplier_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1793706314299,
+      "tag": "0172_manual_receipt_controls_work_start",
+      "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1793719451701,
+      "tag": "0173_packet_consent_precision",
+      "breakpoints": true
+    },
+    {
+      "idx": 174,
+      "version": "7",
+      "when": 1793720310302,
+      "tag": "0174_supplier_recipient_consent",
+      "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1793720705266,
+      "tag": "0175_capture_external_fulfillment_recipient",
+      "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1793722110000,
+      "tag": "0176_supplier_packet_consent_attempt_guard",
+      "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1793722510000,
+      "tag": "0177_scope_recipient_consent_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "7",
+      "when": 1793882449345,
+      "tag": "0178_post_delivery_recipient_reconsent",
+      "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1793885757071,
+      "tag": "0179_preserve_accepted_equivalent_route_consent",
+      "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "7",
+      "when": 1793886362337,
+      "tag": "0180_serialize_recipient_reconsent",
+      "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1793887709832,
+      "tag": "0181_bind_recipient_reconsent_notice_version",
+      "breakpoints": true
+    },
+    {
+      "idx": 182,
+      "version": "7",
+      "when": 1793887911805,
+      "tag": "0182_preserve_implicit_content_version",
+      "breakpoints": true
+    },
+    {
+      "idx": 183,
+      "version": "7",
+      "when": 1793888396673,
+      "tag": "0183_scope_pending_packet_review",
+      "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1793911001294,
+      "tag": "0184_customer_recipient_reconsent_lock",
+      "breakpoints": true
+    },
+    {
+      "idx": 185,
+      "version": "7",
+      "when": 1794236244818,
+      "tag": "0185_legacy_packet_timestamp_compat",
+      "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1794238027668,
+      "tag": "0186_review_fixes",
+      "breakpoints": true
     }
   ]
 }

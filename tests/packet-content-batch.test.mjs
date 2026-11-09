@@ -31,7 +31,7 @@ test("packet content projection accepts only exact consent, current supplier/rec
       version("stale-recipient", "request-stale-recipient", "supplier-A", "old@example.test", "hash-stale-recipient"),
     ],
     latestEvents: [
-      { requestId: "request-consented", eventType: "CONSENTED", versionId: "v-consented", contentHash: "hash-consented", noticeVersion: "notice-1", createdAt: at },
+      { id: "event-consented", requestId: "request-consented", eventType: "CONSENTED", versionId: "v-consented", contentHash: "hash-consented", noticeVersion: "notice-1", createdAt: at, createdAtExact: "2026-11-03T10:00:00.000123Z" },
       { requestId: "request-unresolved", eventType: "REQUESTED", versionId: null, contentHash: null, noticeVersion: null, createdAt: at },
       { requestId: "request-stale-supplier", eventType: "CONSENTED", versionId: "v-stale-supplier", contentHash: "hash-stale-supplier", noticeVersion: "notice-1", createdAt: at },
       { requestId: "request-stale-recipient", eventType: "CONSENTED", versionId: "v-stale-recipient", contentHash: "hash-stale-recipient", noticeVersion: "notice-1", createdAt: at },
@@ -41,6 +41,8 @@ test("packet content projection accepts only exact consent, current supplier/rec
   });
   assert.equal(result.get("consented").error, undefined);
   assert.equal(result.get("consented").content.supplierId, "supplier-A");
+  assert.equal(result.get("consented").content.consentEventId, "event-consented");
+  assert.equal(result.get("consented").content.consentedAt, "2026-11-03T10:00:00.000123Z");
   assert.deepEqual(result.get("consented").content.listingTerms, { title: "Accepted equivalent" });
   assert.match(result.get("unresolved").error.message, /latest customer content change is resolved/);
   assert.match(result.get("stale-supplier").error.message, /exact approved content and recipient/);
@@ -68,10 +70,13 @@ test("packet consent resolution stays bounded for 25 items and 50 versions each"
   assert.notEqual(start, -1);
   assert.match(contentService, /const MAX_PACKET_CONTENT_VERSIONS_PER_ITEM = 50/);
   assert.match(resolver, /row_number\(\) over \(partition by[\s\S]*order by[\s\S]*version[\s\S]*desc\)/);
+  assert.match(resolver, /\.as\("row_number"\)/, "the window expression must be aliased before a subquery references it");
   assert.match(resolver, /where\(lte\(rankedVersions\.rowNumber, MAX_PACKET_CONTENT_VERSIONS_PER_ITEM\)\)/);
   assert.match(resolver, /selectDistinctOn\(\[orderItemContentChangeEvent\.requestId\]/);
   assert.match(resolver, /resolvePacketContentRows\(/);
   assert.match(resolver, /selectedVersionHashes/);
+  assert.match(resolver, /createdAtExact: sql<string>`to_char\(/, "the selected consent timestamp retains PostgreSQL microseconds");
+  assert.doesNotMatch(resolver, /Promise\.all/, "queries sharing one node-postgres transaction client must not run concurrently");
 
   const queryPlan = resolver.replace(/const rankedVersions = tx\.select\([\s\S]*?\.as\("ranked_packet_content_versions"\);/, "");
   const queryCalls = queryPlan.match(/tx\.select(?:DistinctOn)?\(/g) ?? [];
@@ -87,7 +92,7 @@ test("packet consent resolution stays bounded for 25 items and 50 versions each"
     contentHash: `hash-${itemId}-${index + 1}`, noticeVersion: null, consentedAt: new Date("2026-11-03T10:00:00Z"),
   })));
   const latestEvents = itemIds.map((itemId) => ({
-    requestId: `request-${itemId}`, eventType: "CONSENTED", versionId: `version-${itemId}-50`,
+    id: `event-${itemId}`, requestId: `request-${itemId}`, eventType: "CONSENTED", versionId: `version-${itemId}-50`,
     contentHash: `hash-${itemId}-50`, noticeVersion: "notice-v1", createdAt: new Date("2026-11-03T10:00:00Z"),
   }));
   assert.equal(versions.length, 1250, "fixture contains the maximum 25 items × 50 candidate versions");
@@ -95,6 +100,7 @@ test("packet consent resolution stays bounded for 25 items and 50 versions each"
   assert.equal(projected.size, 25);
   assert.ok(itemIds.every((itemId) => projected.get(itemId)?.content?.version === 50),
     "the projection resolves every item from its latest consented version after receiving the maximum bounded candidate set");
+  assert.equal(projected.get(itemIds[0]).content.consentEventId, "event-item-0");
 
   const packetService = await readFile(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
   const [candidateStart, prepareStart, currentPacketStart] = [
@@ -109,6 +115,22 @@ test("packet consent resolution stays bounded for 25 items and 50 versions each"
   const currentPacket = packetService.slice(currentPacketStart, packetService.indexOf("function resendConfig", currentPacketStart));
   assert.match(currentPacket, /supplierFulfillmentOutcomeResolution[\s\S]*outcomeId, supplierFulfillmentOutcome\.id/,
     "packet eligibility uses the same explicit resolution edge as the database handoff and closure guards");
+  const recoveryMigration = await readFile(new URL("../src/db/migrations/0171_same_supplier_recovery.sql", import.meta.url), "utf8");
+  const attemptGuard = recoveryMigration.split("CREATE OR REPLACE FUNCTION public.gphkm_packet_attempt_route_generation_guard")[1].split("$$;--> statement-breakpoint")[0];
+  assert.match(attemptGuard, /offer_route\.route_generation > outcome\.route_generation/,
+    "an accepted route that predates a later failure cannot resolve that failure at packet handoff time");
   assert.doesNotMatch(currentPacket, /latest\.eventType\s*===?\s*['"]ACCEPTED|latest\.event_type\s*=\s*'ACCEPTED'/,
     "an older accepted offer cannot make a later supplier failure appear resolved in packet review");
+});
+
+test("packet item database guard verifies checkout or current content consent at exact precision", async () => {
+  const migration = await readFile(new URL("../src/db/migrations/0173_packet_consent_precision.sql", import.meta.url), "utf8");
+  assert.match(migration, /packet_item#>>'\{consent,consentEventId\}'/);
+  assert.match(migration, /event\.id = packet_item#>>'\{consent,consentEventId\}'/);
+  assert.match(migration, /event\.created_at = NEW\.consented_at/);
+  assert.match(migration, /version\.supplier_id = packet_row\.supplier_id/);
+  assert.match(migration, /version\.recipient_email\).*packet_row\.recipient/);
+  assert.match(migration, /item_row\.consented_at = NEW\.consented_at/);
+  assert.match(migration, /to_char\(NEW\.consented_at AT TIME ZONE 'UTC'.*US/);
+  assert.match(migration, /latest\.event_type IN \('REQUESTED', 'APPROVED'\)/);
 });

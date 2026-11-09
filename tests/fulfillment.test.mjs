@@ -6,12 +6,14 @@ import { readFile } from "node:fs/promises";
 import { sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { assertCustomerEquivalentOfferItemIds, MAX_CUSTOMER_EQUIVALENT_OFFER_ITEMS } from "../src/modules/fulfillment/equivalent-offers.ts";
-import { assertSupplierOutcomeMayBeRecorded } from "../src/modules/fulfillment/supplier-outcome.ts";
+import { assertSupplierOutcomeMayBeRecorded, normalizeSupplierRecoveryReason } from "../src/modules/fulfillment/supplier-outcome.ts";
 import {
   acknowledgementFollowUpAt,
   assertPacketActionable,
   assertCompletePacketReplacement,
   buildSupplierPacket,
+  legacySupplierPacketHash,
+  confirmManualSupplierReceipt,
   customerOrderItemProjection,
   deliveryFollowUpAt,
   mayAccessSupplierPacket,
@@ -24,6 +26,7 @@ import {
   markProviderDelivered,
   recordManualExportAttempt,
   recordManualHandoff,
+  recordManualHandoffCutoff,
   renderSupplierEmail,
   resolveUnknownAttempt,
   supplierDeliveryProjection,
@@ -75,6 +78,13 @@ test("packet access requires every included item to remain assigned to the Admin
   assert.equal(mayAccessSupplierPacket({ actorId: "admin_a", actorRole: "ADMIN", assignments: [] }), false);
   assert.equal(mayAccessSupplierPacket({ actorId: "super", actorRole: "SUPER_ADMIN", assignments: [assigned] }), true);
   assert.equal(mayAccessSupplierPacket({ actorId: "finance", actorRole: "FINANCE", assignments: [assigned] }), false);
+});
+
+test("supplier recovery reasons normalize form whitespace before persistence and hashing", () => {
+  assert.equal(normalizeSupplierRecoveryReason("  Availability\nconfirmed\tby supplier.  "), "Availability confirmed by supplier.");
+  assert.throws(() => normalizeSupplierRecoveryReason("\n\t  "), /valid internal recovery reason/);
+  assert.throws(() => normalizeSupplierRecoveryReason("valid\u0000reason"), /valid internal recovery reason/);
+  assert.throws(() => normalizeSupplierRecoveryReason("x".repeat(2001)), /valid internal recovery reason/);
 });
 
 test("the 50-order customer page can check all 1,250 possible equivalent offers", async () => {
@@ -150,6 +160,7 @@ function packetInput(overrides = {}) {
         contentHash,
         supplierId: "supplier_01",
         recipient: "editor@example.net",
+        consentEventId: null,
         acceptedAt: now,
       },
     }],
@@ -169,6 +180,44 @@ test("packet builder groups one order, organization, and supplier; consent binds
   assert.throws(() => buildSupplierPacket(packetInput({ recipient: "editor@example.net\r\nBcc:attacker@example.com" })), /recipient is invalid/);
   assert.throws(() => buildSupplierPacket(packetInput({ createdBy: "admin_b" })), /assigned Admin/);
   assert.throws(() => buildSupplierPacket(packetInput({ createdByRole: "FINANCE" })), /cannot prepare supplier packets/);
+});
+
+test("legacy supplier packet snapshots keep their millisecond consent timestamp hash", () => {
+  const packet = buildSupplierPacket(packetInput({ items: [{
+    ...packetInput().items[0],
+    consent: { ...packetInput().items[0].consent, acceptedAt: "2026-10-28T00:00:00.123456Z" },
+  }] }));
+  const legacy = {
+    id: packet.id,
+    version: packet.version,
+    organizationId: packet.organizationId,
+    orderId: packet.orderId,
+    supplierId: packet.supplierId,
+    recipient: packet.recipient,
+    createdBy: packet.createdBy,
+    createdAt: packet.createdAt,
+    items: packet.items.map(({ consent, ...item }) => ({
+      ...item,
+      consent: {
+        disclosureVersion: consent.disclosureVersion,
+        contentHash: consent.contentHash,
+        supplierId: consent.supplierId,
+        recipient: consent.recipient,
+        acceptedAt: new Date(consent.acceptedAt).toISOString(),
+      },
+    })),
+  };
+  const legacyHash = createHash("sha256").update(JSON.stringify(legacy)).digest("hex");
+  assert.equal(legacySupplierPacketHash(packet), legacyHash);
+  assert.notEqual(legacySupplierPacketHash(buildSupplierPacket(packetInput({
+    items: [{ ...packetInput().items[0], reference: "GPH-ITEM-02" }],
+  }))), legacyHash);
+});
+
+test("database consent guard accepts legacy timestamp precision only without an event identifier", async () => {
+  const migration = await readFile(new URL("../src/db/migrations/0185_legacy_packet_timestamp_compat.sql", import.meta.url), "utf8");
+  assert.match(migration, /IS NOT DISTINCT FROM[\s\S]*?SS\.US/);
+  assert.match(migration, /NOT \(packet_item->'consent' \? 'consentEventId'\)[\s\S]*?SS\.MS/);
 });
 
 test("supplier EML contains minimal body, encodes body, and blocks ambiguous resend", () => {
@@ -291,12 +340,53 @@ test("manual handoff timestamps require and honor an explicit timezone", () => {
   assert.equal(parseExplicitInstant("2026-10-30T14:30:00+14:30"), null);
 });
 
+test("manual send sets the cutoff but only confirmed supplier receipt starts placement work", () => {
+  const preparing = { state: "HANDOFF_PENDING", updatedAt: "2026-10-30T08:00:00.000Z" };
+  const sent = recordManualHandoffCutoff(preparing, "2026-10-30T09:00:00.000Z");
+  assert.equal(sent.state, "HANDOFF_PENDING");
+  assert.equal(sent.handedOffAt, "2026-10-30T09:00:00.000Z");
+  assert.equal(sent.workStartedAt, undefined);
+  assert.equal(sent.updatedAt, "2026-10-30T09:00:00.000Z");
+
+  const started = confirmManualSupplierReceipt(sent, "2026-10-30T10:00:00.000Z");
+  assert.equal(started.state, "IN_FULFILLMENT");
+  assert.equal(started.customerStatus, "IN_PROGRESS");
+  assert.equal(started.handedOffAt, sent.handedOffAt);
+  assert.equal(started.workStartedAt, "2026-10-30T10:00:00.000Z");
+
+  const resent = recordManualHandoffCutoff({ ...started }, "2026-10-30T11:00:00.000Z");
+  assert.equal(resent.state, "IN_FULFILLMENT");
+  assert.equal(resent.handedOffAt, sent.handedOffAt, "a resend cannot move the original cancellation cutoff");
+  assert.equal(resent.workStartedAt, started.workStartedAt);
+  assert.equal(resent.updatedAt, "2026-10-30T11:00:00.000Z");
+  assert.throws(() => confirmManualSupplierReceipt(preparing, "2026-10-30T10:00:00.000Z"), /sent handoff/);
+  assert.throws(() => recordManualHandoffCutoff(preparing, "not-a-time"), /eligible item/);
+});
+
+test("manual-send service preserves Preparing and does not start work before receipt", async () => {
+  const service = await readFile(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
+  const start = service.indexOf("export async function recordManualSupplierHandoff");
+  const end = service.indexOf("export async function reconcileManualSupplierHandoffUnsent", start);
+  const manualHandoff = service.slice(start, end);
+  const fulfillmentWriteStart = manualHandoff.indexOf("await tx.update(orderItemFulfillment).set({");
+  const fulfillmentWriteEnd = manualHandoff.indexOf("}).where(eq(orderItemFulfillment.orderItemId", fulfillmentWriteStart);
+  const fulfillmentWrite = manualHandoff.slice(fulfillmentWriteStart, fulfillmentWriteEnd);
+
+  assert.match(manualHandoff, /recordManualHandoffCutoff\(/);
+  assert.match(fulfillmentWrite, /handedOffAt: new Date\(cutoff\.handedOffAt!\)/);
+  assert.match(fulfillmentWrite, /customerStatus: item\.state === "HANDOFF_PENDING" \? "PREPARING" : "IN_PROGRESS"/);
+  assert.doesNotMatch(fulfillmentWrite, /workStartedAt/,
+    "manual send records the cutoff and milestone without starting placement work");
+});
+
 test("manual handoff preserves uploaded evidence when transaction commit outcome is ambiguous", async () => {
   const service = await readFile(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
   const manualHandoff = service.slice(service.indexOf("export async function recordManualSupplierHandoff"), service.indexOf("export async function reconcileManualSupplierHandoffUnsent"));
   assert.match(manualHandoff, /let transactionCallbackReturned = false;/);
   assert.match(manualHandoff, /preparePrivateFileUpload\(\)[\s\S]*savePrivateFile\(file\.bytes, storageKey\)/);
   assert.match(manualHandoff, /linkPrivateFileUpload\(tx, storageKey\)/);
+  assert.match(manualHandoff, /recordManualHandoffCutoff\(/);
+  assert.doesNotMatch(manualHandoff, /markItemsHandedOff\(/);
   assert.match(manualHandoff, /transactionCallbackReturned = true;[\s\S]*return \{ attemptId: attempt\.id, state: "MANUAL_SENT"/);
   assert.match(manualHandoff, /if \(storageKey && !transactionCallbackReturned\) await queuePrivateFileDeleteOutsideTransaction\(storageKey\)/);
 });
@@ -305,7 +395,8 @@ test("packet replacement supersedes prior versions and all send/export commands 
   const service = await readFile(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
   const workflow = await readFile(new URL("../src/modules/fulfillment/workflow.ts", import.meta.url), "utf8");
   const prepare = service.slice(service.indexOf("export async function prepareSupplierPackets"), service.indexOf("export async function getSupplierPacket"));
-  assert.match(prepare, /supplierPacket\.supersededAt} is null/);
+  assert.match(prepare, /linkedRows\.filter\(\(row\) => row\.supersededAt === null\)/,
+    "replacement must only supersede active packet versions after locking the complete packet history");
   assert.match(prepare, /assertCompletePacketReplacement\(/);
   assert.match(workflow, /Select every item in the existing packet/);
   assert.match(prepare, /set\(\{ supersededAt: new Date\(\) \}\)/);
@@ -316,23 +407,55 @@ test("packet replacement supersedes prior versions and all send/export commands 
   }
 });
 
+test("packet preparation serializes order packet versions without locking the read-only order row", async () => {
+  const service = await readFile(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
+  const equivalentOffers = await readFile(new URL("../src/server/fulfillment/equivalent-offers.ts", import.meta.url), "utf8");
+  const adminService = await readFile(new URL("../src/server/fulfillment/admin.ts", import.meta.url), "utf8");
+  const prepare = service.slice(service.indexOf("export async function prepareSupplierPackets"), service.indexOf("export async function getSupplierPacket"));
+  const currentPacket = service.slice(service.indexOf("async function loadCurrentPacket"), service.indexOf("function resendConfig"));
+  assert.match(prepare, /pg_advisory_xact_lock\(pg_catalog\.hashtextextended/);
+  assert.match(prepare, /supplier_packet_prepare:/);
+  assert.doesNotMatch(prepare, /\.from\(customerOrder\)[\s\S]{0,120}\.for\("update"\)/,
+    "the runtime role has SELECT but intentionally no UPDATE privilege on customer_order");
+  assert.match(prepare, /fulfillment: orderItemFulfillment[\s\S]*?\.for\("update", \{ of: orderItemFulfillment \}\)/,
+    "item locks still serialize work that can change packet eligibility");
+  assert.doesNotMatch(prepare, /orderBy\(asc\(orderItemFulfillmentSupplier\.orderItemId\)\)\.for\("share"\)/,
+    "the runtime role has SELECT but intentionally no UPDATE privilege on fulfillment routes");
+  assert.doesNotMatch(currentPacket, /orderBy\(asc\(orderItemFulfillmentSupplier\.orderItemId\)\)\.for\("share"\)/);
+  assert.match(currentPacket, /legacyConsentShape[\s\S]*legacySupplierPacketHash\(stored\) === row\.contentHash[\s\S]*legacySupplierPacketHash\(rebuilt\) === row\.contentHash/,
+    "only a stored legacy snapshot and its live rebuild may use the historical hash projection");
+  assert.match(currentPacket, /StaleSupplierPacketSnapshotError\("Packet content changed after preview/,
+    "changed or malformed packet snapshots fail closed as stale");
+  const createOffer = equivalentOffers.slice(equivalentOffers.indexOf("export async function createEquivalentOffer"));
+  assert.doesNotMatch(createOffer, /from\(orderItemFulfillmentSupplier\)[^;]*\.for\("share"\)/,
+    "route reads after the item lock do not request a lock the runtime role cannot take");
+  const handoffEvidence = adminService.slice(adminService.indexOf("async function currentSupplierHandoffEvidence"), adminService.indexOf("export async function listFulfillmentQueue"));
+  assert.doesNotMatch(handoffEvidence, /for share of route/i,
+    "the read-only evidence projection relies on the item lock when one is held");
+});
+
 test("supplier work start requires evidence on the latest active packet for the current route", async () => {
   const adminService = await readFile(new URL("../src/server/fulfillment/admin.ts", import.meta.url), "utf8");
   const updateState = adminService.slice(adminService.indexOf("export async function updateFulfillmentState"), adminService.indexOf("export async function recordPublicationEvidence"));
-  assert.match(updateState, /join public\.order_item_fulfillment_supplier route/);
-  assert.match(updateState, /packet\.supplier_id = route\.supplier_id/);
-  assert.match(updateState, /packet\.superseded_at is null/);
-  assert.match(updateState, /max\(latest\.version\)/);
-  assert.match(updateState, /orderItemFulfillmentSupplier\.orderItemId, input\.itemId\)\)\.for\("share"\)/);
-  assert.match(updateState, /attempt\.type = 'SEND'.*attempt\.state = 'DELIVERED'/s);
-  assert.match(updateState, /attempt\.type in \('MANUAL_SENT','MANUAL_SEND'\).*attempt\.state = 'MANUAL_SENT'/s);
+  assert.match(updateState, /currentSupplierHandoffEvidence\(tx, input\.itemId\)/);
+  assert.match(updateState, /Prepare the supplier packet before entering handoff preparation/);
+  const handoffEvidence = adminService.slice(adminService.indexOf("async function currentSupplierHandoffEvidence"), adminService.indexOf("export async function listFulfillmentQueue"));
+  assert.match(handoffEvidence, /from public\.order_item_fulfillment_supplier route/);
+  assert.match(handoffEvidence, /packet\.supplier_id = route\.supplier_id/);
+  assert.match(handoffEvidence, /packet\.superseded_at is null/);
+  assert.match(handoffEvidence, /pi\.route_generation = route\.route_generation/);
+  assert.match(handoffEvidence, /max\(latest\.version\)/);
+  assert.match(handoffEvidence, /attempt\.type = 'SEND'.*attempt\.state = 'DELIVERED'/s);
+  assert.match(handoffEvidence, /attempt\.type in \('MANUAL_SENT','MANUAL_SEND'\).*attempt\.state = 'MANUAL_SENT'[\s\S]*acknowledgement\.packet_id = packet\.id and acknowledgement\.attempt_id = attempt\.id/s);
 
-  const migration = await readFile(new URL("../src/db/migrations/0159_current_supplier_handoff_evidence.sql", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../src/db/migrations/0172_manual_receipt_controls_work_start.sql", import.meta.url), "utf8");
   assert.match(migration, /packet\.supplier_id = fulfillment_supplier_id/);
   assert.match(migration, /packet\.superseded_at IS NULL/);
+  assert.match(migration, /pi\.route_generation = current_route_generation/);
   assert.match(migration, /max\(latest\.version\)/);
   assert.match(migration, /attempt\.type = 'SEND'.*attempt\.state = 'DELIVERED'/s);
-  assert.match(migration, /attempt\.type IN \('MANUAL_SENT','MANUAL_SEND'\).*attempt\.state = 'MANUAL_SENT'/s);
+  assert.match(migration, /attempt\.type IN \('MANUAL_SENT','MANUAL_SEND'\)[\s\S]*attempt\.state = 'MANUAL_SENT'[\s\S]*acknowledgement\.packet_id = packet\.id[\s\S]*acknowledgement\.attempt_id = attempt\.id/s);
+  assert.match(migration, /NEW\.state = 'HANDOFF_PENDING'[\s\S]*supplier packet preparation is required/);
 
   const acceptanceMigration = await readFile(new URL("../src/db/migrations/0160_equivalent_acceptance_lock_order.sql", import.meta.url), "utf8");
   assert.match(acceptanceMigration, /SELECT f\.\* INTO fulfillment_row[\s\S]*FOR UPDATE/);
@@ -343,10 +466,21 @@ test("supplier work start requires evidence on the latest active packet for the 
   assert.match(acceptanceVariableMigration, /e\.request_id = v_request_id/);
   assert.doesNotMatch(acceptanceVariableMigration, /e\.request_id = request_id/);
 
+  const packetService = await readFile(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
+  const acknowledgement = packetService.slice(packetService.indexOf("export async function recordSupplierAcknowledgement"), packetService.indexOf("function packetAttemptProjection"));
+  assert.match(acknowledgement, /lockPacketRowAndItemRows\(tx, input\.packetId\)[\s\S]*\.for\("update"\)/,
+    "manual acknowledgement locks packet and sorted items before its attempt");
+  assert.match(acknowledgement, /isCurrentSupplierPacketRoute\(tx, packetRow\.id\)/,
+    "historical acknowledgements cannot advance a stale route");
+  assert.match(acknowledgement, /if \(attempt\.type === "SEND"\) await requirePacketAssignment/,
+    "provider acknowledgements keep the provider attempt → item lock order");
+  assert.match(packetService, /customerStatus: "PREPARING", updatedAt: new Date\(createdAt\)/,
+    "packet preparation writes the Preparing milestone atomically");
+
   const rlsHarness = await readFile(new URL("../scripts/check-local-rls.ts", import.meta.url), "utf8");
   assert.match(rlsHarness, /rejecting historical supplier handoff after an accepted equivalent route change/);
-  assert.match(rlsHarness, /superseded supplier packet after equivalent route acceptance/);
-  assert.match(rlsHarness, /latest active packet for the accepted supplier route permits work start/);
+  assert.match(rlsHarness, /supplier route change without recipient-specific content consent/);
+  assert.match(rlsHarness, /work start on a supplier route without recipient-specific content consent/);
 });
 
 test("manual handoff reservation blocks cancellation until audited as unsent", async () => {

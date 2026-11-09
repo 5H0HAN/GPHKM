@@ -210,6 +210,10 @@ test("content consent serializes with handoff inside a privileged database trigg
   const source = readFileSync(new URL("../src/server/orders/content-changes.ts", import.meta.url), "utf8");
   const consent = source.split("export async function consentToContentChange")[1].split("export async function listContentChangesForCustomer")[0];
   assert.doesNotMatch(consent, /\.for\("update"\)/);
+  assert.match(consent, /const recipientReconsent = request\.purpose === "RECIPIENT_RECONSENT";\s*if \(recipientReconsent\) \{[\s\S]*?gphkm_lock_customer_recipient_reconsent/,
+    "recipient route locking is limited to the purpose the database helper authorizes");
+  assert.match(consent, /fulfillment\.handedOffAt \|\| \["IN_FULFILLMENT"/,
+    "ordinary content consent remains protected by the consent-event handoff guard");
   const migration = readFileSync(new URL("../src/db/migrations/0134_content_consent_serialization.sql", import.meta.url), "utf8");
   assert.match(migration, /SECURITY DEFINER/);
   assert.match(migration, /FROM public\.order_item_fulfillment f[\s\S]*FOR UPDATE/);

@@ -32,3 +32,6 @@ ADRs capture material choices and their consequences. Product behavior details r
 - [ADR-0028: Private object storage and durable cleanup](ADR-0028-private-object-storage-and-durable-cleanup.md)
 - [ADR-0029: Order-scoped active Support conversations and standalone cases](ADR-0029-order-scoped-support-conversations.md)
 - [ADR-0030: Super Admin self-assignment of fulfillment work](ADR-0030-superadmin-self-assignment.md)
+- [ADR-0031: Audited Super Admin same-supplier recovery](ADR-0031-superadmin-same-supplier-recovery.md)
+- [ADR-0032: Supplier delivery confirmation gates placement progress](ADR-0032-supplier-delivery-confirmation-gate.md)
+- [ADR-0033: Keep checkout recipient consent in a private immutable snapshot](ADR-0033-immutable-supplier-recipient-consent.md)

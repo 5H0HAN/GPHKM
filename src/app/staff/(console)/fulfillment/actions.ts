@@ -3,7 +3,7 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { assignFulfillmentItem, recordPublicationEvidence, saveWritingDraft, updateFulfillmentFollowUp, updateFulfillmentState } from "@/server/fulfillment/admin";
-import { recordSupplierFailure } from "@/server/fulfillment/supplier-outcomes";
+import { recoverSupplierFailure, recordSupplierFailure } from "@/server/fulfillment/supplier-outcomes";
 import { createEquivalentOffer } from "@/server/fulfillment/equivalent-offers";
 
 function field(form: FormData, name: string): string {
@@ -28,7 +28,15 @@ export async function updateFulfillmentAction(form: FormData) {
       reasonCode: field(form, "reasonCode"),
       nextUpdateAt: field(form, "nextUpdateAt"),
     });
-  } catch { redirect(`/staff/fulfillment/${itemId}?error=update-failed`); }
+  } catch (error) {
+    if (error instanceof Error && error.message === "Prepare the supplier packet before entering handoff preparation") {
+      redirect(`/staff/fulfillment/${itemId}?error=packet-required`);
+    }
+    if (error instanceof Error && error.message === "Confirm supplier delivery before starting placement work") {
+      redirect(`/staff/fulfillment/${itemId}?error=delivery-required`);
+    }
+    redirect(`/staff/fulfillment/${itemId}?error=update-failed`);
+  }
   redirect(`/staff/fulfillment/${itemId}?updated=1`);
 }
 
@@ -67,6 +75,14 @@ export async function recordSupplierFailureAction(form: FormData) {
     await recordSupplierFailure(await headers(), { itemId, outcome, reason: field(form, "reason"), idempotencyKey: field(form, "idempotencyKey") });
   } catch { redirect(`/staff/fulfillment/${itemId}?error=supplier-outcome-failed`); }
   redirect(`/staff/fulfillment/${itemId}?supplierOutcome=1`);
+}
+
+export async function recoverSupplierFailureAction(form: FormData) {
+  const itemId = field(form, "itemId");
+  try {
+    await recoverSupplierFailure(await headers(), { itemId, reason: field(form, "reason"), idempotencyKey: field(form, "idempotencyKey") });
+  } catch { redirect(`/staff/fulfillment/${itemId}?error=supplier-recovery-failed`); }
+  redirect(`/staff/fulfillment/${itemId}?supplierRecovered=1`);
 }
 
 export async function createEquivalentOfferAction(form: FormData) {

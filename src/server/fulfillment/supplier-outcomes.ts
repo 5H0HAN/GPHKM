@@ -9,7 +9,7 @@ import { supplierFulfillmentOutcome } from "@/db/supplier-outcome-schema";
 import { appendAuditEvent } from "@/server/audit/append";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { mayReadFulfillmentContent } from "@/modules/fulfillment/console";
-import { assertSupplierOutcomeMayBeRecorded } from "@/modules/fulfillment/supplier-outcome";
+import { assertSupplierOutcomeMayBeRecorded, normalizeSupplierRecoveryReason } from "@/modules/fulfillment/supplier-outcome";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Outcome = "REJECTED" | "CANNOT_FULFILL" | "NONRESPONSIVE";
@@ -108,5 +108,52 @@ export async function recordSupplierFailure(headers: Headers, input: {
       action: "SUPPORT_CASE_OPENED_FOR_SUPPLIER_OUTCOME", targetType: "SUPPORT_CASE", targetId: caseId,
       metadata: { result: "OPENED", orderItemId: input.itemId } });
     return { outcomeId, supportCaseId: caseId, replayed: false };
+  });
+}
+
+export async function recoverSupplierFailure(headers: Headers, input: {
+  itemId: string; reason: string; idempotencyKey: string;
+}) {
+  if (![input.itemId, input.idempotencyKey].every((value) => UUID.test(value))) throw new Error("Supplier recovery is unavailable");
+  const reason = normalizeSupplierRecoveryReason(input.reason);
+  const actor = await requireStaffAccess(headers, "fulfillment.manage");
+  if (actor.role !== "SUPER_ADMIN") throw new Error("Forbidden");
+  const requestHash = hash({ itemId: input.itemId, reason });
+
+  return db.transaction(async (tx: Tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    const result = await tx.execute(sql`select recovery_id, support_case_id, replayed
+      from public.gphkm_recover_supplier_failure(${input.itemId}, ${reason}, ${input.idempotencyKey}, ${requestHash})`);
+    const command = (result as unknown as { rows?: Array<{ recovery_id: string; support_case_id: string; replayed: boolean }> }).rows?.[0];
+    if (!command?.recovery_id || !command.support_case_id) throw new Error("Supplier recovery requires reconciliation");
+    if (command.replayed) return { recoveryId: command.recovery_id, supportCaseId: command.support_case_id, replayed: true };
+
+    const [caseRow] = await tx.select({ state: supportCase.state, organizationId: supportCase.organizationId }).from(supportCase)
+      .where(eq(supportCase.id, command.support_case_id)).for("update").limit(1);
+    if (!caseRow || ["RESOLVED", "CLOSED"].includes(caseRow.state)) throw new Error("Support case changed during recovery");
+    const now = new Date();
+    if (["WAITING_ON_CUSTOMER", "WAITING_ON_SUPPLIER"].includes(caseRow.state)) {
+      await tx.insert(supportCaseEvent).values({ id: randomUUID(), caseId: command.support_case_id,
+        actorUserId: actor.userId, actorKind: "STAFF", kind: "STATE_CHANGED", audience: "INTERNAL",
+        body: "Same-supplier recovery was recorded; fulfillment review can continue.",
+        fromState: caseRow.state, toState: "INVESTIGATING", idempotencyKey: randomUUID(),
+        requestHash: hash({ caseId: command.support_case_id, recoveryId: command.recovery_id, from: caseRow.state, to: "INVESTIGATING" }),
+        createdAt: now });
+      await tx.update(supportCase).set({ state: "INVESTIGATING", updatedAt: now }).where(eq(supportCase.id, command.support_case_id));
+    } else {
+      await tx.update(supportCase).set({ updatedAt: now }).where(eq(supportCase.id, command.support_case_id));
+    }
+    await tx.insert(supportCaseEvent).values([
+      { id: randomUUID(), caseId: command.support_case_id, actorUserId: actor.userId, actorKind: "STAFF", kind: "NOTE", audience: "INTERNAL",
+        body: `Same-supplier recovery evidence: ${reason}`, idempotencyKey: randomUUID(),
+        requestHash: hash({ caseId: command.support_case_id, recoveryId: command.recovery_id, audience: "INTERNAL", reason }), createdAt: now },
+      { id: randomUUID(), caseId: command.support_case_id, actorUserId: actor.userId, actorKind: "STAFF", kind: "REPLY", audience: "CUSTOMER",
+        body: "We have confirmed that work on your placement can move forward. We are reviewing the approved content and fulfillment details before preparation, and we will share another update here when preparation is complete.",
+        idempotencyKey: randomUUID(), requestHash: hash({ caseId: command.support_case_id, recoveryId: command.recovery_id, audience: "CUSTOMER" }), createdAt: now },
+    ]);
+    await appendAuditEvent(tx, { organizationId: caseRow.organizationId, actorUserId: actor.userId, action: "SUPPLIER_FAILURE_SAME_SUPPLIER_RECOVERED",
+      targetType: "CUSTOMER_ORDER_ITEM", targetId: input.itemId, reasonCode: "SAME_SUPPLIER_RECONFIRMED",
+      metadata: { recoveryId: command.recovery_id, supportCaseId: command.support_case_id } });
+    return { recoveryId: command.recovery_id, supportCaseId: command.support_case_id, replayed: false };
   });
 }

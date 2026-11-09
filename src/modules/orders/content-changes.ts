@@ -8,7 +8,34 @@ export type OrderContent = Readonly<{
 }>;
 
 export type ContentChangePatch = Partial<OrderContent>;
-export type ContentChangeStatus = "REQUESTED" | "APPROVED_AWAITING_CONSENT" | "CONSENTED" | "REJECTED";
+export type ContentChangeStatus = "REQUESTED" | "APPROVED_AWAITING_CONSENT" | "CONSENTED" | "REJECTED" | "STALE";
+
+export function isStaleRecipientReconsent(input: {
+  purpose: string;
+  status: ContentChangeStatus | null;
+  versionNumber: number | null;
+  latestContentVersionNumber: number | null;
+  versionSupplierId: string | null;
+  versionRecipientEmail: string | null;
+  currentSupplierId: string | null;
+  currentRecipientEmail: string | null;
+  fulfillmentState: string;
+  handedOffAt: Date | null;
+  workStartedAt: Date | null;
+}): boolean {
+  if (input.purpose !== "RECIPIENT_RECONSENT" || !["REQUESTED", "APPROVED_AWAITING_CONSENT", "CONSENTED"].includes(input.status ?? "")) return false;
+  const hasCurrentRoute = input.currentSupplierId !== null && input.currentRecipientEmail !== null;
+  const hasBoundVersion = input.versionNumber !== null && input.versionSupplierId !== null && input.versionRecipientEmail !== null;
+  const matchesCurrentRoute = hasCurrentRoute && hasBoundVersion && input.versionSupplierId === input.currentSupplierId
+    && input.versionRecipientEmail!.trim().toLowerCase() === input.currentRecipientEmail!.trim().toLowerCase();
+  if (!matchesCurrentRoute) return true;
+  // Consent already granted remains a true historical fact after work starts.
+  if (input.status === "CONSENTED") return false;
+  const currentHandoff = input.fulfillmentState === "HANDOFF_PENDING" && input.handedOffAt !== null && input.workStartedAt === null;
+  if (!currentHandoff) return true;
+  return input.status === "APPROVED_AWAITING_CONSENT" && input.latestContentVersionNumber !== null
+    && input.versionNumber !== input.latestContentVersionNumber;
+}
 
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
 

@@ -56,6 +56,16 @@ test("overdue staff follow-ups exclude missing dates and terminal items", () => 
   assert.equal(isFulfillmentOverdue(new Date("2026-10-29T12:00:01.000Z"), "IN_FULFILLMENT", now), false);
 });
 
+test("fulfillment detail distinguishes auth failures, unavailable items, and unexpected loader errors", () => {
+  const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/[itemId]/page.tsx", import.meta.url), "utf8");
+  const loader = page.slice(page.indexOf("try { result = await getFulfillmentItem"), page.indexOf("const contentChanges"));
+  assert.match(loader, /error\.message === "Unauthorized"\) redirect\("\/staff\/sign-in"\)/);
+  assert.match(loader, /error\.message === "Forbidden"\) redirect\("\/staff"\)/);
+  assert.match(loader, /error\.message === "Item unavailable"\) notFound\(\)/);
+  assert.match(loader, /throw error/);
+  assert.doesNotMatch(loader, /catch \{ notFound\(\)/);
+});
+
 
 test("follow-up updates change only dates with an assigned Admin or Super Admin and approved reason", () => {
   const now = new Date("2026-10-28T00:00:00.000Z");
@@ -77,6 +87,18 @@ test("hold-resume choices include only the saved active state and preserve suppl
   assert.deepEqual(fulfillmentTransitionChoices("ON_HOLD", "COMPLETED", false), []);
   assert.equal(fulfillmentTransitionChoices("READY_FOR_HANDOFF", null, true).some((choice) => choice.value === "IN_FULFILLMENT"), false);
   assert.equal(fulfillmentTransitionChoices("READY_FOR_HANDOFF", null, false).some((choice) => choice.value === "IN_FULFILLMENT"), true);
+  assert.deepEqual(fulfillmentTransitionChoices("READY_FOR_HANDOFF", null, true).map(({ value }) => value), ["ON_HOLD"]);
+  assert.equal(fulfillmentTransitionChoices("HANDOFF_PENDING", null, true).some(({ value }) => value === "IN_FULFILLMENT"), false);
+  assert.equal(fulfillmentTransitionChoices("HANDOFF_PENDING", null, true, true, true).some(({ value }) => value === "IN_FULFILLMENT"), true);
+});
+
+test("fulfillment action errors stay on the item page with a recovery message", () => {
+  const actions = readFileSync(new URL("../src/app/staff/(console)/fulfillment/actions.ts", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/[itemId]/page.tsx", import.meta.url), "utf8");
+  assert.match(actions, /error\.message === "Prepare the supplier packet before entering handoff preparation"[\s\S]*error=packet-required/);
+  assert.match(actions, /error\.message === "Confirm supplier delivery before starting placement work"[\s\S]*error=delivery-required/);
+  assert.match(page, /query\.error === "packet-required"[\s\S]*Prepare the supplier packet/);
+  assert.match(page, /query\.error === "delivery-required"[\s\S]*record the supplier’s receipt/);
 });
 
 test("unapproved GPHKM Writing cannot be marked ready or handed to placement", () => {

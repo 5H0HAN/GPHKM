@@ -25,8 +25,10 @@ export async function submitContentChangeAction(form: FormData) {
 
 export async function consentToContentChangeAction(form: FormData) {
   const organizationId = field(form, "organizationId");
+  let recipientReconsent = false;
   try {
-    await consentToContentChange(await headers(), organizationId, field(form, "requestId"));
+    const result = await consentToContentChange(await headers(), organizationId, field(form, "requestId"));
+    recipientReconsent = result.purpose === "RECIPIENT_RECONSENT";
   } catch { redirect(`/customer/orders?organizationId=${encodeURIComponent(organizationId)}&changeError=1`); }
-  redirect(`/customer/orders?organizationId=${encodeURIComponent(organizationId)}&changeConsented=1`);
+  redirect(`/customer/orders?organizationId=${encodeURIComponent(organizationId)}&changeConsented=1${recipientReconsent ? "&recipientConsented=1" : ""}`);
 }

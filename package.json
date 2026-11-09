@@ -16,6 +16,8 @@
     "db:check-private-files:local": "node --env-file=.env scripts/check-local-private-files.ts",
     "db:check-content-race:local": "node --env-file=.env scripts/check-content-handoff-race-local.ts",
     "db:check-supplier-failure-migration:local": "node --env-file=.env scripts/check-supplier-failure-migration-local.ts",
+    "db:check-supplier-recovery:local": "node --env-file=.env scripts/check-supplier-recovery-local.ts",
+    "db:check-recipient-reconsent:local": "node --env-file=.env scripts/check-recipient-reconsent-local.ts",
     "db:check-session-guard:local": "NODE_ENV=development node --env-file=.env scripts/check-customer-session-revocation-local.ts",
     "db:check-staff-mfa:local": "NODE_ENV=development node --env-file=.env scripts/check-staff-mfa-local.ts",
     "auth:bootstrap:local": "NODE_ENV=development node --env-file=.env scripts/bootstrap-local-admin.ts",

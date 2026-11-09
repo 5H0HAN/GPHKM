@@ -1,13 +1,13 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, notExists, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { listing, listingSourcing, listingUrl, supplier, supplierContact } from "@/db/catalog-schema";
 import { customerOrder, customerOrderItem, orderItemFulfillment, orderItemFulfillmentSupplier, orderItemWriting } from "@/db/order-schema";
 import { orderItemContentChangeEvent, orderItemContentChangeRequest, orderItemContentVersion } from "@/db/change-request-schema";
 import { orderItemEquivalentOffer, orderItemEquivalentOfferEvent, orderItemEquivalentOfferRoute } from "@/db/equivalent-offer-schema";
 import { supportCase } from "@/db/support-schema";
-import { supplierFulfillmentOutcome } from "@/db/supplier-outcome-schema";
+import { supplierFulfillmentOutcome, supplierFulfillmentOutcomeResolution } from "@/db/supplier-outcome-schema";
 import { appendAuditEvent } from "@/server/audit/append";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganizationContext } from "@/server/identity/customer-context";
@@ -76,15 +76,18 @@ export async function createEquivalentOffer(headers: Headers, input: {
       .innerJoin(supplier, eq(supplier.id, listingSourcing.fulfillmentSupplierId))
       .innerJoin(supplierContact, and(eq(supplierContact.supplierId, supplier.id), eq(supplierContact.isPrimary, true)))
       .where(and(eq(listing.id, input.listingId), eq(listing.status, "LIVE"), eq(supplier.status, "ACTIVE"))).limit(1);
+    // Route acceptance takes the same item lock before changing this read-only route table.
     const [currentRoute] = await tx.select({ supplierId: orderItemFulfillmentSupplier.supplierId,
       routeGeneration: orderItemFulfillmentSupplier.routeGeneration })
-      .from(orderItemFulfillmentSupplier).where(eq(orderItemFulfillmentSupplier.orderItemId, input.itemId)).for("share").limit(1);
+      .from(orderItemFulfillmentSupplier).where(eq(orderItemFulfillmentSupplier.orderItemId, input.itemId)).limit(1);
     if (!replacement?.supplierId || replacement.supplierId === currentRoute?.supplierId || !replacement.contactEmail) throw new Error("Select a live alternative with an active fulfillment contact");
     const [failure] = currentRoute?.supplierId ? await tx.select({ id: supplierFulfillmentOutcome.id })
       .from(supplierFulfillmentOutcome).where(and(eq(supplierFulfillmentOutcome.orderItemId, input.itemId),
         eq(supplierFulfillmentOutcome.supplierId, currentRoute.supplierId),
         eq(supplierFulfillmentOutcome.supportCaseId, input.caseId),
-        eq(supplierFulfillmentOutcome.routeGeneration, currentRoute.routeGeneration))).limit(1) : [];
+        eq(supplierFulfillmentOutcome.routeGeneration, currentRoute.routeGeneration),
+        notExists(tx.select({ one: sql`1` }).from(supplierFulfillmentOutcomeResolution)
+          .where(eq(supplierFulfillmentOutcomeResolution.outcomeId, supplierFulfillmentOutcome.id))))).limit(1) : [];
     if (!failure) throw new Error("Record a supplier failure on this active case before offering an alternative");
 
     const pendingOfferResult = await tx.execute(sql`

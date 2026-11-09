@@ -16,6 +16,7 @@ test("packet reconciliation pages every issue queue with stable bounds", async (
   assert.match(service, /clearResolvedPacketSizeHold\(tx, row, actor\.userId\)/g);
   assert.match(service, /holdReason: row\.holdReason, heldAt: row\.heldAt/);
   const queue = service.slice(service.indexOf("export async function listSupplierPacketReconciliation"), service.indexOf("export async function processResendWebhook"));
+  assert.doesNotMatch(queue, /Promise\.all\(/, "queries in one transaction must not run concurrently on the same pg client");
   assert.match(queue, /staffCatalogPagination\(requestedPages\.attempts/);
   assert.match(queue, /staffCatalogPagination\(requestedPages\.events/);
   assert.match(queue, /staffCatalogPagination\(requestedPages\.items/);

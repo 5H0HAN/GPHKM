@@ -1,8 +1,10 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { beginManualSupplierHandoff, markStuckSupplierPacketUnknown, prepareSupplierPackets, recordSupplierAcknowledgement, reconcileManualSupplierHandoffUnsent, reconcileSupplierPacketAttempt, sendSupplierPacket } from "@/server/fulfillment/packets";
+import { logSafeFailure } from "@/server/observability/safe-log";
+import { beginManualSupplierHandoff, markStuckSupplierPacketUnknown, prepareSupplierPackets, recordSupplierAcknowledgement, reconcileManualSupplierHandoffUnsent, reconcileSupplierPacketAttempt, requestSupplierRecipientReconsent, sendSupplierPacket } from "@/server/fulfillment/packets";
 
 function get(form: FormData, key: string) { const value = form.get(key); return typeof value === "string" ? value.trim() : ""; }
 
@@ -11,10 +13,26 @@ export async function preparePacketsAction(form: FormData) {
   const itemIds = form.getAll("itemIds").filter((value): value is string => typeof value === "string");
   let packetIds: string[];
   try { packetIds = await prepareSupplierPackets(await headers(), orderId, itemIds); }
-  catch { redirect(`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&error=prepare`); }
+  catch (error) {
+    logSafeFailure("supplier_packet_prepare_failed", error, randomUUID(), { orderId });
+    redirect(`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&error=prepare`);
+  }
   if (!packetIds.length) redirect(`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&error=empty`);
   const preparedIds = encodeURIComponent(packetIds.join(","));
   redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetIds[0])}?preparedIds=${preparedIds}`);
+}
+
+export async function requestRecipientReconsentAction(form: FormData) {
+  const orderId = get(form, "orderId");
+  const itemId = get(form, "itemId");
+  try { await requestSupplierRecipientReconsent(await headers(), itemId); }
+  catch (error) {
+    // The safe logger records only allowlisted SQLSTATE/object metadata, so
+    // retain the original error for diagnosis without exposing its message.
+    logSafeFailure("supplier_recipient_reconsent_request_failed", error, randomUUID(), { orderId, itemId });
+    redirect(`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&error=recipient-consent`);
+  }
+  redirect(`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&consentRequested=1`);
 }
 
 export async function sendSupplierPacketAction(form: FormData) {

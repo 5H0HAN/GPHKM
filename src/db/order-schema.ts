@@ -65,6 +65,23 @@ export const customerOrderItem = pgTable("customer_order_item", {
   check("customer_order_item_status_valid", sql`${t.customerStatus} in ('ORDER_RECEIVED', 'CONTENT_REVIEW', 'PREPARING', 'IN_PROGRESS', 'LINK_VERIFICATION', 'COMPLETE', 'RESOLVED')`),
 ]).enableRLS();
 
+// The customer-visible sharing consent does not reveal the private supplier
+// identity. Keep the primary recipient accepted at checkout in a separate,
+// staff-inaccessible snapshot so a later contact change requires fresh consent.
+export const orderItemSupplierConsent = pgTable("order_item_supplier_consent", {
+  orderItemId: text("order_item_id").primaryKey().references(() => customerOrderItem.id),
+  supplierId: text("supplier_id").notNull().references(() => supplier.id),
+  recipientEmail: text("recipient_email").notNull(),
+  noticeVersion: text("notice_version").notNull(),
+  acceptedAt: timestamp("accepted_at", { withTimezone: true }).notNull(),
+  captureSource: text("capture_source").notNull(),
+  recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  check("order_item_supplier_consent_email_valid", sql`length(btrim(${t.recipientEmail})) between 3 and 320 and ${t.recipientEmail} !~ '[[:cntrl:]]'`),
+  check("order_item_supplier_consent_notice_valid", sql`length(btrim(${t.noticeVersion})) between 1 and 80`),
+  check("order_item_supplier_consent_source_valid", sql`${t.captureSource} in ('CHECKOUT_ROUTE', 'VERIFIED_HISTORIC_CONTACT')`),
+]).enableRLS();
+
 // Internal margin inputs are isolated from customer-readable order rows.
 export const orderItemFinancial = pgTable("order_item_financial", {
   orderItemId: text("order_item_id").primaryKey().references(() => customerOrderItem.id),

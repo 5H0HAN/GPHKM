@@ -8,6 +8,7 @@ export type PacketContent = Readonly<{
   recipientEmail: string;
   contentHash: string;
   noticeVersion: string | null;
+  consentEventId: string | null;
   consentedAt: Date | string;
   listingTerms?: unknown;
 }>;
@@ -27,12 +28,14 @@ export type PacketContentVersionRow = Readonly<{
   contentHash: string;
 }>;
 export type PacketContentEventRow = {
+  id?: string;
   requestId: string;
   eventType: string;
   versionId: string | null;
   contentHash: string | null;
   noticeVersion: string | null;
   createdAt: Date | string;
+  createdAtExact?: string;
 };
 
 // Pure projection used by the batched packet resolver. Database reads supply
@@ -93,7 +96,8 @@ export function resolvePacketContentRows(input: {
       recipientEmail: current.recipientEmail,
       contentHash: current.contentHash,
       noticeVersion: consent.noticeVersion,
-      consentedAt: consent.createdAt,
+      consentEventId: consent.id ?? null,
+      consentedAt: consent.createdAtExact ?? consent.createdAt,
       ...(listingTerms !== undefined ? { listingTerms } : {}),
     }) });
   }
