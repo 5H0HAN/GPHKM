@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { logSafeFailure } from "@/server/observability/safe-log";
+import { UnsupportedSupplierPacketPdfTextError } from "@/server/fulfillment/pdf";
 import { beginManualSupplierHandoff, markStuckSupplierPacketUnknown, prepareSupplierPackets, recordSupplierAcknowledgement, reconcileManualSupplierHandoffUnsent, reconcileSupplierPacketAttempt, requestSupplierRecipientReconsent, sendSupplierPacket } from "@/server/fulfillment/packets";
 
 function get(form: FormData, key: string) { const value = form.get(key); return typeof value === "string" ? value.trim() : ""; }
@@ -38,7 +39,10 @@ export async function requestRecipientReconsentAction(form: FormData) {
 export async function sendSupplierPacketAction(form: FormData) {
   const packetId = get(form, "packetId");
   try { await sendSupplierPacket(await headers(), packetId, get(form, "resendReason"), get(form, "attachPdf") === "on"); }
-  catch { redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?error=send`); }
+  catch (error) {
+    const code = error instanceof UnsupportedSupplierPacketPdfTextError ? "pdf-text" : "send";
+    redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?error=${code}`);
+  }
   redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?sent=1`);
 }
 

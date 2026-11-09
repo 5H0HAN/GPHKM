@@ -42,6 +42,7 @@ function rowActionError(code?: string) {
     case "correct": return "The row could not be corrected. Check the values and try again.";
     case "decision": return "The duplicate decision could not be saved. Review the row and reason.";
     case "reject": return "The row could not be rejected. It may already have been applied.";
+    case "review-changed": return "The staged row or website match changed. Review the current row and matches before applying.";
     case "apply": return "The selected rows could not be applied. Review their current status and prices.";
     case "all-review": return "The whole list is not ready yet. Review or reject every pending row, then try again.";
     case "all-price": return "Save a valid USD retail price for every ready row before importing the whole list.";

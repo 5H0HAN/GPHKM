@@ -25,6 +25,13 @@ export type NewListingInput = {
   urlVisibleWithoutRecharge: boolean;
 };
 
+export async function lockListingWebsiteDomains(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], urls: string[]) {
+  const domains = [...new Set(urls.map((url) => new URL(url).hostname))].sort();
+  for (const domain of domains) {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${domain}, 0))`);
+  }
+}
+
 export async function insertDraftListingInTransaction(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], userId: string, input: NewListingInput) {
   const websiteUrl = normalizeWebsiteUrl(input.terms.websiteUrl);
   if (!websiteUrl) throw new Error("Invalid listing URL");
@@ -32,8 +39,7 @@ export async function insertDraftListingInTransaction(tx: Parameters<Parameters<
   const termErrors = validateListingTerms(terms);
   const relationshipErrors = validateListingRelationships(input.commercialSource, input.supplierId, input.fulfillmentSupplierId);
   if (termErrors.length || relationshipErrors.length) throw new Error("Invalid listing fields");
-  const domain = new URL(websiteUrl).hostname;
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${domain}, 0))`);
+  await lockListingWebsiteDomains(tx, [websiteUrl]);
   for (const supplierId of [input.supplierId, input.fulfillmentSupplierId].filter((value): value is string => value !== null)) {
     const [found] = await tx.select({ id: supplier.id }).from(supplier).where(eq(supplier.id, supplierId)).limit(1);
     if (!found) throw new Error("Supplier unavailable");
@@ -163,6 +169,7 @@ export async function updateListingInTransaction(
   const [source] = await tx.select().from(listingSourcing).where(eq(listingSourcing.listingId, input.id)).for("update").limit(1);
   const [currentUrl] = await tx.select().from(listingUrl).where(eq(listingUrl.listingId, input.id)).for("update").limit(1);
   if (!source || !currentUrl) throw new Error("Listing is incomplete");
+  if (currentUrl.websiteUrl !== websiteUrl) await lockListingWebsiteDomains(tx, [currentUrl.websiteUrl, websiteUrl]);
   const relationshipIds = [input.supplierId, input.fulfillmentSupplierId].filter((value): value is string => value !== null);
   for (const supplierId of new Set(relationshipIds)) {
     const [found] = await tx.select({ id: supplier.id, status: supplier.status }).from(supplier)

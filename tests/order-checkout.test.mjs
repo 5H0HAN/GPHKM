@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { customerOrderPagination, customerOrderProjection, validateCheckoutInput } from "../src/modules/orders/checkout.ts";
+import { CHECKOUT_DISCLOSURES, CUSTOMER_ORDERS_PAGE_SIZE, MAX_CUSTOMER_ORDERS_PAGE_ITEMS, MAX_ORDER_ITEMS, checkoutDisclosuresAreCurrent, customerOrderPagination, customerOrderProjection, validateCheckoutInput } from "../src/modules/orders/checkout.ts";
 
 const item = (listingId = "listing-1") => ({
   listingId,
@@ -12,7 +12,7 @@ const item = (listingId = "listing-1") => ({
   shareWithPublicationPartner: true,
 });
 const validateItems = (items) => validateCheckoutInput({
-  idempotencyKey: "order-key-00000001", acceptContentPolicy: true, items,
+  idempotencyKey: "order-key-00000001", acceptContentPolicy: true, disclosureVersions: CHECKOUT_DISCLOSURES, items,
 });
 
 test("checkout accepts up to 25 unique listings and rejects duplicates and oversize carts", () => {
@@ -53,14 +53,43 @@ test("customer order projection exposes only customer-facing fields", () => {
   assert.equal("websiteUrl" in result.items[0].listing, false);
 });
 
-test("order checkout binds commercial disclosure versions to idempotency without mixing them into listing snapshots", () => {
+test("checkout checks displayed disclosure versions and saves them alongside immutable listing snapshots", () => {
+  assert.ok(checkoutDisclosuresAreCurrent(CHECKOUT_DISCLOSURES));
+  for (const version of Object.keys(CHECKOUT_DISCLOSURES)) {
+    assert.equal(checkoutDisclosuresAreCurrent({ ...CHECKOUT_DISCLOSURES, [version]: "stale" }), false);
+  }
+  assert.ok(validateCheckoutInput({ items: [item()], acceptContentPolicy: true, idempotencyKey: "order-key-00000001" })
+    .some((error) => error.code === "INVALID_DISCLOSURE_VERSIONS"));
   const service = readFileSync(new URL("../src/server/orders/checkout.ts", import.meta.url), "utf8");
-  assert.match(service, /PLACEMENT_DISCLOSURE_VERSION/);
-  assert.match(service, /WRITING_REFUND_DISCLOSURE_VERSION/);
-  assert.match(service, /requestDigest[\s\S]*placementDisclosureVersion: PLACEMENT_DISCLOSURE_VERSION/);
-  assert.match(service, /requestDigest[\s\S]*writingRefundDisclosureVersion: item\.useWriting === true \? WRITING_REFUND_DISCLOSURE_VERSION : null/);
   const snapshot = service.split("function listingSnapshot")[1].split("export async function createWalletFundedOrder")[0];
   assert.doesNotMatch(snapshot, /placementDisclosureVersion|writingRefundDisclosureVersion/);
+  assert.match(service, /requestDigest[\s\S]*placementDisclosureVersion: input.disclosureVersions.placementDisclosureVersion/);
+  assert.match(service, /checkoutDisclosuresAreCurrent\(input.disclosureVersions\)/);
+  assert.match(service, /customerListingSnapshot: listingSnapshot\(row\),\s*placementDisclosureVersion: input.disclosureVersions.placementDisclosureVersion,\s*writingRefundDisclosureVersion: useWriting \? input.disclosureVersions.writingRefundDisclosureVersion : null/);
+});
+
+test("database checkout gates exact current disclosure versions without rewriting legacy snapshots", () => {
+  const schema = readFileSync(new URL("../src/db/order-schema.ts", import.meta.url), "utf8");
+  const migration = readFileSync(new URL("../src/db/migrations/0190_checkout_disclosure_versions.sql", import.meta.url), "utf8");
+  const finalizationGuard = readFileSync(new URL("../src/db/migrations/0191_require_content_policy_at_checkout.sql", import.meta.url), "utf8");
+  assert.match(schema, /customer_order_content_sharing_notice_current[\s\S]*gphkm-content-sharing-v1/);
+  assert.match(schema, /customer_order_item_consent_notice_current[\s\S]*gphkm-content-sharing-v1/);
+  assert.match(schema, /customer_order_item_disclosure_versions_current[\s\S]*gphkm-placement-disclosure-v1[\s\S]*gphkm-writing-stages-v1/);
+  assert.equal((migration.match(/NOT VALID;/g) ?? []).length, 3);
+  assert.match(migration, /DROP POLICY customer_order_create[\s\S]*content_sharing_notice_version = 'gphkm-content-sharing-v1'/);
+  assert.match(migration, /DROP POLICY customer_order_item_create[\s\S]*placement_disclosure_version = 'gphkm-placement-disclosure-v1'/);
+  assert.match(migration, /gphkm_validate_checkout_disclosures[\s\S]*BEFORE UPDATE OF checkout_state/);
+  assert.match(migration, /writing_refund_disclosure_version IS DISTINCT FROM 'gphkm-writing-stages-v1'/);
+  assert.match(finalizationGuard, /content_policy_version IS DISTINCT FROM 'gphkm-content-policy-v1'/);
+  assert.match(finalizationGuard, /content_policy_accepted_at IS NULL/);
+  assert.match(finalizationGuard, /current checkout disclosures are required/);
+});
+
+test("customer Orders supports actions for all placements on a full page", () => {
+  assert.equal(MAX_CUSTOMER_ORDERS_PAGE_ITEMS, CUSTOMER_ORDERS_PAGE_SIZE * MAX_ORDER_ITEMS);
+  assert.equal(MAX_CUSTOMER_ORDERS_PAGE_ITEMS, 1250);
+  const content = readFileSync(new URL("../src/server/orders/content-changes.ts", import.meta.url), "utf8");
+  assert.match(content, /ids.length > MAX_CUSTOMER_ORDERS_PAGE_ITEMS/);
 });
 
 const orderWithStatuses = (...statuses) => ({
@@ -188,5 +217,15 @@ test("Support can attach an off-page item’s order without widening customer or
   assert.match(support, /getMyOrderItemForSupport\(requestHeaders, organizationId, itemId\)/);
   assert.match(support, /if \(selectedItem && !orderOptions\.some\(\(order\) => order\.id === selectedItem\.orderId\)\)/);
   assert.match(support, /label: `Order #\$\{selectedItem\.orderId\.slice\(0, 8\)\.toUpperCase\(\)\} · includes selected placement`/);
-  assert.match(support, /const selectedOrderId = orderOptions\.some\(\(order\) => order\.id === requestedOrderId\) \? requestedOrderId : ""/);
+  assert.match(support, /getMyOrderForSupport\(requestHeaders, organizationId, orderId\)/);
+  assert.match(support, /if \(selectedOrder && !orderOptions\.some/);
+  assert.match(support, /const selectedOrderId = unavailableAssociation \? "" : requestedOrderId/);
+  assert.match(support, /unavailableAssociation \? <p[\s\S]*: <form action=\{openSupportAction\}/);
+});
+
+test("content-change eligibility is projected only for the orderer", () => {
+  const order = { ...orderWithStatuses("PREPARING"), actorUserId: "orderer" };
+  order.items[0].canRequestContentChange = true;
+  assert.equal(customerOrderProjection(order, "orderer").items[0].canRequestContentChange, true);
+  assert.equal(customerOrderProjection(order, "owner").items[0].canRequestContentChange, false);
 });

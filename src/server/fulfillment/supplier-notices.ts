@@ -4,8 +4,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { supplierItemNotice, supplierItemNoticeAttempt, supplierItemNoticeEvent } from "@/db/supplier-notice-schema";
-import { supplierPacket, supplierPacketItem } from "@/db/packet-schema";
-import { customerOrderItem, orderItemFulfillment, orderItemFulfillmentSupplier } from "@/db/order-schema";
+import { orderItemFulfillment } from "@/db/order-schema";
 import { supportCase } from "@/db/support-schema";
 import { postHandoffRefundRequest } from "@/db/post-handoff-refund-schema";
 import { appendAuditEvent } from "@/server/audit/append";
@@ -13,6 +12,7 @@ import { requireStaffAccess } from "@/server/auth/staff";
 import { buildSupplierNotice, renderSupplierNoticeEml } from "@/modules/fulfillment/supplier-notice";
 import { resendEnvConfigured } from "@/server/fulfillment/packets";
 import { readSmallJsonResponse } from "@/modules/security/small-json-response";
+import { isDefinitiveResendRejection, readResendMessageId } from "@/modules/fulfillment/resend-send-result";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type NoticeType = "WITHDRAWAL" | "CORRECTION";
@@ -34,36 +34,17 @@ export async function prepareSupplierItemNotice(headers: Headers, input: { caseI
   const reason = input.reason.trim();
   if (reason.length < 5 || reason.length > 1000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(reason)) throw new Error("Provide a valid supplier instruction");
   return staffTx(headers, async (tx, actor) => {
-    const [row] = await tx.select({ caseId: supportCase.id, organizationId: supportCase.organizationId,
-      itemId: orderItemFulfillment.orderItemId, handedOffAt: orderItemFulfillment.handedOffAt,
-      assignedAdminId: orderItemFulfillment.assignedAdminId, packet: supplierPacket.packet,
-      packetId: supplierPacket.id, recipient: supplierPacket.recipient,
-    }).from(supportCase).innerJoin(orderItemFulfillment, eq(orderItemFulfillment.orderItemId, input.orderItemId))
-      .innerJoin(customerOrderItem, eq(customerOrderItem.id, orderItemFulfillment.orderItemId))
-      .innerJoin(orderItemFulfillmentSupplier, eq(orderItemFulfillmentSupplier.orderItemId, orderItemFulfillment.orderItemId))
-      .innerJoin(supplierPacketItem, eq(supplierPacketItem.orderItemId, orderItemFulfillment.orderItemId))
-      .innerJoin(supplierPacket, eq(supplierPacket.id, supplierPacketItem.packetId))
-      .where(and(eq(supportCase.id, input.caseId), eq(supportCase.orderId, customerOrderItem.orderId),
-        eq(orderItemFulfillment.orderItemId, input.orderItemId),
-        sql`${supportCase.state} not in ('RESOLVED','CLOSED')`,
-        eq(supplierPacket.supplierId, orderItemFulfillmentSupplier.supplierId),
-        eq(supplierPacketItem.routeGeneration, orderItemFulfillmentSupplier.routeGeneration),
-        sql`exists (select 1 from public.supplier_packet_attempt attempt
-          where attempt.packet_id = public.supplier_packet.id
-            and lower(attempt.recipient) = lower(public.supplier_packet.recipient)
-            and ((attempt.type = 'SEND' and attempt.state = 'DELIVERED' and attempt.delivered_at is not null)
-              or (attempt.type in ('MANUAL_SENT','MANUAL_SEND') and attempt.state = 'MANUAL_SENT' and attempt.sent_at is not null)))`))
-      .orderBy(desc(supplierPacket.version), desc(supplierPacket.createdAt)).limit(1);
-    if (!row || !row.handedOffAt || !row.assignedAdminId || (actor.role === "ADMIN" && row.assignedAdminId !== actor.userId)) throw new Error("Assigned, handed-off item unavailable");
-    const packet = row.packet as { items?: Array<{ orderItemId?: string; reference?: string }> };
-    const item = packet.items?.find((candidate) => candidate.orderItemId === row.itemId);
-    if (!item?.reference) throw new Error("Original packet evidence unavailable");
-    const snapshot = buildSupplierNotice(input.type, item.reference, reason);
+    const dispatch = await tx.execute<{ packet_id: string; recipient: string; item_reference: string; organization_id: string }>(sql`
+      select * from public.gphkm_supplier_notice_dispatch(${input.caseId}, ${input.orderItemId})
+    `);
+    const row = dispatch.rows[0];
+    if (!row) throw new Error("Assigned, handed-off item unavailable");
+    const snapshot = buildSupplierNotice(input.type, row.item_reference, reason);
     const contentHash = hash({ recipient: row.recipient, snapshot });
     const id = randomUUID();
-    await tx.insert(supplierItemNotice).values({ id, caseId: row.caseId, orderItemId: row.itemId, packetId: row.packetId,
+    await tx.insert(supplierItemNotice).values({ id, caseId: input.caseId, orderItemId: input.orderItemId, packetId: row.packet_id,
       noticeType: input.type, recipient: row.recipient, snapshot, contentHash, createdByUserId: actor.userId });
-    await appendAuditEvent(tx, { organizationId: row.organizationId, actorUserId: actor.userId,
+    await appendAuditEvent(tx, { organizationId: row.organization_id, actorUserId: actor.userId,
       action: "SUPPLIER_ITEM_NOTICE_PREPARED", targetType: "SUPPLIER_ITEM_NOTICE", targetId: id,
       reasonCode: input.type, metadata: { result: "PREPARED" } });
     return { noticeId: id };
@@ -71,8 +52,11 @@ export async function prepareSupplierItemNotice(headers: Headers, input: { caseI
 }
 
 async function getNotice(tx: Tx, noticeId: string, actor: { userId: string; role: "ADMIN" | "FINANCE" | "SUPER_ADMIN" }, lock = false) {
-  const query = tx.select().from(supplierItemNotice).where(eq(supplierItemNotice.id, noticeId));
-  const [row] = await (lock ? query.for("update").limit(1) : query.limit(1));
+  if (lock) {
+    const result = await tx.execute<{ locked: boolean }>(sql`select public.gphkm_lock_supplier_item_notice(${noticeId}) as locked`);
+    if (!result.rows[0]?.locked) throw new Error("Notice unavailable");
+  }
+  const [row] = await tx.select().from(supplierItemNotice).where(eq(supplierItemNotice.id, noticeId)).limit(1);
   if (!row) throw new Error("Notice unavailable");
   const [fulfillment] = await tx.select({ assignedAdminId: orderItemFulfillment.assignedAdminId })
     .from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, row.orderItemId)).limit(1);
@@ -162,13 +146,12 @@ export async function sendSupplierItemNotice(headers: Headers, noticeId: string)
     });
   } catch { await recordNoticeAttemptOutcome(headers, prepared.attemptId, "UNKNOWN", "Provider outcome unclear after send request"); return { state: "UNKNOWN" as const }; }
   if (!response.ok) {
-    const state = response.status >= 400 && response.status < 500 ? "RECONCILED_FAILED" : "UNKNOWN";
+    const state = isDefinitiveResendRejection(response.status) ? "RECONCILED_FAILED" : "UNKNOWN";
     await recordNoticeAttemptOutcome(headers, prepared.attemptId, state, state === "UNKNOWN" ? "Provider outcome unclear" : "Provider rejected the request");
     return { state };
   }
-  let providerReference: string | undefined;
-  try { providerReference = (await readSmallJsonResponse<{ id?: string }>(response)).id; } catch { }
-  if (!providerReference || /[\r\n\0]/.test(providerReference)) {
+  const providerReference = await readResendMessageId(response);
+  if (!providerReference) {
     await recordNoticeAttemptOutcome(headers, prepared.attemptId, "UNKNOWN", "Provider response lacked a usable message reference");
     return { state: "UNKNOWN" as const };
   }

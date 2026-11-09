@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, asc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { listing, listingUrl } from "@/db/catalog-schema";
 import { organization } from "@/db/schema";
 import { containsWebsiteAddress, validateListingTerms, type CustomerListing, type ListingMetric, type ListingTerms } from "@/modules/catalog/domain";
@@ -10,7 +10,7 @@ import { requireVerifiedCustomer, withOrganizationContext } from "@/server/ident
 export async function listCustomerListings(
   headers: Headers,
   organizationId: string,
-  filters: { search?: string; category?: string; country?: string; language?: string; doFollowOnly?: boolean; page?: number } = {},
+  filters: { search?: string; category?: string; country?: string; language?: string; doFollowOnly?: boolean; page?: number; listingIds?: string[] } = {},
 ): Promise<{ accessAllowed: boolean; listings: CustomerListing[]; pagination: { page: number; pageCount: number; total: number } }> {
   const search = filters.search?.trim().slice(0, 100) ?? "";
   const category = filters.category?.trim() ?? "";
@@ -30,6 +30,7 @@ export async function listCustomerListings(
     if (!trialActive && !hasPaidAccess) return { accessAllowed: false, listings: [], pagination: { page: 1, pageCount: 1, total: 0 } };
 
     const conditions = [eq(listing.status, "LIVE")];
+    if (filters.listingIds) conditions.push(inArray(listing.id, filters.listingIds));
     if (category) conditions.push(sql`${category} = ANY(${listing.categories})`);
     if (country) conditions.push(/^[A-Z]{2}$/.test(country) ? eq(listing.countryCode, country) : sql`false`);
     if (language) conditions.push((LISTING_LANGUAGES as readonly string[]).includes(language) ? eq(listing.primaryLanguage, language) : sql`false`);

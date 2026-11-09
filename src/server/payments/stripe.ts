@@ -1,7 +1,21 @@
 import "server-only";
 import Stripe from "stripe";
+import { getStripeWebhookDatabaseUrl } from "../../db/stripe-webhook.ts";
 
 export type StripeRuntime = { client: Stripe; mode: "test" | "live" };
+
+export function stripeWalletReturnUrl(organizationId: string, env: Record<string, string | undefined> = process.env): string {
+  const configured = env.CUSTOMER_APP_URL?.trim();
+  if (!configured) throw new Error("Customer checkout is not configured");
+  const base = new URL(configured);
+  if (base.protocol !== "https:" && base.hostname !== "localhost" && !base.hostname.endsWith(".localhost")) {
+    throw new Error("Customer checkout is not configured");
+  }
+  const result = new URL("/customer/wallet/recharge", base);
+  result.searchParams.set("organizationId", organizationId);
+  result.search += "&session_id={CHECKOUT_SESSION_ID}";
+  return result.toString();
+}
 
 export function getStripeRuntime(env: Record<string, string | undefined> = process.env): StripeRuntime | null {
   const key = env.STRIPE_SECRET_KEY?.trim();
@@ -27,13 +41,25 @@ export function assertStripeCheckoutEnabled(runtime: StripeRuntime, env: Record<
   }
 }
 
+export function requireStripeWalletPublishableKey(runtime: StripeRuntime, env: Record<string, string | undefined> = process.env): string {
+  assertStripeCheckoutEnabled(runtime, env);
+  const publishableKey = env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.trim();
+  const prefix = runtime.mode === "live" ? "pk_live_" : "pk_test_";
+  if (!publishableKey?.startsWith(prefix) || publishableKey.length === prefix.length) {
+    throw new Error("Stripe checkout mode is not configured");
+  }
+  if (!getStripeWebhookSecret(env) || !getStripeWebhookDatabaseUrl(env)) {
+    throw new Error("Stripe webhook is not configured");
+  }
+  return publishableKey;
+}
+
 export function isStripeWalletCheckoutAvailable(env: Record<string, string | undefined> = process.env): boolean {
   try {
     const runtime = getStripeRuntime(env);
     if (!runtime) return false;
-    assertStripeCheckoutEnabled(runtime, env);
-    const publishableKey = env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.trim();
-    return publishableKey?.startsWith(runtime.mode === "live" ? "pk_live_" : "pk_test_") === true;
+    requireStripeWalletPublishableKey(runtime, env);
+    return true;
   } catch {
     return false;
   }
@@ -66,5 +92,6 @@ export function stripeEventMatchesProviderAccount(signedEvent: Stripe.Event, pro
 }
 
 export function getStripeWebhookSecret(env: Record<string, string | undefined> = process.env): string | null {
-  return env.STRIPE_WEBHOOK_SECRET?.trim() || null;
+  const secret = env.STRIPE_WEBHOOK_SECRET?.trim();
+  return secret && /^whsec_\S+$/.test(secret) ? secret : null;
 }

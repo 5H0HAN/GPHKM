@@ -270,6 +270,20 @@ test("supplier PDF and email renderers receive an allowlisted delivery projectio
   }
 });
 
+test("packet PDF preserves supported text and rejects unsupported characters without blocking EML", async () => {
+  const packet = buildSupplierPacket(packetInput());
+  const accented = { ...packet, items: [{ ...packet.items[0], anchorText: "Café" }] };
+  const bytes = Buffer.from(await buildSupplierPacketPdf(accented));
+  const stream = bytes.toString("latin1").match(/stream\r?\n([\s\S]*?)\r?\nendstream/);
+  assert.ok(stream);
+  const operators = inflateSync(Buffer.from(stream[1], "latin1")).toString("latin1");
+  assert.match(operators.replace(/<([\da-f]+)> Tj/gi, (_match, hex) => Buffer.from(hex, "hex").toString("latin1")), /Café/);
+
+  const unsupported = { ...packet, items: [{ ...packet.items[0], anchorText: "বাংলা" }] };
+  await assert.rejects(buildSupplierPacketPdf(unsupported), /cannot preserve all packet text/);
+  assert.match(renderSupplierEmail(unsupported, 1024 * 1024).text, /বাংলা/);
+});
+
 test("send authorization rechecks recipient and reviewed packet version; provider timeout blocks cancellation", () => {
   const packet = buildSupplierPacket(packetInput());
   assert.throws(() => mayStartSend({ packet, attempts: [], actorRole: "ADMIN", actorId: "admin_a", revalidatedPacketHash: "changed", currentRecipient: packet.recipient }), /create a new packet version/);

@@ -1,14 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
+import { MAX_ORDER_ITEMS } from "@/modules/orders/checkout";
+import { listCustomerListings } from "@/server/catalog/customer";
 import { createWalletFundedOrder } from "@/server/orders/checkout";
 import { logSafeFailure } from "@/server/observability/safe-log";
 
 const MAX_BODY_BYTES = 2_000_000;
 
 function checkoutConflict(message: string): { code: string; error: string } {
+  if (message === "Checkout disclosures changed") return {
+    code: "CHECKOUT_DISCLOSURES_CHANGED",
+    error: "Checkout terms changed. Reload the marketplace to review the current terms before placing an order.",
+  };
   if (message.includes("listings changed")) return {
     code: "LISTING_CHANGED",
-    error: "A selected listing's price or terms changed. The catalog has been refreshed; review the updated total and details, then submit again. Your order details are still here.",
+    error: "A selected listing’s price or terms changed. Review the updated details and confirm the terms again. Your order details are still here.",
   };
   if (message.includes("listings are unavailable")) return {
     code: "LISTING_UNAVAILABLE",
@@ -62,6 +68,7 @@ async function readBoundedJson(request: Request): Promise<unknown> {
 
 export async function POST(request: Request) {
   let requestedOrganizationId: string | undefined;
+  let requestedOrder: unknown;
   let customerOrigin: string;
   try { customerOrigin = new URL(process.env.CUSTOMER_APP_URL ?? "").origin; }
   catch { return NextResponse.json({ error: "Checkout is unavailable" }, { status: 503, headers: { "Cache-Control": "no-store" } }); }
@@ -74,6 +81,7 @@ export async function POST(request: Request) {
     const body = value as Record<string, unknown>;
     if (typeof body.organizationId !== "string") throw new Error("Invalid request");
     requestedOrganizationId = body.organizationId;
+    requestedOrder = body.order;
     const result = await createWalletFundedOrder(request.headers, body.organizationId, body.order);
     return NextResponse.json(result, { status: result.replayed ? 200 : 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
@@ -83,7 +91,7 @@ export async function POST(request: Request) {
         : message === "Invalid order details" ? 400
           : message.includes("Insufficient available wallet balance") || message.includes("idempotency")
             || message.includes("reconciliation") || message.includes("listings changed") || message.includes("listings are unavailable")
-            || message.includes("Writing is not available") ? 409 : 500;
+            || message.includes("Writing is not available") || message === "Checkout disclosures changed" ? 409 : 500;
     const requestId = status === 500 ? randomUUID() : null;
     const headers = { "Cache-Control": "no-store", ...(requestId ? { "X-Request-ID": requestId } : {}) };
     if (requestId) logSafeFailure("customer_order_checkout_failed", error, requestId, { organizationId: requestedOrganizationId });
@@ -93,6 +101,15 @@ export async function POST(request: Request) {
         : status === 401 ? "Sign in again to continue."
           : status === 500 ? `Order checkout could not be completed. Contact support with reference ${requestId}.`
             : "Order details could not be accepted. Review them and try again.");
-    return NextResponse.json({ error: userMessage, ...(conflict ? { code: conflict.code } : {}) }, { status, headers });
+    let refreshedListings;
+    if (requestedOrganizationId && (conflict?.code === "LISTING_CHANGED" || conflict?.code === "LISTING_UNAVAILABLE")) {
+      // The order service validates checkout input before it can produce either conflict.
+      const listingIds = (requestedOrder as { items: Array<{ listingId: string }> }).items.map((item) => item.listingId);
+      if (listingIds.length > 0 && listingIds.length <= MAX_ORDER_ITEMS) {
+        const catalog = await listCustomerListings(request.headers, requestedOrganizationId, { listingIds }).catch(() => null);
+        refreshedListings = catalog?.listings;
+      }
+    }
+    return NextResponse.json({ error: userMessage, ...(conflict ? { code: conflict.code } : {}), refreshedListings }, { status, headers });
   }
 }

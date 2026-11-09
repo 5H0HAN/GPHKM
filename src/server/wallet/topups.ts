@@ -9,21 +9,9 @@ import { paymentAttempt } from "@/db/schema";
 import { parseUsdMinorUnits } from "@/modules/wallet/usd-amount";
 import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganizationContext } from "@/server/identity/customer-context";
 import { requireStaffAccess } from "@/server/auth/staff";
-import { assertStripeCheckoutEnabled, getStripeRuntime, getStripeWebhookSecret, isDefinitiveCheckoutSessionCreateFailure } from "@/server/payments/stripe";
+import { getStripeRuntime, getStripeWebhookSecret, isDefinitiveCheckoutSessionCreateFailure, requireStripeWalletPublishableKey, stripeWalletReturnUrl } from "@/server/payments/stripe";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function trustedCustomerReturnUrl(): string {
-  const configured = process.env.CUSTOMER_APP_URL?.trim();
-  if (!configured) throw new Error("Customer checkout is not configured");
-  const base = new URL(configured);
-  if (base.protocol !== "https:" && base.hostname !== "localhost" && !base.hostname.endsWith(".localhost")) {
-    throw new Error("Customer checkout is not configured");
-  }
-  const result = new URL("/customer/wallet/recharge", base);
-  result.search = "?session_id={CHECKOUT_SESSION_ID}";
-  return result.toString();
-}
 
 export async function createStripeWalletTopUp(
   headers: Headers,
@@ -33,10 +21,7 @@ export async function createStripeWalletTopUp(
 ) {
   const stripe = getStripeRuntime();
   if (!stripe) throw new Error("Stripe checkout is not configured");
-  assertStripeCheckoutEnabled(stripe);
-  const publishableKey = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.trim();
-  const expectedPublishablePrefix = stripe.mode === "live" ? "pk_live_" : "pk_test_";
-  if (!publishableKey?.startsWith(expectedPublishablePrefix)) throw new Error("Stripe checkout mode is not configured");
+  const publishableKey = requireStripeWalletPublishableKey(stripe);
   if (!UUID.test(idempotencyKey)) throw new Error("Invalid idempotency key");
   const amountMinor = parseUsdMinorUnits(amountText);
   const actor = await requireVerifiedCustomer(headers);
@@ -73,7 +58,7 @@ export async function createStripeWalletTopUp(
         integration_identifier: `gphkm-wallet-${suffix}`,
         ui_mode: "custom",
         mode: "payment",
-        return_url: trustedCustomerReturnUrl(),
+        return_url: stripeWalletReturnUrl(attempt.organizationId),
         line_items: [{
           quantity: 1,
           price_data: {

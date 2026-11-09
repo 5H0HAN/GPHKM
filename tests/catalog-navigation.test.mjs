@@ -28,6 +28,8 @@ test("catalog filters and pagination preserve native link navigation", async () 
   assert.match(source, /useEffect\(\(\) => \{ if \(error\) errorRef\.current\?\.focus\(\); \}, \[error\]\)/);
   assert.match(source, /role="alert" tabIndex=\{-1\}/);
   assert.match(styles, /catalogPagination a:focus-visible/);
+  assert.match(styles, /catalogFlow \.catalogSecondaryButton/);
+  assert.match(styles, /catalogStaleDisclosure \.catalogSecondaryButton/);
 });
 
 test("customer ordering separates listing selection, item details, and final review", async () => {
@@ -48,4 +50,18 @@ test("customer ordering separates listing selection, item details, and final rev
   assert.match(source, /shareWithPublicationPartner: true/);
   assert.match(source, /idempotencyKey: idempotencyKeyRef\.current/);
   assert.match(page, /filterProps=\{/);
+});
+
+test("changed off-page selections reload through the customer projection and require fresh review", async () => {
+  const route = await readFile(new URL("../src/app/api/customer/orders/route.ts", import.meta.url), "utf8");
+  const browser = await readFile(new URL("../src/app/customer/catalog-browser.tsx", import.meta.url), "utf8");
+  assert.match(route, /listCustomerListings\(request.headers, requestedOrganizationId, \{ listingIds \}\)/);
+  assert.match(browser, /setConsent\(false\);\s*setPolicyAccepted\(false\);[\s\S]*refreshed.get\(id\)/);
+  assert.match(browser, /draft: item.draft[\s\S]*unavailable: true[\s\S]*setStep\("details"\)/);
+  assert.match(browser, /Turn it off and provide your own article/);
+  assert.match(browser, /disclosureVersions: CHECKOUT_DISCLOSURES/);
+  assert.match(browser, /CHECKOUT_DISCLOSURES_CHANGED[\s\S]*setDisclosuresOutdated\(true\)/);
+  assert.match(browser, /outdatedDisclosureRef\.current\?\.focus\(\)/);
+  assert.match(browser, /Checkout terms changed while this page was open[\s\S]*Reload current terms/);
+  assert.match(browser, /window\.location\.reload\(\)/);
 });

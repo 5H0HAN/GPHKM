@@ -196,6 +196,14 @@ test("customer case opening serializes the scoped idempotency key before a plain
   assert.doesNotMatch(open, /onConflictDoNothing|\.returning\(\)/);
 });
 
+test("order Support intake rechecks the case after acquiring the staff resolution lock", () => {
+  const source = readFileSync(new URL("../src/server/support/cases.ts", import.meta.url), "utf8");
+  const open = source.split("export async function openCustomerSupportCase")[1].split("export async function listCustomerSupportCases")[0];
+  assert.match(open, /gphkm:support-order:[\s\S]*const active = await lockedCase\(tx, candidate.id\)/);
+  assert.match(open, /if \(customerCanReplyToSupportCase\(active.state\)\) \{[\s\S]*await appendHistory\(tx, message\)/);
+  assert.match(open, /return \{ caseId: active.id, reused: true \};\s*\}\s*\}[\s\S]*await tx.insert\(supportCase\)/);
+});
+
 test("supplier notices remain readable to authorized staff after a Support case closes", () => {
   const migration = readFileSync(new URL("../src/db/migrations/0169_support_history_and_review_fixes.sql", import.meta.url), "utf8");
   const policy = migration.split("CREATE POLICY supplier_item_notice_staff_read")[1].split(");")[0];
@@ -239,16 +247,19 @@ test("customer and staff Support case queues paginate inside their existing scop
 });
 
 test("long Support histories use validated stable cursors without crossing customer audience filters", () => {
-  const createdAt = new Date("2026-10-29T12:34:56.789Z");
+  const createdAt = "2026-10-29T12:34:56.789123Z";
   const cursor = { createdAt, id: "123e4567-e89b-42d3-a456-426614174000" };
   assert.deepEqual(decodeSupportEventCursor(encodeSupportEventCursor(cursor)), cursor);
-  for (const value of [undefined, "x", "%%%", Buffer.from("not-a-cursor").toString("base64url"), Buffer.from(`${createdAt.toISOString()}\nnot-uuid`).toString("base64url")]) {
+  for (const value of [undefined, "x", "%%%", Buffer.from("not-a-cursor").toString("base64url"), Buffer.from(`${createdAt}\nnot-uuid`).toString("base64url")]) {
     assert.equal(decodeSupportEventCursor(value), null);
   }
   const source = readFileSync(new URL("../src/server/support/cases.ts", import.meta.url), "utf8");
   const migration = readFileSync(new URL("../src/db/migrations/0099_support_event_pagination_index.sql", import.meta.url), "utf8");
   assert.match(source, /eq\(supportCaseEvent\.audience, "CUSTOMER"\)/);
   assert.match(source, /\.limit\(51\)/);
+  assert.equal(source.match(/createdAt: last.cursorTime/g)?.length, 2);
+  assert.match(source, /HH24:MI:SS.US/);
+  assert.match(source, /cursor.createdAt\}::timestamptz/);
   assert.match(source, /desc\(supportCaseEvent\.createdAt\), desc\(supportCaseEvent\.id\)/);
   assert.match(migration, /support_case_event_history_idx\s+ON public\.support_case_event\(case_id, created_at, id\)/);
 });

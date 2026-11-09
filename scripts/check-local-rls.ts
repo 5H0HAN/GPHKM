@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { Client } from "pg";
+import { PgDialect } from "drizzle-orm/pg-core";
+import { workspaceMarketplaceAccessQuery } from "../src/db/workspace-marketplace-access.ts";
 
 const databaseUrl = process.env.MIGRATION_DATABASE_URL;
 const runtimeUrl = process.env.DATABASE_URL;
@@ -44,7 +46,7 @@ async function expectWriteDenied(client: Client, name: string, run: () => Promis
   }
 }
 
-async function expectCheckConstraint(client: Client, name: string, run: () => Promise<unknown>) {
+async function expectCheckConstraint(client: Client, name: string, run: () => Promise<unknown>, expectedMessage?: string) {
   await client.query("SAVEPOINT expected_constraint_failure");
   try {
     await run();
@@ -53,6 +55,7 @@ async function expectCheckConstraint(client: Client, name: string, run: () => Pr
     const code = typeof error === "object" && error !== null && "code" in error ? error.code : null;
     const message = typeof error === "object" && error !== null && "message" in error ? error.message : "unknown error";
     assert.equal(code, "23514", `${name} must fail with a check-constraint violation; received ${String(message)}`);
+    if (expectedMessage) assert.equal(message, expectedMessage, `${name} must be rejected by the expected database guard`);
   } finally {
     await client.query("ROLLBACK TO SAVEPOINT expected_constraint_failure");
     await client.query("RELEASE SAVEPOINT expected_constraint_failure");
@@ -367,6 +370,8 @@ try {
   const checkoutOrderFixture = randomUUID();
   const checkoutOrderItemFixture = randomUUID();
   const checkoutOrderItemFixtureTwo = randomUUID();
+  const legacyPolicyOrderFixture = randomUUID();
+  const legacyPolicyOrderItemFixture = randomUUID();
   const supplierFixture = randomUUID();
   const supplierOtherFixture = randomUUID();
   const orderItemFixture = randomUUID();
@@ -594,10 +599,10 @@ try {
     `insert into customer_order (id, organization_id, actor_user_id, idempotency_key, request_hash,
        placement_total_minor, writing_total_minor, total_minor, content_sharing_notice_version,
        content_policy_version, content_policy_accepted_at) values
-       ($1, $2, $3, $4, repeat('a', 64), 1000, 0, 1000, 'rls-smoke-v1', 'gphkm-content-policy-v1', now()),
-       ($5, $2, $6, $7, repeat('b', 64), 1000, 0, 1000, 'rls-smoke-v1', 'gphkm-content-policy-v1', now()),
-       ($8, $9, $10, $11, repeat('c', 64), 1000, 0, 1000, 'rls-smoke-v1', 'gphkm-content-policy-v1', now()),
-       ($12, $9, $10, $13, repeat('d', 64), 1000, 500, 1500, 'rls-smoke-v1', 'gphkm-content-policy-v1', now())`,
+       ($1, $2, $3, $4, repeat('a', 64), 1000, 0, 1000, 'gphkm-content-sharing-v1', 'gphkm-content-policy-v1', now()),
+       ($5, $2, $6, $7, repeat('b', 64), 1000, 0, 1000, 'gphkm-content-sharing-v1', 'gphkm-content-policy-v1', now()),
+       ($8, $9, $10, $11, repeat('c', 64), 1000, 0, 1000, 'gphkm-content-sharing-v1', 'gphkm-content-policy-v1', now()),
+       ($12, $9, $10, $13, repeat('d', 64), 1000, 500, 1500, 'gphkm-content-sharing-v1', 'gphkm-content-policy-v1', now())`,
     [ownerOrderA, organizationA, userA, `owner-a-${suffix}`, memberOrderA, memberA, `member-a-${suffix}`, ownerOrderB, organizationB, userB, `owner-b-${suffix}`, cancellationOrder, `cancel-${suffix}`],
   );
 
@@ -862,7 +867,7 @@ try {
   await expectWriteDenied(migration, "order creation without acceptable-content policy acceptance", () => migration.query(
     `insert into customer_order (id, organization_id, actor_user_id, idempotency_key, request_hash,
        placement_total_minor, writing_total_minor, total_minor, content_sharing_notice_version)
-     values ($1, $2, $3, $4, repeat('d', 64), 1000, 0, 1000, 'rls-smoke-v1')`,
+     values ($1, $2, $3, $4, repeat('d', 64), 1000, 0, 1000, 'gphkm-content-sharing-v1')`,
     [randomUUID(), organizationA, userA, `missing-policy-${suffix}`],
   ));
   await migration.query("RESET ROLE");
@@ -1559,12 +1564,51 @@ try {
     "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)",
     [userA, organizationA],
   );
+  await expectPermissionDenied(migration, "stale content-sharing version on order creation", () => migration.query(
+    `insert into customer_order (id, organization_id, actor_user_id, idempotency_key, request_hash,
+       placement_total_minor, writing_total_minor, total_minor, content_sharing_notice_version,
+       content_policy_version, content_policy_accepted_at)
+     values ($1, $2, $3, $4, repeat('f', 64), 1000, 0, 1000, 'gphkm-content-sharing-old',
+       'gphkm-content-policy-v1', now())`,
+    [randomUUID(), organizationA, userA, `stale-sharing-${suffix}`],
+  ));
+  await expectPermissionDenied(migration, "stale sharing consent on an order item", () => migration.query(
+    `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+       placement_price_minor, writing_selected, target_url, anchor_text, article_text,
+       supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
+     values ($1, $2, $3, 1, '{}'::jsonb, 1000, false, 'https://example.invalid/stale-share', 'fixture',
+       'Synthetic rollback-only article', true, 'gphkm-content-sharing-old', 'gphkm-placement-disclosure-v1')`,
+    [randomUUID(), ownerOrderA, listingFixture],
+  ));
+  await expectPermissionDenied(migration, "stale placement disclosure on an order item", () => migration.query(
+    `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+       placement_price_minor, writing_selected, target_url, anchor_text, article_text,
+       supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
+     values ($1, $2, $3, 1, '{}'::jsonb, 1000, false, 'https://example.invalid/stale-placement', 'fixture',
+       'Synthetic rollback-only article', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-old')`,
+    [randomUUID(), ownerOrderA, listingFixture],
+  ));
+  await expectPermissionDenied(migration, "stale writing/refund disclosure on an order item", () => migration.query(
+    `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+       placement_price_minor, writing_selected, target_url, anchor_text, writing_brief,
+       supplier_sharing_consented, consent_notice_version, placement_disclosure_version, writing_refund_disclosure_version)
+     values ($1, $2, $3, 1, '{}'::jsonb, 1000, true, 'https://example.invalid/stale-writing', 'fixture',
+       'Synthetic writing brief', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1', 'gphkm-writing-stages-old')`,
+    [randomUUID(), ownerOrderA, listingFixture],
+  ));
+  await expectPermissionDenied(migration, "checkout without placement disclosure evidence", () => migration.query(
+    `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+       placement_price_minor, writing_selected, target_url, anchor_text, article_text, supplier_sharing_consented, consent_notice_version)
+     values ($1, $2, $3, 1, '{}'::jsonb, 1000, false,
+       'https://example.invalid/target', 'example', 'Synthetic fixture', true, 'gphkm-content-sharing-v1')`,
+    [orderItemFixture, ownerOrderA, listingFixture],
+  ));
   await migration.query(
     `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
        placement_price_minor, writing_selected, target_url, anchor_text, article_text,
-       supplier_sharing_consented, consent_notice_version)
+       supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
      values ($1, $2, $3, 1, '{"title":"RLS Fixture Listing"}'::jsonb, 1000, false,
-       'https://example.invalid/target', 'example', 'Synthetic rollback-only article', true, 'rls-smoke-v1')`,
+       'https://example.invalid/target', 'example', 'Synthetic rollback-only article', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1')`,
     [orderItemFixture, ownerOrderA, listingFixture],
   );
   await migration.query("RESET ROLE");
@@ -1573,20 +1617,28 @@ try {
     "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)",
     [userB, organizationB],
   );
+  await expectPermissionDenied(migration, "writing checkout without refund disclosure evidence", () => migration.query(
+    `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+       placement_price_minor, writing_selected, target_url, anchor_text, writing_brief,
+       supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
+     values ($1, $2, $3, 1, '{}'::jsonb, 1000, true,
+       'https://example.invalid/writing', 'example', 'Synthetic writing brief', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1')`,
+    [orderItemFixtureTwo, ownerOrderB, listingFixture],
+  ));
   await migration.query(
     `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
        placement_price_minor, writing_price_minor, writing_selected, target_url, anchor_text, article_text, writing_brief,
-       supplier_sharing_consented, consent_notice_version)
+       supplier_sharing_consented, consent_notice_version, placement_disclosure_version, writing_refund_disclosure_version)
      values ($1, $2, $3, 1, '{"title":"RLS Fixture Listing"}'::jsonb, 1000, 0, true,
-       'https://example.invalid/target-two', 'example', null, 'Synthetic rollback-only writing brief', true, 'rls-smoke-v1')`,
+       'https://example.invalid/target-two', 'example', null, 'Synthetic rollback-only writing brief', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1', 'gphkm-writing-stages-v1')`,
     [orderItemFixtureTwo, ownerOrderB, listingFixture],
   );
   await migration.query(
     `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
        placement_price_minor, writing_selected, writing_price_minor, writing_first_stage_minor, writing_final_stage_minor,
-       target_url, anchor_text, writing_brief, supplier_sharing_consented, consent_notice_version)
+       target_url, anchor_text, writing_brief, supplier_sharing_consented, consent_notice_version, placement_disclosure_version, writing_refund_disclosure_version)
      values ($1, $2, $3, 1, '{"title":"Cancellation Fixture Listing"}'::jsonb, 1000, true, 500, 300, 200,
-       'https://example.invalid/cancellation', 'fixture cancellation', 'Synthetic refund stage fixture', true, 'rls-smoke-v1')`,
+       'https://example.invalid/cancellation', 'fixture cancellation', 'Synthetic refund stage fixture', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1', 'gphkm-writing-stages-v1')`,
     [cancellationItem, cancellationOrder, listingFixture],
   );
   await migration.query("RESET ROLE");
@@ -1602,9 +1654,9 @@ try {
   await migration.query(
     `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
        placement_price_minor, writing_selected, target_url, anchor_text, article_text,
-       supplier_sharing_consented, consent_notice_version)
+       supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
      values ($1, $2, $3, 1, '{"title":"RLS Fixture Listing"}'::jsonb, 1000, false,
-       'https://example.invalid/target-three', 'example', 'Third synthetic rollback-only article', true, 'rls-smoke-v1')`,
+       'https://example.invalid/target-three', 'example', 'Third synthetic rollback-only article', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1')`,
     [orderItemFixtureThree, memberOrderA, listingFixture],
   );
   await migration.query("RESET ROLE");
@@ -1635,20 +1687,77 @@ try {
     `insert into customer_order (id, organization_id, actor_user_id, idempotency_key, request_hash,
        placement_total_minor, writing_total_minor, total_minor, content_sharing_notice_version,
        content_policy_version, content_policy_accepted_at)
-     values ($1, $2, $3, $4, repeat('e', 64), 3000, 0, 3000, 'rls-checkout-v1', 'gphkm-content-policy-v1', now())`,
+     values ($1, $2, $3, $4, repeat('e', 64), 3000, 0, 3000, 'gphkm-content-sharing-v1', 'gphkm-content-policy-v1', now())`,
     [checkoutOrderFixture, organizationA, userA, checkoutOrderKey],
   );
   await migration.query(
     `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
        placement_price_minor, writing_selected, target_url, anchor_text, article_text,
-       supplier_sharing_consented, consent_notice_version)
+       supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
      values ($1, $2, $3, 1, $4::jsonb, 1000, false, 'https://customer.fixture.example/one', 'fixture one',
-       'Synthetic rollback-only article one', true, 'rls-checkout-v1'),
+       'Synthetic rollback-only article one', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1'),
        ($5, $2, $6, 1, $7::jsonb, 2000, false, 'https://customer.fixture.example/two', 'fixture two',
-       'Synthetic rollback-only article two', true, 'rls-checkout-v1')`,
+       'Synthetic rollback-only article two', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1')`,
     [checkoutOrderItemFixture, checkoutOrderFixture, listingFixture, JSON.stringify(snapshotByListing.get(listingFixture)),
       checkoutOrderItemFixtureTwo, checkoutListingFixture, JSON.stringify(snapshotByListing.get(checkoutListingFixture))],
   );
+  await migration.query("SAVEPOINT stale_checkout_disclosure");
+  await migration.query("RESET ROLE");
+  await migration.query("ALTER TABLE customer_order_item DROP CONSTRAINT customer_order_item_disclosure_versions_current");
+  await migration.query("ALTER TABLE customer_order_item DISABLE TRIGGER customer_order_item_immutable");
+  await migration.query("UPDATE customer_order_item SET placement_disclosure_version = 'gphkm-placement-disclosure-old' WHERE id = $1", [checkoutOrderItemFixture]);
+  await migration.query("ALTER TABLE customer_order_item ENABLE TRIGGER customer_order_item_immutable");
+  await migration.query(`ALTER TABLE customer_order_item ADD CONSTRAINT customer_order_item_disclosure_versions_current CHECK (
+    placement_disclosure_version = 'gphkm-placement-disclosure-v1'
+    AND CASE WHEN writing_selected THEN writing_refund_disclosure_version = 'gphkm-writing-stages-v1'
+      ELSE writing_refund_disclosure_version IS NULL END
+  ) NOT VALID`);
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query(
+    "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)",
+    [userA, organizationA],
+  );
+  await expectCheckConstraint(migration, "finalizing a legacy order with stale disclosure versions", () =>
+    migration.query("select public.gphkm_finalize_order_checkout($1)", [checkoutOrderFixture]),
+  "current checkout disclosures are required");
+  await migration.query("RESET ROLE");
+  await migration.query("ROLLBACK TO SAVEPOINT stale_checkout_disclosure");
+  await migration.query("RELEASE SAVEPOINT stale_checkout_disclosure");
+  await migration.query("SAVEPOINT legacy_checkout_policy_acceptance");
+  await migration.query("RESET ROLE");
+  await migration.query(
+    `insert into customer_order (id, organization_id, actor_user_id, idempotency_key, request_hash,
+       placement_total_minor, writing_total_minor, total_minor, content_sharing_notice_version,
+       content_policy_version, content_policy_accepted_at)
+     values ($1, $2, $3, $4, repeat('f', 64), 1000, 0, 1000, 'gphkm-content-sharing-v1', null, null)`,
+    [legacyPolicyOrderFixture, organizationA, userA, `legacy-policy-${suffix}`],
+  );
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query(
+    "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)",
+    [userA, organizationA],
+  );
+  await migration.query(
+    `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+       placement_price_minor, writing_selected, target_url, anchor_text, article_text,
+       supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
+     values ($1, $2, $3, 1, $4::jsonb, 1000, false, 'https://customer.fixture.example/legacy', 'legacy fixture',
+       'Synthetic rollback-only legacy article', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1')`,
+    [legacyPolicyOrderItemFixture, legacyPolicyOrderFixture, listingFixture, JSON.stringify(snapshotByListing.get(listingFixture))],
+  );
+  await expectCheckConstraint(migration, "finalizing a legacy order without content-policy acceptance", () =>
+    migration.query("select public.gphkm_finalize_order_checkout($1)", [legacyPolicyOrderFixture]),
+  "current checkout disclosures are required");
+  await migration.query("RESET ROLE");
+  await migration.query("ROLLBACK TO SAVEPOINT legacy_checkout_policy_acceptance");
+  await migration.query("RELEASE SAVEPOINT legacy_checkout_policy_acceptance");
+  const recordedDisclosures = await migration.query(
+    `select distinct placement_disclosure_version, writing_refund_disclosure_version
+     from customer_order_item where order_id = $1`, [checkoutOrderFixture],
+  );
+  assert.deepEqual(recordedDisclosures.rows, [{
+    placement_disclosure_version: "gphkm-placement-disclosure-v1", writing_refund_disclosure_version: null,
+  }]);
   const checkoutResult = await migration.query<{ ledger_id: string }>(
     "select public.gphkm_finalize_order_checkout($1) as ledger_id", [checkoutOrderFixture],
   );
@@ -1838,6 +1947,28 @@ try {
     [randomUUID(), supportOwnerCase, userA, ownerSummary, supportOwnerOpenKey, randomUUID(), supportMemberOrderCase,
       memberSummary, supportMemberOpenKey, randomUUID(), supportBatchCase, batchSummary, supportBatchOpenKey],
   );
+  phase = "checking exact Support history boundaries for customer and staff";
+  await migration.query(
+    `insert into support_case_event (id, case_id, actor_user_id, actor_kind, kind, audience, body,
+       idempotency_key, request_hash, created_at)
+     select gen_random_uuid()::text, $1, $2, 'CUSTOMER', 'REPLY', 'CUSTOMER', 'Support history fixture',
+       gen_random_uuid()::text, repeat('a', 64), '2026-11-06T12:30:00.123456Z'::timestamptz
+     from generate_series(1, 51)`, [supportBatchCase, userA],
+  );
+  for (const [historyActor, historyOrg, customerAudience] of [[userA, organizationA, true], [superAdminA, "", false]] as const) {
+    await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [historyActor, historyOrg]);
+    const historyPage = (beforeTime: string | null = null, beforeId: string | null = null) => migration.query<{ id: string; cursor_time: string }>(
+      `select id, to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_time
+       from support_case_event where case_id = $1 and (not $2::boolean or audience = 'CUSTOMER')
+         and kind = 'REPLY' and ($3::timestamptz is null or (created_at, id) < ($3::timestamptz, $4::text))
+       order by created_at desc, id desc limit 51`, [supportBatchCase, customerAudience, beforeTime, beforeId],
+    );
+    const firstPage = await historyPage();
+    assert.equal(firstPage.rows.length, 51);
+    const anchor = firstPage.rows[49];
+    assert.equal(anchor.cursor_time, "2026-11-06T12:30:00.123456Z");
+    assert.deepEqual((await historyPage(anchor.cursor_time, anchor.id)).rows, firstPage.rows.slice(50));
+  }
   await migration.query("RESET ROLE");
 
   await migration.query("SET LOCAL ROLE gphkm_runtime");
@@ -2585,6 +2716,16 @@ try {
     [randomUUID(), orderItemFixture, adminA],
   ));
   await migration.query("RESET ROLE");
+  const projectedLiveUrls = (itemId: string) => migration.query<{ live_url: string }>(
+    "select live_url from public.gphkm_customer_live_publication_urls(array[$1]::text[])", [itemId],
+  );
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
+  assert.deepEqual((await projectedLiveUrls(orderItemFixture)).rows, [{ live_url: "https://example.invalid/published" }]);
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userB, organizationB]);
+  assert.deepEqual((await projectedLiveUrls(orderItemFixture)).rows, []);
+  await migration.query("RESET ROLE");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminA]);
   phase = "creating synthetic publication correction history";
   await migration.query(
     `insert into audit_event (id, organization_id, actor_user_id, action, target_type, target_id, reason_code, metadata)
@@ -2608,6 +2749,11 @@ try {
      where order_item_id = $1`,
     [orderItemFixture],
   );
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
+  assert.deepEqual((await projectedLiveUrls(orderItemFixture)).rows, [], "customer projection hides the superseded link");
+  await migration.query("RESET ROLE");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [adminA]);
   await migration.query(
     `insert into payment_attempt (id, organization_id, actor_user_id, provider, state, amount_minor, currency, idempotency_key, request_hash) values
        ($1, $2, $3, 'STRIPE', 'CREATED', 5000, 'USD', $4, repeat('d', 64)),
@@ -2839,6 +2985,24 @@ try {
     "select public.gphkm_customer_has_marketplace_access($1) as active", [organizationA],
   );
   assert.equal(memberAccess.rows[0]?.active, true, "members may use the sanitized access decision");
+  phase = "checking bounded workspace access projection and tenant isolation";
+  await migration.query("SAVEPOINT workspace_marketplace_access");
+  try {
+    const projection = new PgDialect().sqlToQuery(workspaceMarketplaceAccessQuery([organizationB, organizationA]));
+    const workspaceAccess = await migration.query<{ organization_id: string; paid_access_active: boolean }>(projection.sql, projection.params);
+    assert.deepEqual(workspaceAccess.rows.map(({ organization_id }) => organization_id), [organizationB, organizationA],
+      "one workspace read returns both active member organizations in preferred order");
+    assert.equal(workspaceAccess.rows.find(({ organization_id }) => organization_id === organizationA)?.paid_access_active, true);
+    assert.deepEqual(workspaceAccess.fields.map(({ name }) => name), ["organization_id", "created_at", "paid_access_active"],
+      "the workspace cannot read raw grant intervals");
+    await migration.query("select set_config('app.user_id', $1, true)", [userA]);
+    const ownerWorkspaceAccess = await migration.query<{ organization_id: string }>(projection.sql, projection.params);
+    assert.deepEqual(ownerWorkspaceAccess.rows.map(({ organization_id }) => organization_id), [organizationA],
+      "a requested organization outside the authenticated membership is omitted");
+  } finally {
+    await migration.query("ROLLBACK TO SAVEPOINT workspace_marketplace_access");
+    await migration.query("RELEASE SAVEPOINT workspace_marketplace_access");
+  }
   const memberOrders = await migration.query<{ id: string }>("select id from customer_order order by id");
   assert.deepEqual(memberOrders.rows.map((row) => row.id), [memberOrderA], "members may read their own orders only");
   const memberHeldTotal = await migration.query<{ amount_minor: string }>(
@@ -3179,7 +3343,7 @@ try {
   await resendWebhook.connect();
   const actualResendRole = await resendWebhook.query<{ user: string }>("select current_user as user");
   assert.equal(actualResendRole.rows[0]?.user, "gphkm_resend_webhook", "RESEND_WEBHOOK_DATABASE_URL must authenticate as the isolated Resend role");
-  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, atomic two-item checkout with exact debit and idempotent replay, scoped batch item reads and Support placement counts, private per-user Overview dismissals, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence/acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, public-domain and URL-revision metric invalidation, and denied direct wallet writes.");
+  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, exact-consent checkout and wallet finalization with stale/missing legacy-consent rejection, atomic two-item debit and idempotent replay, scoped batch item reads and Support placement counts, private per-user Overview dismissals, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence/acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, public-domain and URL-revision metric invalidation, and denied direct wallet writes.");
 } catch (error) {
   console.error(`Local RLS smoke failed while ${phase}; any open synthetic-data transaction will be rolled back.`);
   if (error instanceof Error) console.error(error.message);

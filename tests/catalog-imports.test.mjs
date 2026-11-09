@@ -7,17 +7,17 @@ const imports = await import("../src/modules/catalog/imports.ts");
 const importReview = await import("../src/modules/catalog/import-review.ts");
 const catalogDomain = await import("../src/modules/catalog/domain.ts");
 
-function xlsxBuffer({ formula = false, external = false, macro = false, extra = {} } = {}) {
+function xlsxBuffer({ formula = false, external = false, macro = false, worksheetPath = "worksheets/sheet1.xml", extra = {} } = {}) {
   const cells = formula
     ? '<row r="2"><c r="A2" t="str"><f>HYPERLINK(\"https://example.test\")</f><v>Example</v></c></row>'
     : '<row r="2"><c r="A2" t="s"><v>1</v></c></row>';
   return Buffer.from(zipSync({
-    "[Content_Types].xml": strToU8(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="${macro ? "application/vnd.ms-excel.sheet.macroEnabled.main+xml" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"}"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`),
+    "[Content_Types].xml": strToU8(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="${macro ? "application/vnd.ms-excel.sheet.macroEnabled.main+xml" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"}"/><Override PartName="/xl/${worksheetPath}" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`),
     "_rels/.rels": strToU8('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'),
     "xl/workbook.xml": strToU8('<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Inventory" sheetId="1" r:id="rId1"/></sheets></workbook>'),
-    "xl/_rels/workbook.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>${external ? '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://evil.test" TargetMode="External"/>' : ""}</Relationships>`),
+    "xl/_rels/workbook.xml.rels": strToU8(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="${worksheetPath}"/>${external ? '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://evil.test" TargetMode="External"/>' : ""}</Relationships>`),
     "xl/sharedStrings.xml": strToU8('<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>websiteUrl</t></si><si><t>https://example.com</t></si></sst>'),
-    "xl/worksheets/sheet1.xml": strToU8(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row>${cells}</sheetData></worksheet>`),
+    [`xl/${worksheetPath}`]: strToU8(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row>${cells}</sheetData></worksheet>`),
     ...(macro ? { "xl/vbaProject.bin": new Uint8Array([1, 2, 3]) } : {}),
     ...extra,
   }));
@@ -43,6 +43,16 @@ test("XLSX reader rejects formulas, external links, macro formats, and malformed
   await assert.rejects(imports.parseXlsx(xlsxBuffer(), "supplier.xlsm"), /MACRO_FORMAT/);
 });
 
+test("XLSX formula inspection uses the workbook's actual worksheet target", async () => {
+  const worksheetPath = "worksheets/inventory.xml";
+  assert.equal((await imports.parseXlsx(xlsxBuffer({ worksheetPath }), "inventory.xlsx"))[0].rows[1][0], "https://example.com");
+  await assert.rejects(imports.parseXlsx(xlsxBuffer({
+    formula: true,
+    worksheetPath,
+    extra: { "xl/worksheets/sheet1.xml": strToU8("<worksheet/>") },
+  }), "inventory.xlsx"), /IMPORT_FORMULA_REJECTED/);
+});
+
 test("XLSX parsing admits one worker at a time and releases capacity after completion", async () => {
   const first = imports.parseXlsx(xlsxBuffer(), "first.xlsx");
   await assert.rejects(imports.parseXlsx(xlsxBuffer(), "second.xlsx"), /PARSER_BUSY/);
@@ -55,7 +65,7 @@ test("thin wiring guard: XLSX archive inspection precedes parsing and worker res
   assert.equal(imports.IMPORT_LIMITS.xlsxParseMilliseconds, 10_000);
   assert.equal(imports.IMPORT_LIMITS.xlsxParserMemoryMb, 128);
   const source = await readFile(new URL("../src/modules/catalog/imports.ts", import.meta.url), "utf8");
-  assert.match(source, /inspectXlsxArchive\(buffer\);[\s\S]*readXlsxFile\(buffer, \{ trim: false \}\)/);
+  assert.match(source, /inspectXlsxArchive\(buffer, Parser\);[\s\S]*readXlsxFile\(buffer, \{ trim: false \}\)/);
   assert.match(source, /resourceLimits:[\s\S]*maxOldGenerationSizeMb: IMPORT_LIMITS\.xlsxParserMemoryMb/);
   assert.match(source, /xlsxParseMilliseconds[\s\S]*worker\.terminate\(\)/);
 });

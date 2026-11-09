@@ -1,11 +1,15 @@
+import { CUSTOMER_CONTENT_POLICY_VERSION } from "./content-policy.ts";
+
 export const MAX_ORDER_ITEMS = 25;
+export const CUSTOMER_ORDERS_PAGE_SIZE = 50;
+export const MAX_CUSTOMER_ORDERS_PAGE_ITEMS = CUSTOMER_ORDERS_PAGE_SIZE * MAX_ORDER_ITEMS;
 export const CONTENT_SHARING_NOTICE_VERSION = "gphkm-content-sharing-v1";
 // Bump these when the corresponding checkout disclosures change.
 export const PLACEMENT_DISCLOSURE_VERSION = "gphkm-placement-disclosure-v1";
 export const WRITING_REFUND_DISCLOSURE_VERSION = "gphkm-writing-stages-v1";
 export { CUSTOMER_CONTENT_POLICY_VERSION } from "./content-policy.ts";
 
-export function customerOrderPagination(requestedPage: unknown, totalOrders: number, pageSize = 50) {
+export function customerOrderPagination(requestedPage: unknown, totalOrders: number, pageSize = CUSTOMER_ORDERS_PAGE_SIZE) {
   const limit = Number.isInteger(pageSize) ? Math.min(Math.max(pageSize, 1), 100) : 50;
   const parsed = typeof requestedPage === "string" && /^[1-9][0-9]*$/.test(requestedPage)
     ? Number(requestedPage) : requestedPage;
@@ -27,7 +31,24 @@ export type CheckoutItemInput = {
   shareWithPublicationPartner: boolean;
 };
 
-export type CheckoutInput = { items: CheckoutItemInput[]; idempotencyKey: string; acceptContentPolicy: boolean };
+export const CHECKOUT_DISCLOSURES = {
+  contentPolicyVersion: CUSTOMER_CONTENT_POLICY_VERSION,
+  contentSharingNoticeVersion: CONTENT_SHARING_NOTICE_VERSION,
+  placementDisclosureVersion: PLACEMENT_DISCLOSURE_VERSION,
+  writingRefundDisclosureVersion: WRITING_REFUND_DISCLOSURE_VERSION,
+} as const;
+
+type CheckoutDisclosureVersions = { [Key in keyof typeof CHECKOUT_DISCLOSURES]: string };
+export type CheckoutInput = {
+  items: CheckoutItemInput[];
+  idempotencyKey: string;
+  acceptContentPolicy: boolean;
+  disclosureVersions: CheckoutDisclosureVersions;
+};
+
+export function checkoutDisclosuresAreCurrent(input: CheckoutDisclosureVersions): boolean {
+  return Object.entries(CHECKOUT_DISCLOSURES).every(([key, version]) => input[key as keyof CheckoutDisclosureVersions] === version);
+}
 export type CheckoutValidationError = { field: string; code: string };
 
 function safeText(value: unknown, max: number, allowNewlines: boolean): value is string {
@@ -58,6 +79,12 @@ export function validateCheckoutInput(input: unknown): CheckoutValidationError[]
     errors.push({ field: "items", code: "INVALID_ITEM_COUNT" });
     return errors;
   }
+  const disclosures = value.disclosureVersions;
+  if (!disclosures || typeof disclosures !== "object" || Array.isArray(disclosures) ||
+      Object.keys(disclosures).length !== Object.keys(CHECKOUT_DISCLOSURES).length ||
+      Object.keys(CHECKOUT_DISCLOSURES).some((key) => !safeText((disclosures as Record<string, unknown>)[key], 80, false))) {
+    errors.push({ field: "disclosureVersions", code: "INVALID_DISCLOSURE_VERSIONS" });
+  }
   const ids = new Set<string>();
   value.items.forEach((raw, index) => {
     const field = `items.${index}`;
@@ -85,7 +112,7 @@ export function validateCheckoutInput(input: unknown): CheckoutValidationError[]
     const unknownKeys = Object.keys(item).filter((key) => !["listingId", "expectedRevision", "targetUrl", "anchorText", "instructions", "articleText", "writingBrief", "useWriting", "shareWithPublicationPartner"].includes(key));
     if (unknownKeys.length) errors.push({ field, code: "UNKNOWN_FIELDS" });
   });
-  const unknownKeys = Object.keys(value).filter((key) => !["items", "idempotencyKey", "acceptContentPolicy"].includes(key));
+  const unknownKeys = Object.keys(value).filter((key) => !["items", "idempotencyKey", "acceptContentPolicy", "disclosureVersions"].includes(key));
   if (unknownKeys.length) errors.push({ field: "", code: "UNKNOWN_FIELDS" });
   return errors;
 }
@@ -98,6 +125,8 @@ export function customerOrderProjection(order: {
     writingSelected: boolean; writingPriceMinor: string; targetUrl: string; anchorText: string;
     articleText: string | null; writingBrief: string | null; customerStatus: string;
     instructions?: string;
+    placementDisclosureVersion?: string | null; writingRefundDisclosureVersion?: string | null;
+    canRequestContentChange?: boolean;
     lastUpdatedAt?: string | null; nextUpdateAt?: string | null; publicationUrls?: string[];
     milestoneHistory?: Array<{ status: string; nextUpdateAt: string | null; occurredAt: string }>;
     writingWorkflow?: null | {
@@ -111,7 +140,6 @@ export function customerOrderProjection(order: {
     "retailPriceCents", "linkType", "linkValidity", "turnaroundDays", "allowsSportsAndGaming",
     "allowsPharmacy", "allowsCrypto", "allowsForeignLanguage", "sponsoredContentMarking", "writingEnabled",
     "writingPriceCents", "writingTurnaroundDays", "writingFirstDraftCents", "writingFinalDraftCents", "buyerRequirements",
-    "placementDisclosureVersion", "writingRefundDisclosureVersion",
   ];
   const progress = ["ORDER_RECEIVED", "CONTENT_REVIEW", "PREPARING", "IN_PROGRESS", "LINK_VERIFICATION", "COMPLETE", "RESOLVED"];
   const allTerminal = order.items.length > 0 && order.items.every((item) => item.customerStatus === "COMPLETE" || item.customerStatus === "RESOLVED");
@@ -133,6 +161,9 @@ export function customerOrderProjection(order: {
       listingId: item.listingId,
       listing: Object.fromEntries(listingFields.filter((key) => key in item.customerListingSnapshot)
         .map((key) => [key, item.customerListingSnapshot[key]])),
+      placementDisclosureVersion: item.placementDisclosureVersion ?? null,
+      writingRefundDisclosureVersion: item.writingRefundDisclosureVersion ?? null,
+      canRequestContentChange: viewerUserId !== undefined && viewerUserId === order.actorUserId && item.canRequestContentChange === true,
       placementPriceMinor: item.placementPriceMinor,
       writingSelected: item.writingSelected,
       writingPriceMinor: item.writingPriceMinor,

@@ -107,16 +107,17 @@ const XLSX_PARSER_WORKER = `
   const requireFromProject = createRequire(resolve(process.cwd(), "package.json"));
   const { Unzip, UnzipInflate, UnzipPassThrough } = requireFromProject("fflate");
   const readXlsxFile = requireFromProject("read-excel-file/node");
+  const { Parser } = requireFromProject("saxen");
   const IMPORT_LIMITS = ${JSON.stringify(IMPORT_LIMITS)};
   const formulas = /^[\s\u0000-\u0020]*[=+\-@]/;
   const assertSafeArchivePath = (${assertSafeArchivePath.toString()});
-  const isRelevantXml = (${isRelevantXml.toString()});
+  const inspectXml = (${inspectXml.toString()});
   const inspectXlsxArchive = (${inspectXlsxArchive.toString()});
   const safeCell = (${safeCell.toString()});
   const checkGrid = (${checkGrid.toString()});
   const buffer = Buffer.from(workerData);
   try {
-    inspectXlsxArchive(buffer);
+    inspectXlsxArchive(buffer, Parser);
     readXlsxFile(buffer, { trim: false })
       .then((sheets) => {
         const parsed = sheets.map((sheet) => ({ name: sheet.sheet, rows: sheet.data }));
@@ -262,12 +263,35 @@ function assertSafeArchivePath(path: string): void {
   if (/^xl\/(?:externalLinks(?:\/|$)|vbaProject\.bin$)/i.test(normalized)) throw new Error("IMPORT_EXTERNAL_OR_MACRO_CONTENT_REJECTED");
 }
 
-function isRelevantXml(path: string): boolean {
-  return path === "[Content_Types].xml" || path === "xl/workbook.xml" ||
-    path.endsWith(".rels") || /^xl\/worksheets\/sheet\d+\.xml$/i.test(path);
+type XlsxXmlParser = new () => {
+  on(event: "error", handler: () => void): void;
+  on(event: "openTag", handler: (
+    name: string, getAttributes: () => Record<string, string>, decode: (value: string) => string,
+  ) => void): void;
+  parse(xml: string): void;
+};
+
+function inspectXml(
+  Parser: XlsxXmlParser,
+  xml: Buffer,
+  onTag: (name: string, attributes: Record<string, string>) => void,
+) {
+  const parser = new Parser();
+  parser.on("error", () => { throw new Error("IMPORT_XLSX_INVALID"); });
+  parser.on("openTag", (name, getAttributes, decode) => {
+    const attributes: Record<string, string> = Object.create(null);
+    for (const [key, value] of Object.entries(getAttributes())) {
+      if (key === "xmlns" || key.startsWith("xmlns:")) continue;
+      const localName = key.split(":").at(-1)!;
+      if (Object.hasOwn(attributes, localName)) throw new Error("IMPORT_XLSX_INVALID");
+      attributes[localName] = decode(value);
+    }
+    onTag(name.split(":").at(-1)!, attributes);
+  });
+  parser.parse(xml.toString("utf8"));
 }
 
-function inspectXlsxArchive(buffer: Buffer): Map<string, Buffer> {
+function inspectXlsxArchive(buffer: Buffer, Parser: XlsxXmlParser) {
   if (buffer.byteLength < 22 || buffer.byteLength > IMPORT_LIMITS.fileBytes || buffer[0] !== 0x50 || buffer[1] !== 0x4b) {
     throw new Error("IMPORT_XLSX_INVALID");
   }
@@ -298,8 +322,8 @@ function inspectXlsxArchive(buffer: Buffer): Map<string, Buffer> {
           file.terminate();
           return;
         }
-        if (isRelevantXml(name)) chunks.push(chunk);
-        if (final && isRelevantXml(name)) files.set(name, Buffer.concat(chunks.map((part) => Buffer.from(part))));
+        chunks.push(chunk);
+        if (final) files.set(name, Buffer.concat(chunks));
       };
       file.start();
     } catch (error) {
@@ -310,20 +334,40 @@ function inspectXlsxArchive(buffer: Buffer): Map<string, Buffer> {
   unzip.register(UnzipPassThrough);
   try { unzip.push(buffer, true); } catch { if (!failure) failure = new Error("IMPORT_XLSX_INVALID"); }
   if (failure) throw failure;
-  const contentTypes = files.get("[Content_Types].xml")?.toString("utf8") ?? "";
-  const workbook = files.get("xl/workbook.xml")?.toString("utf8") ?? "";
-  if (!contentTypes || !workbook || !/<(?:\w+:)?workbook(?:\s|>)/.test(workbook)) throw new Error("IMPORT_XLSX_INVALID");
-  if (/macroEnabled|vbaProject|externalLink/i.test(contentTypes + workbook)) throw new Error("IMPORT_EXTERNAL_OR_MACRO_CONTENT_REJECTED");
-  for (const [name, xmlBuffer] of files) {
-    const xml = xmlBuffer.toString("utf8");
-    if (/<(?:\w+:)?f(?:\s|>)/i.test(xml)) throw new Error("IMPORT_FORMULA_REJECTED");
-    if (name.endsWith(".rels") && /TargetMode\s*=\s*["']External["']/i.test(xml)) throw new Error("IMPORT_EXTERNAL_LINK_REJECTED");
+  const contentTypes = files.get("[Content_Types].xml")?.toString("utf8");
+  const workbook = files.get("xl/workbook.xml");
+  if (!contentTypes || !workbook) throw new Error("IMPORT_XLSX_INVALID");
+  if (/macroEnabled|vbaProject|externalLink/i.test(contentTypes + workbook.toString("utf8"))) {
+    throw new Error("IMPORT_EXTERNAL_OR_MACRO_CONTENT_REJECTED");
   }
-  const sheets = (workbook.match(/<(?:\w+:)?sheet(?:\s|>)/gi) ?? []).length;
-  if (sheets < 1 || sheets > IMPORT_LIMITS.sheets) throw new Error("IMPORT_SHEET_LIMIT_EXCEEDED");
-  const worksheetNames = [...allNames].filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name));
-  if (worksheetNames.length !== sheets) throw new Error("IMPORT_XLSX_INVALID");
-  return files;
+
+  const worksheetPaths = new Map<string, string>();
+  for (const [path, xml] of files) {
+    if (!path.endsWith(".rels")) continue;
+    inspectXml(Parser, xml, (name, attributes) => {
+      if (name !== "Relationship") return;
+      if (attributes.TargetMode?.toLowerCase() === "external") throw new Error("IMPORT_EXTERNAL_LINK_REJECTED");
+      if (path !== "xl/_rels/workbook.xml.rels" || !/^(http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006|http:\/\/purl\.oclc\.org\/ooxml\/officeDocument)\/relationships\/worksheet$/.test(attributes.Type ?? "")) return;
+      const { Id, Target } = attributes;
+      if (!Id || !Target || worksheetPaths.has(Id)) throw new Error("IMPORT_XLSX_INVALID");
+      const targetPath = Target.startsWith("/") ? Target.slice(1) : `xl/${Target}`;
+      assertSafeArchivePath(targetPath);
+      worksheetPaths.set(Id, targetPath);
+    });
+  }
+  const sheetIds: string[] = [];
+  inspectXml(Parser, workbook, (name, attributes) => {
+    if (name === "sheet") sheetIds.push(attributes.id);
+  });
+  if (sheetIds.length < 1 || sheetIds.length > IMPORT_LIMITS.sheets) throw new Error("IMPORT_SHEET_LIMIT_EXCEEDED");
+  for (const id of sheetIds) {
+    const path = worksheetPaths.get(id);
+    const worksheet = path && files.get(path);
+    if (!worksheet) throw new Error("IMPORT_XLSX_INVALID");
+    inspectXml(Parser, worksheet, (name) => {
+      if (name === "f") throw new Error("IMPORT_FORMULA_REJECTED");
+    });
+  }
 }
 
 export async function parseXlsx(buffer: Buffer, filename: string): Promise<ParsedSheet[]> {

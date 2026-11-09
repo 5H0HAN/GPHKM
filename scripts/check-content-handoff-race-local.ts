@@ -132,13 +132,13 @@ async function expectSupplierFailureHoldReleaseRejected(query: Promise<{ rows: u
   }
 }
 
-async function expectSupplierNoticeWithoutDeliveryRejected(query: Promise<{ rows: unknown[] }>) {
+async function expectSupplierNoticeWithoutDispatchRejected(query: Promise<{ rows: unknown[] }>) {
   try {
     await query;
     assert.fail("A supplier notice must not be prepared from an unsent packet");
   } catch (error) {
     assert.equal(typeof error === "object" && error !== null && "code" in error ? error.code : null, "23514");
-    assert.match(error instanceof Error ? error.message : String(error), /current-route delivery evidence/);
+    assert.match(error instanceof Error ? error.message : String(error), /current-route dispatch evidence/);
   }
 }
 
@@ -151,6 +151,7 @@ async function seedSyntheticPacketItem(client: Client, statement: string, values
 }
 
 async function packetConsentFixture(client: Client, input: {
+  reference?: string;
   packetId: string; version: number; organizationId: string; orderId: string; itemId: string;
   supplierId: string; recipient: string; assignedAdminId: string; createdByUserId: string; contentHash: string;
   consentEventId?: string; consentedAt?: string; routeGeneration?: number; snapshotRecipient?: string;
@@ -221,7 +222,7 @@ async function packetConsentFixture(client: Client, input: {
       recipient: snapshotRecipient,
       createdBy: input.createdByUserId,
       createdAt: new Date().toISOString(),
-      items: [{ orderItemId: input.itemId, assignedAdminId: input.assignedAdminId,
+      items: [{ orderItemId: input.itemId, assignedAdminId: input.assignedAdminId, reference: input.reference ?? "synthetic-packet-item",
         placementRequirements: placementRequirements.length ? placementRequirements : ["Follow the agreed publication requirements."],
         targetUrl: source.target_url, anchorText: source.anchor_text, article: source.article,
         instructions: source.instructions, consent }],
@@ -273,6 +274,7 @@ try {
   const migrationPool = new Pool({ connectionString: isolatedMigrationUrl.href, connectionTimeoutMillis: 5000, max: 1 });
   try {
     await migrate(drizzle(migrationPool), { migrationsFolder: "./src/db/migrations" });
+
   } finally {
     await migrationPool.end();
   }
@@ -378,7 +380,7 @@ try {
     `insert into customer_order (id, organization_id, actor_user_id, idempotency_key, request_hash,
        placement_total_minor, writing_total_minor, total_minor, content_sharing_notice_version,
        content_policy_version, content_policy_accepted_at, customer_status, checkout_state)
-     values ($1, $2, $3, $4, $5, 2000, 0, 2000, 'race-fixture-v1', 'gphkm-content-policy-v1', now(), 'ORDER_RECEIVED', 'PENDING_POST')`,
+     values ($1, $2, $3, $4, $5, 2000, 0, 2000, 'gphkm-content-sharing-v1', 'gphkm-content-policy-v1', now(), 'ORDER_RECEIVED', 'PENDING_POST')`,
     [orderId, organizationId, ownerId, `race-${orderId}`, hash],
   );
   const pendingOrder = await setup.query<{ checkout_state: string; customer_status: string }>(
@@ -402,9 +404,9 @@ try {
     await setup.query(
       `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
          placement_price_minor, writing_selected, target_url, anchor_text, article_text,
-         supplier_sharing_consented, consent_notice_version)
+         supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
        values ($1, $2, $3, 1, $4::jsonb, 1000, false, 'https://example.invalid/race', 'fixture link',
-         'Synthetic article for a local database concurrency regression', true, 'race-fixture-v1')`,
+         'Synthetic article for a local database concurrency regression', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1')`,
       [itemIds[index], orderId, listingIds[index], JSON.stringify({ title: `Race fixture ${index + 1}` })],
     );
     await setup.query(
@@ -438,7 +440,7 @@ try {
     );
     await setup.query(
       `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version, created_at)
-       values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1', clock_timestamp())`,
+       values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1', clock_timestamp())`,
       [randomUUID(), requestIds[index], ownerId, versionIds[index], hash],
     );
   }
@@ -472,9 +474,9 @@ try {
     await setup.query(
       `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
          placement_price_minor, writing_selected, target_url, anchor_text, article_text,
-         supplier_sharing_consented, consent_notice_version)
+         supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
        values ($1, $2, $3, 1, jsonb_build_object('title', $4::text), 1000, false,
-         'https://example.invalid/historic', 'historic fixture', 'Synthetic historic article', true, 'race-fixture-v1')`,
+         'https://example.invalid/historic', 'historic fixture', 'Synthetic historic article', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1')`,
       [itemId, orderId, listingId, title],
     );
   }
@@ -519,9 +521,9 @@ try {
   await setup.query(
     `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
        placement_price_minor, writing_selected, target_url, anchor_text, article_text,
-       supplier_sharing_consented, consent_notice_version)
+       supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
      values ($1, $2, $3, 1, '{"title":"Runtime packet guard listing"}'::jsonb, 1000, false,
-       'https://example.invalid/runtime', 'runtime fixture', 'Synthetic runtime packet guard article', true, 'race-fixture-v1')`,
+       'https://example.invalid/runtime', 'runtime fixture', 'Synthetic runtime packet guard article', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1')`,
     [runtimePacketItemId, orderId, runtimeListingId],
   );
   await setup.query(
@@ -642,7 +644,7 @@ try {
   let consentOutcome = "pending";
   const blockedConsent = consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1')`,
     [randomUUID(), requestIds[0], ownerId, versionIds[0], hash],
   ).then((result) => { consentOutcome = `resolved:${result.rowCount}`; return result; }, (error: unknown) => {
     consentOutcome = typeof error === "object" && error !== null && "code" in error ? `rejected:${String(error.code)}` : "rejected";
@@ -666,7 +668,7 @@ try {
   await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
   await consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1')`,
     [randomUUID(), requestIds[1], ownerId, versionIds[1], hash],
   );
   const handoffBackend = await handoff.query<{ pid: number }>("select pg_backend_pid() as pid");
@@ -687,7 +689,7 @@ try {
   await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
   await expectContentConsentRejected(consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1')`,
     [randomUUID(), requestIds[1], ownerId, versionIds[1], hash],
   ));
   await consent.query("rollback");
@@ -706,9 +708,9 @@ try {
   await setup.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
   await setup.query(
     `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
-       placement_price_minor, writing_selected, target_url, anchor_text, article_text, supplier_sharing_consented, consent_notice_version, consented_at)
+       placement_price_minor, writing_selected, target_url, anchor_text, article_text, supplier_sharing_consented, consent_notice_version, consented_at, placement_disclosure_version)
      values ($1, $2, $3, 1, '{"title":"Equivalent route race listing"}'::jsonb, 1000, false,
-       'https://example.invalid/original', 'original', 'Synthetic original article for a local route race', true, 'race-fixture-v1', '2026-11-03T10:00:00.123456Z'::timestamptz)`,
+       'https://example.invalid/original', 'original', 'Synthetic original article for a local route race', true, 'gphkm-content-sharing-v1', '2026-11-03T10:00:00.123456Z'::timestamptz, 'gphkm-placement-disclosure-v1')`,
     [routeItemId, orderId, routeListingId],
   );
   await setup.query(
@@ -817,7 +819,7 @@ try {
   await setup.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
   await setup.query(
     `insert into public.order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version, created_at)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1', clock_timestamp())`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1', clock_timestamp())`,
     [consentEventId, consentRequestId, ownerId, consentVersionId, consentHash],
   );
   const versionPacket = basePacket({ contentHash: consentHash });
@@ -863,7 +865,7 @@ try {
   );
   await setup.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
   await insertGuardedPacketItem(setup, {
-    packetId: routeOriginalPacketId, version: 1, organizationId, orderId, itemId: routeItemId,
+    packetId: routeOriginalPacketId, version: 1, organizationId, orderId, itemId: routeItemId, reference: "original-a",
     supplierId: supplierAId, recipient: "original@race-fixture.invalid", assignedAdminId: targetAdminId,
     createdByUserId: targetAdminId, contentHash: hash,
   });
@@ -874,6 +876,46 @@ try {
   });
   await setup.query("update supplier_packet set superseded_at = clock_timestamp() where id = $1", [routeUnsentPacketId]);
   await setup.query("update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [routeItemId]);
+  testPhase = "accepted supplier dispatch allows a notice before delivery";
+  await setup.query("savepoint accepted_notice");
+  await setup.query("set local role gphkm_runtime");
+  await setup.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
+  const acceptedAttemptId = randomUUID();
+  await setup.query(
+    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key, provider)
+     values ($1, $2, 'SEND', 'SENDING', $3, 'original@race-fixture.invalid', $4, 'RESEND')`,
+    [acceptedAttemptId, routeOriginalPacketId, targetAdminId, `accepted-notice-${acceptedAttemptId}`],
+  );
+  await setup.query(
+    `insert into supplier_packet_attempt_event (id, attempt_id, actor_user_id, actor_kind, from_state, to_state, reason_code, reference)
+     values ($1, $2, $3, 'STAFF', 'SENDING', 'ACCEPTED', 'PROVIDER_ACCEPTED', $2)`,
+    [randomUUID(), acceptedAttemptId, targetAdminId],
+  );
+  await setup.query(
+    "update supplier_packet_attempt set state = 'ACCEPTED', accepted_at = now(), provider_reference = $1 where id = $1",
+    [acceptedAttemptId],
+  );
+  await setup.query(
+    "update order_item_fulfillment set handed_off_at = now(), customer_status = 'PREPARING' where order_item_id = $1",
+    [routeItemId],
+  );
+  const pendingDispatch = await setup.query(
+    "select packet_id, recipient, item_reference from public.gphkm_supplier_notice_dispatch($1, $2)",
+    [routeSupportCaseId, routeItemId],
+  );
+  assert.deepEqual(pendingDispatch.rows, [{ packet_id: routeOriginalPacketId, recipient: "original@race-fixture.invalid", item_reference: "original-a" }]);
+  await setup.query(
+    `insert into supplier_item_notice (id, case_id, order_item_id, packet_id, notice_type, recipient, snapshot, content_hash, created_by_user_id)
+     values ($1, $2, $3, $4, 'WITHDRAWAL', 'original@race-fixture.invalid', '{"subject":"Withdrawal","body":"Synthetic withdrawal.","itemReference":"original-a"}'::jsonb, $5, $6)`,
+    [randomUUID(), routeSupportCaseId, routeItemId, routeOriginalPacketId, hash, targetAdminId],
+  );
+  const pendingMilestone = await setup.query(
+    "select state, customer_status, work_started_at from order_item_fulfillment where order_item_id = $1", [routeItemId],
+  );
+  assert.deepEqual(pendingMilestone.rows, [{ state: "HANDOFF_PENDING", customer_status: "PREPARING", work_started_at: null }]);
+  await setup.query("rollback to savepoint accepted_notice");
+  await setup.query("release savepoint accepted_notice");
+
   await setup.query(
     `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key,
        manual_message_reference, sent_at, resolved_at)
@@ -904,7 +946,7 @@ try {
   assert.ok(originalCutoffs.rows[0]?.handed_off_at && originalCutoffs.rows[0]?.work_started_at);
   await setup.query("select set_config('app.user_id', $1, true)", [targetAdminId]);
   await setup.query("savepoint supplier_notice_guard");
-  await expectSupplierNoticeWithoutDeliveryRejected(setup.query(
+  await expectSupplierNoticeWithoutDispatchRejected(setup.query(
     `insert into supplier_item_notice (id, case_id, order_item_id, packet_id, notice_type, recipient, snapshot, content_hash, created_by_user_id)
      values ($1, $2, $3, $4, 'CORRECTION', 'original@race-fixture.invalid', '{"subject":"Correction","body":"Please use the updated details.","itemReference":"original-a"}'::jsonb, $5, $6)`,
     [routeNoticeId, routeSupportCaseId, routeItemId, routeUnsentPacketId, hash, targetAdminId],
@@ -961,6 +1003,48 @@ try {
   );
   await setup.query("commit");
 
+  testPhase = "notice authorization serializes with reassignment";
+  await consent.query("begin");
+  await consent.query("set local role gphkm_runtime");
+  await consent.query("select set_config('app.user_id', $1, true)", [superAdminId]);
+  await consent.query("select public.gphkm_assign_fulfillment_item($1, $2)", [routeItemId, adminId]);
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('lock_timeout', '5s', true)", [targetAdminId]);
+  const { rows: [{ pid: noticeBackendPid }] } = await handoff.query<{ pid: number }>("select pg_backend_pid() as pid");
+  const formerDispatch = handoff.query("select * from public.gphkm_supplier_notice_dispatch($1, $2)", [routeSupportCaseId, routeItemId]);
+  void formerDispatch.catch(() => undefined);
+  try {
+    await waitUntilBlocked(observer, noticeBackendPid, "Notice preparation waits for the concurrent assignment change");
+  } finally {
+    await consent.query("commit");
+  }
+  assert.deepEqual((await formerDispatch).rows, [], "former assignee loses dispatch access when the new assignment commits");
+  assert.deepEqual((await handoff.query("select id from supplier_item_notice where id = $1", [routeNoticeId])).rows, []);
+  assert.deepEqual((await handoff.query("select public.gphkm_lock_supplier_item_notice($1) as allowed", [routeNoticeId])).rows, [{ allowed: false }]);
+  await handoff.query("select set_config('app.user_id', $1, true)", [adminId]);
+  assert.deepEqual((await handoff.query("select * from public.gphkm_supplier_notice_dispatch($1, $2)", [routeSupportCaseId, routeItemId])).rows,
+    [{ packet_id: routeOriginalPacketId, recipient: "original@race-fixture.invalid", item_reference: "original-a", organization_id: organizationId }]);
+  assert.deepEqual((await handoff.query("select id from supplier_packet where id = $1", [routeOriginalPacketId])).rows, [],
+    "current assignee can read minimum notice dispatch evidence without access to the original packet");
+  assert.deepEqual((await handoff.query("select public.gphkm_lock_supplier_item_notice($1) as allowed", [routeNoticeId])).rows, [{ allowed: true }]);
+  assert.deepEqual((await handoff.query("select * from public.gphkm_supplier_notice_dispatch($1, $2)", [routeSupportCaseId, runtimePacketItemId])).rows, [],
+    "the shared order conversation does not grant access to a sibling item");
+  for (const actorId of [adminId, superAdminId]) {
+    await handoff.query("select set_config('app.user_id', $1, true)", [actorId]);
+    await handoff.query(
+      `insert into supplier_item_notice (id, case_id, order_item_id, packet_id, notice_type, recipient, snapshot, content_hash, created_by_user_id)
+       values ($1, $2, $3, $4, 'CORRECTION', 'original@race-fixture.invalid', '{"subject":"Correction","body":"Synthetic correction.","itemReference":"original-a"}'::jsonb, $5, $6)`,
+      [randomUUID(), routeSupportCaseId, routeItemId, routeOriginalPacketId, randomUUID().replaceAll("-", "").repeat(2), actorId],
+    );
+  }
+  await handoff.query("rollback");
+  await consent.query("begin");
+  await consent.query("set local role gphkm_runtime");
+  await consent.query("select set_config('app.user_id', $1, true)", [superAdminId]);
+  await consent.query("select public.gphkm_assign_fulfillment_item($1, $2)", [routeItemId, targetAdminId]);
+  await consent.query("commit");
+
   // An offered replacement cannot be hidden by closing its failure case.
   await handoff.query("begin");
   await handoff.query("set local role gphkm_runtime");
@@ -980,7 +1064,7 @@ try {
   await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
   await expectContentConsentRejected(consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1')`,
     [randomUUID(), routeRequestId, ownerId, routeVersionId, routeContentHash],
   ));
   await consent.query("rollback");
@@ -990,7 +1074,7 @@ try {
   await setup.query("begin");
   await setup.query(
     `insert into order_item_equivalent_offer_event (id, offer_id, actor_user_id, event_type, content_hash, notice_version, created_at)
-     values ($1, $2, $3, 'ACCEPTED', $4, 'race-fixture-v1', clock_timestamp())`,
+     values ($1, $2, $3, 'ACCEPTED', $4, 'gphkm-content-sharing-v1', clock_timestamp())`,
     [randomUUID(), routeOfferId, ownerId, routeContentHash],
   );
   await setup.query("commit");
@@ -999,7 +1083,7 @@ try {
   await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
   await consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1')`,
     [randomUUID(), routeRequestId, ownerId, routeVersionId, routeContentHash],
   );
   await consent.query("select public.gphkm_apply_equivalent_offer_acceptance($1, $2, $3)", [routeOfferId, ownerId, organizationId]);
@@ -1273,7 +1357,7 @@ try {
     "customer cannot accept a supplier recovery while the current packet send reservation is unresolved");
   await consent.query(
     `insert into order_item_equivalent_offer_event (id, offer_id, actor_user_id, event_type, content_hash, notice_version)
-     values ($1, $2, $3, 'ACCEPTED', $4, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'ACCEPTED', $4, 'gphkm-content-sharing-v1')`,
     [randomUUID(), routeReturnOfferId, ownerId, routeReturnContentHash],
   );
   await consent.query("savepoint pending_send_acceptance");
@@ -1285,7 +1369,7 @@ try {
   await consent.query("savepoint pending_send_consent");
   await expectContentConsentRejected(consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1')`,
     [randomUUID(), routeReturnRequestId, ownerId, routeReturnVersionId, routeReturnContentHash],
   ), /content consent closes after handoff unless bound to a current customer-approved recovery/);
   await consent.query("rollback to savepoint pending_send_consent");
@@ -1355,7 +1439,7 @@ try {
   let acceptedEventOutcome = "pending";
   const blockedAcceptedEvent = consent.query(
     `insert into order_item_equivalent_offer_event (id, offer_id, actor_user_id, event_type, content_hash, notice_version)
-     values ($1, $2, $3, 'ACCEPTED', $4, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'ACCEPTED', $4, 'gphkm-content-sharing-v1')`,
     [randomUUID(), routeReturnOfferId, ownerId, routeReturnContentHash],
   ).then((result) => { acceptedEventOutcome = "accepted"; return result; }, (error: unknown) => {
     acceptedEventOutcome = typeof error === "object" && error !== null && "code" in error ? `rejected:${String(error.code)}` : "rejected";
@@ -1377,14 +1461,14 @@ try {
   await consent.query("savepoint stale_recovery_consent");
   await expectContentConsentRejected(consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1')`,
     [randomUUID(), routeReturnRequestId, ownerId, routeReturnVersionId, "e".repeat(64)],
   ));
   await consent.query("rollback to savepoint stale_recovery_consent");
   await consent.query("release savepoint stale_recovery_consent");
   await consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1')`,
     [randomUUID(), routeReturnRequestId, ownerId, routeReturnVersionId, routeReturnContentHash],
   );
   await consent.query("select public.gphkm_apply_equivalent_offer_acceptance($1, $2, $3)", [routeReturnOfferId, ownerId, organizationId]);
@@ -1399,7 +1483,28 @@ try {
     [randomUUID(), routeReturnCaseId, targetAdminId, `close-after-both-routes-${routeItemId}`],
   );
   await handoff.query("update support_case set state = 'RESOLVED', updated_at = clock_timestamp() where id = $1", [routeReturnCaseId]);
+
+  testPhase = "customer intake rechecks an order case after concurrent staff resolution";
+  await consent.query("begin");
+  await consent.query("set local role gphkm_runtime");
+  await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
+  await consent.query(
+    "select pg_advisory_xact_lock(hashtextextended('gphkm:support-order:' || $1 || ':' || $2, 0))",
+    [organizationId, orderId],
+  );
+  const discoveredCase = await consent.query<{ id: string }>(
+    "select id from support_case where order_id = $1 and state not in ('RESOLVED','CLOSED') and merged_into_case_id is null",
+    [orderId],
+  );
+  assert.deepEqual(discoveredCase.rows, [{ id: routeReturnCaseId }], "customer intake initially discovers the active case");
+  const intakeBackend = await consent.query<{ pid: number }>("select pg_backend_pid() as pid");
+  const blockedIntake = consent.query("select public.gphkm_lock_support_case($1)", [routeReturnCaseId]);
+  await waitUntilBlocked(observer, intakeBackend.rows[0]!.pid, "Customer intake waits for staff resolution");
   await handoff.query("commit");
+  await blockedIntake;
+  const lockedCase = await consent.query<{ state: string }>("select state from support_case where id = $1", [routeReturnCaseId]);
+  assert.deepEqual(lockedCase.rows, [{ state: "RESOLVED" }], "the locked read sees the staff result before deciding whether to append");
+  await consent.query("rollback");
   const resolvedReturnCase = await setup.query<{ state: string }>("select state from support_case where id = $1", [routeReturnCaseId]);
   assert.equal(resolvedReturnCase.rows[0]?.state, "RESOLVED");
   await handoff.query("begin");
@@ -1488,7 +1593,7 @@ try {
   await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
   await expectContentConsentRejected(consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1')`,
     [randomUUID(), routeRequestId, ownerId, routeVersionId, routeContentHash],
   ), /content consent closes after handoff unless bound to a current customer-approved recovery/);
   await consent.query("rollback");
@@ -1670,12 +1775,12 @@ try {
     "an offer for B cannot be decided using approved content whose request targets the current supplier A");
   await consent.query(
     `insert into order_item_equivalent_offer_event (id, offer_id, actor_user_id, event_type, content_hash, notice_version)
-     values ($1, $2, $3, 'ACCEPTED', $4, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'ACCEPTED', $4, 'gphkm-content-sharing-v1')`,
     [randomUUID(), routeMismatchOfferId, ownerId, routeMismatchContentHash],
   );
   await expectContentConsentRejected(consent.query(
     `insert into order_item_content_change_event (id, request_id, actor_user_id, event_type, version_id, content_hash, notice_version)
-     values ($1, $2, $3, 'CONSENTED', $4, $5, 'race-fixture-v1')`,
+     values ($1, $2, $3, 'CONSENTED', $4, $5, 'gphkm-content-sharing-v1')`,
     [randomUUID(), routeMismatchRequestId, ownerId, routeMismatchVersionId, routeMismatchContentHash],
   ), /content consent closes after handoff unless bound to a current customer-approved recovery/);
   await consent.query("rollback");
@@ -1699,9 +1804,9 @@ try {
   await setup.query("alter table customer_order_item disable trigger customer_order_item_pending_only");
   await setup.query(
     `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
-       placement_price_minor, writing_selected, target_url, anchor_text, article_text, supplier_sharing_consented, consent_notice_version)
+       placement_price_minor, writing_selected, target_url, anchor_text, article_text, supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
      values ($1, $2, $3, 1, '{"title":"Decline isolation item"}'::jsonb, 1000, false,
-       'https://example.invalid/decline-item', 'decline item', 'Synthetic decline article', true, 'race-fixture-v1')`,
+       'https://example.invalid/decline-item', 'decline item', 'Synthetic decline article', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1')`,
     [routeDeclinedOfferItemId, orderId, routeDeclinedOfferListingId],
   );
   await setup.query("alter table customer_order_item enable trigger customer_order_item_pending_only");
@@ -1905,7 +2010,7 @@ try {
   assert.equal(finalStates.rowCount, 2);
   assert.ok(finalStates.rows.every((row) => row.state === "IN_FULFILLMENT" && row.handed_off_at),
     "both ordering permutations leave the handoff committed and reject any later consent event");
-  console.log("Local two-session security races passed: an ordering member accepted recovery when a different Owner opened Support; concurrent supplier failure waited for a customer offer decision without deadlock; declined offers preserved item holds; unsent notices were rejected while delivered notices stayed reconcilable after rerouting; historical cancellation cutoffs were preserved; customer consent and work-start revalidated after handoff locks; a reserved SEND remained blocked until audited not-sent reconciliation; A→B→A rejected stale packet evidence and offer replay; and a deactivated assignment actor could not mutate work after waiting.");
+  console.log("Local two-session security races passed: an ordering member accepted recovery when a different Owner opened Support; concurrent supplier failure waited for a customer offer decision without deadlock; declined offers preserved item holds; unsent notices were rejected, provider-accepted notices preserved Preparing before delivery, reassignment revoked former-assignee notice access without revealing the original packet to the new assignee, and delivered notices stayed reconcilable after rerouting; historical cancellation cutoffs were preserved; customer consent and work-start revalidated after handoff locks; a reserved SEND remained blocked until audited not-sent reconciliation; A→B→A rejected stale packet evidence and offer replay; and a deactivated assignment actor could not mutate work after waiting.");
 } catch (error) {
   console.error(`Race check phase: ${testPhase}`);
   if (error instanceof Error) console.error(error.message);

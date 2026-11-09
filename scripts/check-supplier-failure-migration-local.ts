@@ -110,7 +110,7 @@ async function seedScenario(databaseName: string, scenario: Scenario) {
       `insert into customer_order (id, organization_id, actor_user_id, idempotency_key, request_hash,
          placement_total_minor, writing_total_minor, total_minor, content_sharing_notice_version,
          content_policy_version, content_policy_accepted_at, customer_status, checkout_state)
-       values ($1, $2, $3, $4, repeat('a', 64), $5, 0, $5, 'migration-fixture-v1',
+       values ($1, $2, $3, $4, repeat('a', 64), $5, 0, $5, 'gphkm-content-sharing-v1',
          'gphkm-content-policy-v1', clock_timestamp(), 'ORDER_RECEIVED', 'PENDING_POST')`,
       [orderId, organizationId, ownerId, `migration-${orderId}`, itemCount * 1000],
     );
@@ -129,7 +129,7 @@ async function seedScenario(databaseName: string, scenario: Scenario) {
            supplier_sharing_consented, consent_notice_version)
          values ($1, $2, $3, 1, jsonb_build_object('title', $4::text), 1000, false,
            'https://example.invalid/migration', 'migration fixture', 'Synthetic content for migration testing',
-           true, 'migration-fixture-v1')`,
+           true, 'gphkm-content-sharing-v1')`,
         [itemIds[index], orderId, listingIds[index], `Migration fixture ${index + 1}`],
       );
     }
@@ -205,7 +205,7 @@ async function seedScenario(databaseName: string, scenario: Scenario) {
         await client.query("alter table order_item_equivalent_offer_event disable trigger user");
         await client.query(
           `insert into order_item_equivalent_offer_event (id, offer_id, actor_user_id, event_type, content_hash, notice_version)
-           values ($1, $2, $3, 'ACCEPTED', $4, 'migration-fixture-v1')`,
+           values ($1, $2, $3, 'ACCEPTED', $4, 'gphkm-content-sharing-v1')`,
           [randomUUID(), offerId, ownerId, contentHash],
         );
         await client.query("alter table order_item_equivalent_offer_event enable trigger user");

@@ -1,6 +1,6 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { db } from "@/db";
 import { catalogImportApplyEvent, catalogImportBatch, catalogImportRow, catalogImportRowStatus, listing, listingSourcing, listingUrl, supplier, } from "@/db/catalog-schema";
@@ -10,12 +10,16 @@ import { applyPlatformCategoryOverride, buildImportMapping, fetchPublicSheetCsv,
 import { normalizeWebsiteUrl, normalizeWebsiteUrlLookupKey, validateListingRelationships, validateListingTerms, type ListingTerms } from "@/modules/catalog/domain";
 import { isValidListingCategorySelection } from "@/modules/catalog/taxonomy";
 import { formatUsdMinorUnits, parseUsdMinorUnits } from "@/modules/wallet/usd-amount";
-import { insertDraftListingInTransaction, staffTransaction, updateListingInTransaction } from "./admin";
+import { insertDraftListingInTransaction, lockListingWebsiteDomains, staffTransaction, updateListingInTransaction } from "./admin";
 import { readPrivateFile, savePrivateFile } from "@/server/storage/private-files";
 import { linkPrivateFileUpload, preparePrivateFileUpload, queuePrivateFileDeleteOutsideTransaction } from "@/server/storage/private-file-lifecycle";
 
 const importSourceSupplier = alias(supplier, "import_source_supplier");
 const importFulfillmentSupplier = alias(supplier, "import_fulfillment_supplier");
+
+// PostgreSQL's row version changes on every write, including same-millisecond edits.
+const importRowVersion = sql<string>`"catalog_import_row".xmin::text`;
+type ReviewedImportRow = { rowId: string; rowVersion: string };
 
 export type StageInventoryInput = {
   supplierId: string;
@@ -165,7 +169,7 @@ export async function getStagedImportRows(headers: Headers, batchId: string, pag
       ? and(eq(catalogImportRow.batchId, batchId), eq(catalogImportRow.status, activeStatus as typeof catalogImportRowStatus.enumValues[number]))
       : eq(catalogImportRow.batchId, batchId);
     const rows = await tx.select({
-      id: catalogImportRow.id, rowNumber: catalogImportRow.rowNumber, originalValues: catalogImportRow.originalValues,
+      id: catalogImportRow.id, rowVersion: importRowVersion, rowNumber: catalogImportRow.rowNumber, originalValues: catalogImportRow.originalValues,
       values: catalogImportRow.stagedValues, errors: catalogImportRow.errors,
       warnings: catalogImportRow.warnings, duplicateOfRow: catalogImportRow.duplicateOfRow,
       duplicateOfListingIds: catalogImportRow.duplicateOfListingIds, duplicateDecision: catalogImportRow.duplicateDecision,
@@ -236,7 +240,7 @@ export async function downloadStagedImportSource(headers: Headers, batchId: stri
   return { bytes, filename: basename && basename.includes(".") ? basename : `inventory-${batchId}.${extension}` };
 }
 
-const correctableFields = new Set([
+const importMappedFields = new Set([
   "websiteUrl", "title", "description", "countryCode", "primaryLanguage", "categories", "linkType", "linkValidity",
   "turnaroundDays", "allowsSportsAndGaming", "allowsPharmacy", "allowsCrypto", "allowsForeignLanguage", "sponsoredContentMarking",
 ]);
@@ -284,7 +288,7 @@ export async function correctStagedImportRow(
   retailPriceUsd: string,
 ) {
   if (!/^[0-9a-f-]{36}$/i.test(batchId) || !/^[0-9a-f-]{36}$/i.test(rowId)) throw new Error("Import row unavailable");
-  for (const field of Object.keys(corrections)) if (!correctableFields.has(field)) throw new Error("Import field cannot be corrected");
+  for (const field of Object.keys(corrections)) if (field === "categories" || !importMappedFields.has(field)) throw new Error("Import field cannot be corrected");
   if (platformCategories.length > 0 && !isValidListingCategorySelection(platformCategories)) throw new Error("IMPORT_CATEGORY_SELECTION_INVALID");
   let proposedRetailPriceCents: string | null = null;
   if (retailPriceUsd.trim()) {
@@ -298,12 +302,12 @@ export async function correctStagedImportRow(
     const storedMapping = importBatch.mapping as Record<string, unknown>;
     const safeMapping: ImportMapping = {};
     for (const [field, column] of Object.entries(storedMapping)) {
-      if (correctableFields.has(field) && Number.isInteger(column) && Number(column) >= 0 && Number(column) < IMPORT_LIMITS.columns) {
+      if (importMappedFields.has(field) && Number.isInteger(column) && Number(column) >= 0 && Number(column) < IMPORT_LIMITS.columns) {
         safeMapping[field as ImportField] = Number(column);
       }
     }
     const original = { ...(row.originalValues as Record<string, unknown>) };
-    for (const field of Object.keys(original)) if (correctableFields.has(field) && safeMapping[field as keyof ImportMapping] === undefined) {
+    for (const field of Object.keys(original)) if (importMappedFields.has(field) && safeMapping[field as keyof ImportMapping] === undefined) {
       safeMapping[field as keyof ImportMapping] = Math.max(-1, ...Object.values(safeMapping)) + 1;
     }
     for (const [field, value] of Object.entries(corrections)) original[field] = value;
@@ -336,14 +340,14 @@ export async function correctStagedImportRow(
       if (!candidate.errors.length) candidate.status = "DUPLICATE_REVIEW";
     }
     const persisted = getPersistableImportValues(candidate, sourceRow, safeMapping);
-    await tx.update(catalogImportRow).set({
+    const [saved] = await tx.update(catalogImportRow).set({
       originalValues: persisted.originalValues, stagedValues: persisted.stagedValues, errors: candidate.errors,
       warnings: candidate.warnings, duplicateOfRow: candidate.duplicateOfRow, duplicateOfListingIds: candidate.duplicateOfListingIds,
       platformCategoryOverride: effectiveCategories,
       proposedRetailPriceCents,
       duplicateDecision: null, duplicateReason: null, duplicateDecidedByUserId: null, duplicateDecidedAt: null,
       status: candidate.status, reviewedByUserId: userId, reviewedAt: new Date(), updatedAt: new Date(),
-    }).where(eq(catalogImportRow.id, rowId));
+    }).where(eq(catalogImportRow.id, rowId)).returning({ rowVersion: importRowVersion });
     await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_CORRECTED", targetType: "catalog_import_row", targetId: rowId,
       metadata: { result: candidate.status, retailPriceSet: proposedRetailPriceCents !== null, platformCategoryCount: effectiveCategories?.length ?? 0 } });
     await refreshBatchStatus(tx, batchId, importBatch.appliedAt);
@@ -364,7 +368,7 @@ export async function correctStagedImportRow(
       .where(inArray(listing.id, matchIds)) : [];
     const duplicateMatches = matches.map((match) => ({ ...match, updateEligible: candidate.duplicateOfListingIds.length === 1 &&
       match.commercialSource === "SUPPLIER_SOURCED" && match.sourceSupplierId === importBatch.supplierId }));
-    return { rowId, status: candidate.status, originalValues: persisted.originalValues, values: candidate.values,
+    return { rowId, rowVersion: saved.rowVersion, status: candidate.status, originalValues: persisted.originalValues, values: candidate.values,
       platformCategoryOverride: effectiveCategories,
       proposedRetailPriceUsd: proposedRetailPriceCents === null ? "" : formatUsdMinorUnits(BigInt(proposedRetailPriceCents)),
       errors: candidate.errors, warnings: candidate.warnings, duplicateOfRow: candidate.duplicateOfRow,
@@ -374,22 +378,22 @@ export async function correctStagedImportRow(
 
 export async function applyAllRemainingImportRows(headers: Headers, batchId: string) {
   if (!/^[0-9a-f-]{36}$/i.test(batchId)) throw new Error("Import selection invalid");
-  const rowIds = await staffTransaction(headers, "supplier.manage", async (tx) => {
+  const selections = await staffTransaction(headers, "supplier.manage", async (tx) => {
   const batch = await lockImport(tx, batchId);
   if (batch.status === "APPLIED" || batch.status === "REJECTED") throw new Error("Import is closed");
-  const rows = await tx.select({ id: catalogImportRow.id, status: catalogImportRow.status,
+  const rows = await tx.select({ rowId: catalogImportRow.id, rowVersion: importRowVersion, status: catalogImportRow.status,
     price: catalogImportRow.proposedRetailPriceCents, categories: catalogImportRow.platformCategoryOverride }).from(catalogImportRow)
     .where(eq(catalogImportRow.batchId, batchId)).orderBy(asc(catalogImportRow.rowNumber));
   const pending = rows.filter((row) => row.status !== "APPLIED" && row.status !== "REJECTED");
   if (pending.some((row) => row.status !== "READY" || !row.categories?.length)) throw new Error("IMPORT_BATCH_ROWS_REQUIRE_REVIEW");
   if (pending.some((row) => row.price === null)) throw new Error("IMPORT_RETAIL_PRICE_REQUIRED");
-  return pending.map((row) => row.id);
+  return pending.map(({ rowId, rowVersion }) => ({ rowId, rowVersion }));
 });
-if (!rowIds.length) return { appliedCount: 0, skippedCount: 0, stoppedEarly: false };
+if (!selections.length) return { appliedCount: 0, skippedCount: 0, stoppedEarly: false };
 let appliedCount = 0;
-for (let offset = 0; offset < rowIds.length; offset += 50) {
+for (let offset = 0; offset < selections.length; offset += 50) {
   try {
-    const chunk = await applySelectedImportRows(headers, batchId, rowIds.slice(offset, offset + 50).map((rowId) => ({ rowId })), true);
+    const chunk = await applySelectedImportRows(headers, batchId, selections.slice(offset, offset + 50), true);
     appliedCount += chunk.appliedCount;
     if (chunk.skippedRows.length) return { appliedCount, skippedCount: chunk.skippedRows.length, stoppedEarly: true };
   } catch (error) {
@@ -437,15 +441,16 @@ return staffTransaction(headers, "supplier.manage", async (tx, userId) => {
 });
 }
 
-function assertValidSelectedImportSelection(batchId: string, selections: Array<{ rowId: string }>) {
+function assertValidSelectedImportSelection(batchId: string, selections: ReviewedImportRow[]) {
   if (!/^[0-9a-f-]{36}$/i.test(batchId) || !Array.isArray(selections) || selections.length < 1 || selections.length > 50 ||
-      selections.some((selection) => !selection || typeof selection.rowId !== "string" || !/^[0-9a-f-]{36}$/i.test(selection.rowId)) ||
+      selections.some((selection) => !selection || typeof selection.rowId !== "string" || !/^[0-9a-f-]{36}$/i.test(selection.rowId) ||
+        typeof selection.rowVersion !== "string" || !/^\d{1,10}$/.test(selection.rowVersion)) ||
       new Set(selections.map((selection) => selection.rowId)).size !== selections.length) {
     throw new Error("Import selection invalid");
   }
 }
 
-export async function applySelectedImportRows(headers: Headers, batchId: string, selections: Array<{ rowId: string }>, stopOnSkip = false) {
+export async function applySelectedImportRows(headers: Headers, batchId: string, selections: ReviewedImportRow[], stopOnSkip = false) {
   assertValidSelectedImportSelection(batchId, selections);
   return staffTransaction(headers, "supplier.manage", (tx, userId) =>
     applySelectedImportRowsInTransaction(tx, userId, batchId, selections, stopOnSkip));
@@ -456,23 +461,25 @@ export async function applySelectedImportRowsInTransaction(
   tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
   userId: string,
   batchId: string,
-  selections: Array<{ rowId: string }>,
+  selections: ReviewedImportRow[],
   stopOnSkip = false,
 ) {
   assertValidSelectedImportSelection(batchId, selections);
   const batch = await lockImport(tx, batchId);
   if (batch.status === "APPLIED" || batch.status === "REJECTED") throw new Error("Import is closed");
-  const rows = await tx.select().from(catalogImportRow).where(and(eq(catalogImportRow.batchId, batchId), inArray(catalogImportRow.id, selections.map((selection) => selection.rowId))))
+  const versions = new Map(selections.map(({ rowId, rowVersion }) => [rowId, rowVersion]));
+  const rows = await tx.select({ ...getTableColumns(catalogImportRow), rowVersion: importRowVersion })
+    .from(catalogImportRow).where(and(eq(catalogImportRow.batchId, batchId), inArray(catalogImportRow.id, [...versions.keys()])))
     .orderBy(asc(catalogImportRow.rowNumber)).for("update");
   if (rows.length !== selections.length) throw new Error("Selected row unavailable");
+  if (rows.some((row) => versions.get(row.id) !== row.rowVersion)) throw new Error("IMPORT_REVIEW_CHANGED");
   if (rows.some((row) => row.status === "READY" && row.proposedRetailPriceCents === null)) throw new Error("IMPORT_RETAIL_PRICE_REQUIRED");
-  const domains = [...new Set(rows.filter((row) => row.status === "READY").map((row) => {
-    const value = (row.stagedValues as Record<string, unknown>).websiteUrl;
-    return typeof value === "string" ? normalizeWebsiteUrl(value) : null;
-  }).filter((url): url is string => url !== null).map((url) => new URL(url).hostname))].sort();
-  for (const domain of domains) await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${domain}, 0))`);
-  const websiteUrlKeys = listingWebsiteUrlLookupKeys(rows.filter((row) => row.status === "READY")
-    .map((row) => (row.stagedValues as Record<string, unknown>).websiteUrl));
+  const urlsToCheck = rows.filter((row) => row.status === "READY").flatMap((row) => {
+    const url = normalizeWebsiteUrl((row.stagedValues as Record<string, unknown>).websiteUrl);
+    return url ? [url] : [];
+  });
+  await lockListingWebsiteDomains(tx, urlsToCheck);
+  const websiteUrlKeys = listingWebsiteUrlLookupKeys(urlsToCheck);
   const urls = websiteUrlKeys.length
     ? await tx.select({ id: listingUrl.listingId, websiteUrl: listingUrl.websiteUrl }).from(listingUrl)
       .where(sql`lower(rtrim(${listingUrl.websiteUrl}, '/')) = ANY(${sql.param(websiteUrlKeys)}::text[])`)
@@ -484,7 +491,7 @@ export async function applySelectedImportRowsInTransaction(
   }
   const applied: string[] = [];
   const appliedListings: Array<{ rowId: string; id: string; title: string; websiteUrl: string; status: "DRAFT"; retailPriceCents: number; revision: number }> = [];
-  const skippedRows: Array<{ rowId: string; status: string; errors: Array<{ field: string; code: string }>; warnings: string[]; duplicateOfRow: number | null;
+  const skippedRows: Array<{ rowId: string; rowVersion?: string; status: string; errors: Array<{ field: string; code: string }>; warnings: string[]; duplicateOfRow: number | null;
     duplicateOfListingIds: string[]; duplicateMatches?: Array<{ id: string; title: string; description: string; countryCode: string; primaryLanguage: string;
       categories: string[]; retailPriceCents: string | number; linkType: string; linkValidity: string; turnaroundDays: number;
       allowsSportsAndGaming: boolean | null; allowsPharmacy: boolean | null; allowsCrypto: boolean | null; allowsForeignLanguage: boolean | null;
@@ -524,8 +531,10 @@ export async function applySelectedImportRowsInTransaction(
       if (stopOnSkip) break;
       continue;
     }
+    const resolved = candidate.status === "DUPLICATE_REVIEW" && candidate.duplicateResolution?.decision === "KEEP_SEPARATE"
+      ? resolveDuplicate(candidate, candidate.duplicateResolution) : candidate;
     let listingInput: ReturnType<typeof toDraftListingInput>;
-    try { listingInput = toDraftListingInput(candidate); }
+    try { listingInput = toDraftListingInput(resolved); }
     catch {
       await tx.update(catalogImportRow).set({ status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }], updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
       await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "DRAFT_VALIDATION_FAILED" });
@@ -569,11 +578,11 @@ export async function applySelectedImportRowsInTransaction(
         .where(inArray(listing.id, duplicateIds.slice(0, 3)));
       const duplicateMatches = currentMatches.map((match) => ({ ...match,
         updateEligible: duplicateIds.length === 1 && match.commercialSource === "SUPPLIER_SOURCED" && match.sourceSupplierId === batch.supplierId }));
-      await tx.update(catalogImportRow).set({ status: "DUPLICATE_REVIEW", duplicateOfListingIds: duplicateIds,
+      const [conflict] = await tx.update(catalogImportRow).set({ status: "DUPLICATE_REVIEW", duplicateOfListingIds: duplicateIds,
         warnings: [...new Set([...candidate.warnings, "POSSIBLE_DUPLICATE_DOMAIN"])], duplicateDecision: null, duplicateReason: null,
-        duplicateDecidedByUserId: null, duplicateDecidedAt: null, updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
+        duplicateDecidedByUserId: null, duplicateDecidedAt: null, updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id)).returning({ rowVersion: importRowVersion });
       await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "NEW_DUPLICATE_FOUND" });
-      skippedRows.push({ rowId: row.id, status: "DUPLICATE_REVIEW", errors: candidate.errors, warnings: [...new Set([...candidate.warnings, "POSSIBLE_DUPLICATE_DOMAIN"])],
+      skippedRows.push({ rowId: row.id, rowVersion: conflict.rowVersion, status: "DUPLICATE_REVIEW", errors: candidate.errors, warnings: [...new Set([...candidate.warnings, "POSSIBLE_DUPLICATE_DOMAIN"])],
         duplicateOfRow: candidate.duplicateOfRow, duplicateOfListingIds: duplicateIds, duplicateMatches,
         hiddenMatchCount: Math.max(0, duplicateIds.length - duplicateMatches.length) });
       if (stopOnSkip) break;
@@ -581,9 +590,9 @@ export async function applySelectedImportRowsInTransaction(
     }
     const terms = { ...listingInput, websiteUrl: normalizedUrl, retailPriceCents: Number(price) } as ListingTerms;
     if (validateListingTerms(terms).length || validateListingRelationships("SUPPLIER_SOURCED", batch.supplierId, batch.supplierId).length) {
-      await tx.update(catalogImportRow).set({ status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }], updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id));
+      const [conflict] = await tx.update(catalogImportRow).set({ status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }], updatedAt: new Date() }).where(eq(catalogImportRow.id, row.id)).returning({ rowVersion: importRowVersion });
       await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLY_SKIPPED", targetType: "catalog_import_row", targetId: row.id, reasonCode: "DRAFT_VALIDATION_FAILED" });
-      skippedRows.push({ rowId: row.id, status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }],
+      skippedRows.push({ rowId: row.id, rowVersion: conflict.rowVersion, status: "INVALID", errors: [{ field: "listing", code: "DRAFT_VALIDATION_FAILED" }],
         warnings: candidate.warnings, duplicateOfRow: candidate.duplicateOfRow, duplicateOfListingIds: candidate.duplicateOfListingIds });
       if (stopOnSkip) break;
       continue;
@@ -614,105 +623,123 @@ export async function applyStagedImportUpdate(
   batchId: string,
   rowId: string,
   listingId: string,
+  reviewed: { rowVersion: string; listingRevision: number },
   reason: string,
 ) {
   if (!/^[0-9a-f-]{36}$/i.test(batchId) || !/^[0-9a-f-]{36}$/i.test(rowId) || !/^[0-9a-f-]{36}$/i.test(listingId)) {
     throw new Error("Import update selection invalid");
+  }
+  if (!/^\d{1,10}$/.test(reviewed.rowVersion) || !Number.isSafeInteger(reviewed.listingRevision) || reviewed.listingRevision < 1) {
+    throw new Error("IMPORT_REVIEW_CHANGED");
   }
   const cleanReason = reason.trim();
   if (cleanReason.length < 5 || cleanReason.length > 400 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(cleanReason)) {
     throw new Error("A short update reason is required");
   }
   await requireStaffAccess(headers, "catalog.manage");
-  return staffTransaction(headers, "supplier.manage", async (tx, userId) => {
-    const batch = await lockImport(tx, batchId);
-    if (batch.status === "APPLIED" || batch.status === "REJECTED") throw new Error("Import is closed");
-    const [row] = await tx.select().from(catalogImportRow)
-      .where(and(eq(catalogImportRow.id, rowId), eq(catalogImportRow.batchId, batchId))).for("update").limit(1);
-    if (!row || row.status !== "DUPLICATE_REVIEW" || row.duplicateOfListingIds.length !== 1 || row.duplicateOfListingIds[0] !== listingId) {
-      throw new Error("Import match is no longer available");
-    }
-    if (!row.platformCategoryOverride?.length) throw new Error("IMPORT_CATEGORY_SELECTION_REQUIRED");
-    const candidate = applyPlatformCategoryOverride(rowCandidate({ ...row, values: row.stagedValues }), row.platformCategoryOverride);
-    const unresolvedWarnings = candidate.warnings.filter((warning) => warning !== "POSSIBLE_DUPLICATE_DOMAIN");
-    if (candidate.errors.length || unresolvedWarnings.length) throw new Error("Import row still needs review");
-    const sourceUrl = typeof candidate.values.websiteUrl === "string" ? normalizeWebsiteUrl(candidate.values.websiteUrl) : null;
-    if (!sourceUrl) throw new Error("Import website is unavailable");
+  return staffTransaction(headers, "supplier.manage", (tx, userId) =>
+    applyStagedImportUpdateInTransaction(tx, userId, batchId, rowId, listingId, reviewed, cleanReason));
+}
 
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('gphkm:catalog-listing:' || ${listingId}, 0))`);
-    const [current] = await tx.select().from(listing).where(eq(listing.id, listingId)).for("update").limit(1);
-    const [source] = await tx.select().from(listingSourcing).where(eq(listingSourcing.listingId, listingId)).for("update").limit(1);
-    const [currentUrl] = await tx.select({ websiteUrl: listingUrl.websiteUrl }).from(listingUrl)
-      .where(eq(listingUrl.listingId, listingId)).for("update").limit(1);
-    if (!current || !source || !currentUrl || source.commercialSource !== "SUPPLIER_SOURCED" || source.supplierId !== batch.supplierId ||
-      normalizeWebsiteUrl(currentUrl.websiteUrl) !== sourceUrl || current.status === "ARCHIVED") {
-      throw new Error("Only an unambiguous listing for this supplier can be updated");
-    }
+export async function applyStagedImportUpdateInTransaction(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0], userId: string, batchId: string, rowId: string, listingId: string,
+  reviewed: { rowVersion: string; listingRevision: number }, cleanReason: string,
+) {
+  const batch = await lockImport(tx, batchId);
+  if (batch.status === "APPLIED" || batch.status === "REJECTED") throw new Error("Import is closed");
+  const [row] = await tx.select({ ...getTableColumns(catalogImportRow), rowVersion: importRowVersion }).from(catalogImportRow)
+    .where(and(eq(catalogImportRow.id, rowId), eq(catalogImportRow.batchId, batchId))).for("update").limit(1);
+  if (!row || row.rowVersion !== reviewed.rowVersion) throw new Error("IMPORT_REVIEW_CHANGED");
+  if (row.status !== "DUPLICATE_REVIEW" || row.duplicateOfListingIds.length !== 1 || row.duplicateOfListingIds[0] !== listingId) {
+    throw new Error("Import match is no longer available");
+  }
+  if (!row.platformCategoryOverride?.length) throw new Error("IMPORT_CATEGORY_SELECTION_REQUIRED");
+  const candidate = applyPlatformCategoryOverride(rowCandidate({ ...row, values: row.stagedValues }), row.platformCategoryOverride);
+  const unresolvedWarnings = candidate.warnings.filter((warning) => warning !== "POSSIBLE_DUPLICATE_DOMAIN");
+  if (candidate.errors.length || unresolvedWarnings.length) throw new Error("Import row still needs review");
+  const sourceUrl = typeof candidate.values.websiteUrl === "string" ? normalizeWebsiteUrl(candidate.values.websiteUrl) : null;
+  if (!sourceUrl) throw new Error("Import website is unavailable");
 
-    const values = candidate.values;
-    const terms: ListingTerms = {
-      title: typeof values.title === "string" ? values.title : current.title,
-      description: typeof values.description === "string" ? values.description : current.description,
-      websiteUrl: sourceUrl,
-      countryCode: typeof values.countryCode === "string" ? values.countryCode : current.countryCode,
-      primaryLanguage: (typeof values.primaryLanguage === "string" ? values.primaryLanguage : current.primaryLanguage) as ListingTerms["primaryLanguage"],
-      categories: (typeof values.categories === "string" ? values.categories.split("|") : current.categories) as ListingTerms["categories"],
-      retailPriceCents: Number(current.retailPriceCents),
-      linkType: (typeof values.linkType === "string" ? values.linkType : current.linkType) as ListingTerms["linkType"],
-      linkValidity: (typeof values.linkValidity === "string" ? values.linkValidity : current.linkValidity) as ListingTerms["linkValidity"],
-      turnaroundDays: typeof values.turnaroundDays === "number" ? values.turnaroundDays : current.turnaroundDays,
-      allowsSportsAndGaming: typeof values.allowsSportsAndGaming === "boolean" ? values.allowsSportsAndGaming : current.allowsSportsAndGaming,
-      allowsPharmacy: typeof values.allowsPharmacy === "boolean" ? values.allowsPharmacy : current.allowsPharmacy,
-      allowsCrypto: typeof values.allowsCrypto === "boolean" ? values.allowsCrypto : current.allowsCrypto,
-      allowsForeignLanguage: typeof values.allowsForeignLanguage === "boolean" ? values.allowsForeignLanguage : current.allowsForeignLanguage,
-      sponsoredContentMarking: typeof values.sponsoredContentMarking === "boolean" ? values.sponsoredContentMarking : current.sponsoredContentMarking,
-      writingEnabled: current.writingEnabled,
-      writingPriceCents: current.writingPriceCents === null ? null : Number(current.writingPriceCents),
-      writingTurnaroundDays: current.writingTurnaroundDays,
-      writingFirstDraftCents: current.writingFirstDraftCents === null ? null : Number(current.writingFirstDraftCents),
-      writingFinalDraftCents: current.writingFinalDraftCents === null ? null : Number(current.writingFinalDraftCents),
-      buyerRequirements: current.buyerRequirements,
-    };
-    const changedFields: string[] = [];
-    const comparisons: Array<[ImportField, unknown, unknown]> = [
-      ["websiteUrl", currentUrl.websiteUrl, terms.websiteUrl], ["title", current.title, terms.title],
-      ["description", current.description, terms.description], ["countryCode", current.countryCode, terms.countryCode],
-      ["primaryLanguage", current.primaryLanguage, terms.primaryLanguage], ["categories", current.categories, terms.categories],
-      ["linkType", current.linkType, terms.linkType], ["linkValidity", current.linkValidity, terms.linkValidity],
-      ["turnaroundDays", current.turnaroundDays, terms.turnaroundDays], ["allowsSportsAndGaming", current.allowsSportsAndGaming, terms.allowsSportsAndGaming],
-      ["allowsPharmacy", current.allowsPharmacy, terms.allowsPharmacy], ["allowsCrypto", current.allowsCrypto, terms.allowsCrypto],
-      ["allowsForeignLanguage", current.allowsForeignLanguage, terms.allowsForeignLanguage],
-      ["sponsoredContentMarking", current.sponsoredContentMarking, terms.sponsoredContentMarking],
-    ];
-    for (const [field, before, after] of comparisons) {
-      if (JSON.stringify(before) !== JSON.stringify(after)) changedFields.push(field);
-    }
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('gphkm:catalog-listing:' || ${listingId}, 0))`);
+  const [current] = await tx.select().from(listing).where(eq(listing.id, listingId)).for("update").limit(1);
+  const [source] = await tx.select().from(listingSourcing).where(eq(listingSourcing.listingId, listingId)).for("update").limit(1);
+  const [currentUrl] = await tx.select({ websiteUrl: listingUrl.websiteUrl }).from(listingUrl)
+    .where(eq(listingUrl.listingId, listingId)).for("update").limit(1);
+  if (!current || current.revision !== reviewed.listingRevision) throw new Error("IMPORT_REVIEW_CHANGED");
+  if (!source || !currentUrl || source.commercialSource !== "SUPPLIER_SOURCED" || source.supplierId !== batch.supplierId ||
+    normalizeWebsiteUrl(currentUrl.websiteUrl) !== sourceUrl || current.status === "ARCHIVED") {
+    throw new Error("Only an unambiguous listing for this supplier can be updated");
+  }
 
-    let revision = current.revision;
-    if (changedFields.length) {
-      const updated = await updateListingInTransaction(tx, userId, {
-        id: listingId,
-        expectedRevision: current.revision,
-        terms,
-        commercialSource: source.commercialSource,
-        supplierId: source.supplierId,
-        fulfillmentSupplierId: source.fulfillmentSupplierId,
-        urlVisibleWithoutRecharge: source.urlVisibleWithoutRecharge,
-        reason: `Supplier import batch ${batchId} row ${row.rowNumber}: ${cleanReason}`,
-      });
-      revision = updated.revision;
-    }
+  await lockListingWebsiteDomains(tx, [sourceUrl]);
+  const [otherMatch] = await tx.select({ id: listingUrl.listingId }).from(listingUrl)
+    .where(sql`lower(rtrim(${listingUrl.websiteUrl}, '/')) = ${normalizeWebsiteUrlLookupKey(sourceUrl)}
+      and ${listingUrl.listingId} <> ${listingId}`).limit(1);
+  if (otherMatch) throw new Error("IMPORT_REVIEW_CHANGED");
 
-    await tx.update(catalogImportRow).set({ status: "APPLIED", appliedListingId: listingId,
-      reviewedByUserId: userId, reviewedAt: new Date(), updatedAt: new Date() }).where(eq(catalogImportRow.id, rowId));
-    await tx.insert(catalogImportApplyEvent).values({ id: randomUUID(), batchId, actorUserId: userId,
-      selectedRowIds: [rowId], appliedListingIds: [listingId] });
-    const status = await refreshBatchStatus(tx, batchId, batch.appliedAt);
-    const result = changedFields.length ? "EXISTING_LISTING_REVISED" : "NO_LISTING_CHANGES";
-    await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLIED", targetType: "catalog_import_row", targetId: rowId,
-      metadata: { result, listingId, fromRevision: current.revision, toRevision: revision, changedFields: changedFields.join(",") } });
-    await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_BATCH_APPLY_FINISHED", targetType: "catalog_import_batch", targetId: batchId,
-      metadata: { itemCount: 1, result: changedFields.length ? "1_EXISTING_LISTING_REVISED" : "1_NO_LISTING_CHANGES" } });
-    return { rowId, listingId, revision, changedFields, batchStatus: status };
-  });
+  const values = candidate.values;
+  const terms: ListingTerms = {
+    title: typeof values.title === "string" ? values.title : current.title,
+    description: typeof values.description === "string" ? values.description : current.description,
+    websiteUrl: sourceUrl,
+    countryCode: typeof values.countryCode === "string" ? values.countryCode : current.countryCode,
+    primaryLanguage: (typeof values.primaryLanguage === "string" ? values.primaryLanguage : current.primaryLanguage) as ListingTerms["primaryLanguage"],
+    categories: (typeof values.categories === "string" ? values.categories.split("|") : current.categories) as ListingTerms["categories"],
+    retailPriceCents: Number(current.retailPriceCents),
+    linkType: (typeof values.linkType === "string" ? values.linkType : current.linkType) as ListingTerms["linkType"],
+    linkValidity: (typeof values.linkValidity === "string" ? values.linkValidity : current.linkValidity) as ListingTerms["linkValidity"],
+    turnaroundDays: typeof values.turnaroundDays === "number" ? values.turnaroundDays : current.turnaroundDays,
+    allowsSportsAndGaming: typeof values.allowsSportsAndGaming === "boolean" ? values.allowsSportsAndGaming : current.allowsSportsAndGaming,
+    allowsPharmacy: typeof values.allowsPharmacy === "boolean" ? values.allowsPharmacy : current.allowsPharmacy,
+    allowsCrypto: typeof values.allowsCrypto === "boolean" ? values.allowsCrypto : current.allowsCrypto,
+    allowsForeignLanguage: typeof values.allowsForeignLanguage === "boolean" ? values.allowsForeignLanguage : current.allowsForeignLanguage,
+    sponsoredContentMarking: typeof values.sponsoredContentMarking === "boolean" ? values.sponsoredContentMarking : current.sponsoredContentMarking,
+    writingEnabled: current.writingEnabled,
+    writingPriceCents: current.writingPriceCents === null ? null : Number(current.writingPriceCents),
+    writingTurnaroundDays: current.writingTurnaroundDays,
+    writingFirstDraftCents: current.writingFirstDraftCents === null ? null : Number(current.writingFirstDraftCents),
+    writingFinalDraftCents: current.writingFinalDraftCents === null ? null : Number(current.writingFinalDraftCents),
+    buyerRequirements: current.buyerRequirements,
+  };
+  const changedFields: string[] = [];
+  const comparisons: Array<[ImportField, unknown, unknown]> = [
+    ["websiteUrl", currentUrl.websiteUrl, terms.websiteUrl], ["title", current.title, terms.title],
+    ["description", current.description, terms.description], ["countryCode", current.countryCode, terms.countryCode],
+    ["primaryLanguage", current.primaryLanguage, terms.primaryLanguage], ["categories", current.categories, terms.categories],
+    ["linkType", current.linkType, terms.linkType], ["linkValidity", current.linkValidity, terms.linkValidity],
+    ["turnaroundDays", current.turnaroundDays, terms.turnaroundDays], ["allowsSportsAndGaming", current.allowsSportsAndGaming, terms.allowsSportsAndGaming],
+    ["allowsPharmacy", current.allowsPharmacy, terms.allowsPharmacy], ["allowsCrypto", current.allowsCrypto, terms.allowsCrypto],
+    ["allowsForeignLanguage", current.allowsForeignLanguage, terms.allowsForeignLanguage],
+    ["sponsoredContentMarking", current.sponsoredContentMarking, terms.sponsoredContentMarking],
+  ];
+  for (const [field, before, after] of comparisons) {
+    if (JSON.stringify(before) !== JSON.stringify(after)) changedFields.push(field);
+  }
+
+  let revision = current.revision;
+  if (changedFields.length) {
+    const updated = await updateListingInTransaction(tx, userId, {
+      id: listingId,
+      expectedRevision: reviewed.listingRevision,
+      terms,
+      commercialSource: source.commercialSource,
+      supplierId: source.supplierId,
+      fulfillmentSupplierId: source.fulfillmentSupplierId,
+      urlVisibleWithoutRecharge: source.urlVisibleWithoutRecharge,
+      reason: `Supplier import batch ${batchId} row ${row.rowNumber}: ${cleanReason}`,
+    });
+    revision = updated.revision;
+  }
+
+  await tx.update(catalogImportRow).set({ status: "APPLIED", appliedListingId: listingId,
+    reviewedByUserId: userId, reviewedAt: new Date(), updatedAt: new Date() }).where(eq(catalogImportRow.id, rowId));
+  await tx.insert(catalogImportApplyEvent).values({ id: randomUUID(), batchId, actorUserId: userId,
+    selectedRowIds: [rowId], appliedListingIds: [listingId] });
+  const status = await refreshBatchStatus(tx, batchId, batch.appliedAt);
+  const result = changedFields.length ? "EXISTING_LISTING_REVISED" : "NO_LISTING_CHANGES";
+  await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_ROW_APPLIED", targetType: "catalog_import_row", targetId: rowId,
+    metadata: { result, listingId, fromRevision: current.revision, toRevision: revision, changedFields: changedFields.join(",") } });
+  await appendAuditEvent(tx, { actorUserId: userId, action: "CATALOG_IMPORT_BATCH_APPLY_FINISHED", targetType: "catalog_import_batch", targetId: batchId,
+    metadata: { itemCount: 1, result: changedFields.length ? "1_EXISTING_LISTING_REVISED" : "1_NO_LISTING_CHANGES" } });
+  return { rowId, listingId, revision, changedFields, batchStatus: status };
 }

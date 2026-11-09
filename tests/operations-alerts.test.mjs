@@ -124,6 +124,9 @@ test("overview reads bounded role-scoped previews and refreshes without full que
   assert.match(alerts, /Review batch[\s\S]*\/staff\/suppliers\/imports\/\$\{encodeURIComponent\(row\.batchId\)\}/,
     "each import preview links directly to its batch detail");
 
+  assert.match(alerts, /md5\(string_agg\(import_row\.id \|\| ':' \|\| import_row\.xmin::text[\s\S]*revision: row\.revision/,
+    "changing one staged row invalidates a dismissal even when the batch date and row count are unchanged");
+
   assert.match(alerts, /hasStaffPermission\(actor\.role, "costs\.read"\)[\s\S]*latest_placement_cost[\s\S]*allocated_transfers/,
     "supplier coverage is limited to Finance and Super Admin permissions");
   assert.match(alerts, /DISTINCT ON \(cost\.order_item_id, cost\.supplier_id\)[\s\S]*cost\.component = 'PLACEMENT'[\s\S]*cost\.created_at DESC, cost\.id DESC/,

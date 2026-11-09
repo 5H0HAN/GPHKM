@@ -50,12 +50,16 @@ export async function applySingleImportRowAction(_previousState: ApplySingleImpo
   const batchId = safeId(form.get("batchId"));
   const rowId = safeId(form.get("rowId"));
   try {
-    const result = await applySelectedImportRows(await headers(), batchId, [{ rowId }]);
+    const rowVersion = safeId(form.get("rowVersion"));
+    const result = await applySelectedImportRows(await headers(), batchId, [{ rowId, rowVersion }]);
     const listing = result.appliedListings.find((item) => item.rowId === rowId);
     if (listing) return { kind: "applied", listing };
     const row = result.skippedRows.find((item) => item.rowId === rowId);
     return row ? { kind: "skipped", row } : { kind: "error", message: "This row could not be created. Review it and try again." };
   } catch (error) {
+    if (error instanceof Error && error.message === "IMPORT_REVIEW_CHANGED") {
+      return { kind: "error", message: "This row changed. Refresh the batch and review it before applying." };
+    }
     return { kind: "error", message: error instanceof Error && error.message === "IMPORT_RETAIL_PRICE_REQUIRED"
       ? "Save a valid USD retail price with the row corrections before creating this draft."
       : "This row could not be created. Review its status and try again." };
@@ -90,11 +94,14 @@ export async function applySelectedImportAction(_previousState: ImportActionStat
   const batchId = safeId(form.get("batchId"));
   const page = safeId(form.get("page"));
   const status = safeId(form.get("status"));
-  const rowIds = form.getAll("rowId").filter((value): value is string => typeof value === "string");
-  const selections = rowIds.map((rowId) => ({ rowId }));
+  const selections = form.getAll("reviewedRow").map((value) => {
+    const [rowId, rowVersion, extra] = safeId(value).split(":");
+    return { rowId, rowVersion: extra === undefined ? rowVersion : "" };
+  });
   let result: { appliedCount: number };
   try { result = await applySelectedImportRows(await headers(), batchId, selections); }
-  catch (error) { return redirectResult(target(batchId, error instanceof Error && error.message === "IMPORT_RETAIL_PRICE_REQUIRED" ? "error=price" : "error=apply", page, status)); }
+  catch (error) { return redirectResult(target(batchId, error instanceof Error && error.message === "IMPORT_REVIEW_CHANGED" ? "error=review-changed" :
+    error instanceof Error && error.message === "IMPORT_RETAIL_PRICE_REQUIRED" ? "error=price" : "error=apply", page, status)); }
   return redirectResult(target(batchId, `applied=${result.appliedCount}`, page, status));
 }
 
@@ -105,7 +112,8 @@ export async function applyAllImportRowsAction(_previousState: ImportActionState
     return redirectResult(target(batchId, `allApplied=${result.appliedCount}${result.stoppedEarly ? "&partial=1" : ""}`, "", ""));
   } catch (error) {
     const code = error instanceof Error && error.message === "IMPORT_BATCH_ROWS_REQUIRE_REVIEW" ? "all-review"
-      : error instanceof Error && error.message === "IMPORT_RETAIL_PRICE_REQUIRED" ? "all-price" : "all-apply";
+      : error instanceof Error && error.message === "IMPORT_REVIEW_CHANGED" ? "review-changed"
+        : error instanceof Error && error.message === "IMPORT_RETAIL_PRICE_REQUIRED" ? "all-price" : "all-apply";
     return redirectResult(target(batchId, `error=${code}`, "", ""));
   }
 }
@@ -117,8 +125,9 @@ export async function updateImportMatchAction(_previousState: ImportActionState,
   const page = safeId(form.get("page"));
   const status = safeId(form.get("status"));
   const reason = safeId(form.get("reason"));
-  try { await applyStagedImportUpdate(await headers(), batchId, rowId, listingId, reason); }
-  catch { return redirectResult(target(batchId, "error=update", page, status)); }
+  const reviewed = { rowVersion: safeId(form.get("rowVersion")), listingRevision: Number(form.get("listingRevision")) };
+  try { await applyStagedImportUpdate(await headers(), batchId, rowId, listingId, reviewed, reason); }
+  catch (error) { return redirectResult(target(batchId, error instanceof Error && error.message === "IMPORT_REVIEW_CHANGED" ? "error=review-changed" : "error=update", page, status)); }
   return redirectResult(target(batchId, "updated=1", page, status));
 }
 

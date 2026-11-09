@@ -1,4 +1,5 @@
 import "server-only";
+import { MAX_CUSTOMER_ORDERS_PAGE_ITEMS } from "@/modules/orders/checkout";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, lte, or, sql } from "drizzle-orm";
 import { db } from "@/db";
@@ -248,7 +249,7 @@ export type CustomerContentChange = Readonly<{
 // Explicit safe projection for UI use; callers never spread database rows into responses.
 export async function listContentChangesForCustomerBatch(headers: Headers, organizationId: string, itemIds: string[]): Promise<Map<string, CustomerContentChange[]>> {
   const ids = [...new Set(itemIds)];
-  if (!organizationId || organizationId.length > 128 || ids.length > 500 || ids.some((id) => !validId(id))) {
+  if (!organizationId || organizationId.length > 128 || ids.length > MAX_CUSTOMER_ORDERS_PAGE_ITEMS || ids.some((id) => !validId(id))) {
     throw new Error("Order content is unavailable");
   }
   const actor = await requireVerifiedCustomer(headers);

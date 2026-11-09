@@ -136,8 +136,8 @@ export default async function OrdersPage({ searchParams }: { searchParams: Promi
             const pendingConsent = latestChange?.status === "APPROVED_AWAITING_CONSENT" && latestChange.approvedContent
               ? { requestId: latestChange.id, purpose: latestChange.purpose, content: latestChange.approvedContent } : null;
             const staleReconsent = latestChange?.purpose === "RECIPIENT_RECONSENT" && latestChange.status === "STALE";
-            const canRequestChange = order.isOrderer && !pendingConsent && latestChange?.status !== "REQUESTED"
-              && !["PREPARING", "IN_PROGRESS", "PUBLICATION_PENDING", "LINK_VERIFICATION", "COMPLETE", "RESOLVED", "CANCELED"].includes(item.status);
+            const canRequestChange = !contentChangesUnavailable && item.canRequestContentChange
+              && latestChange?.status !== "APPROVED_AWAITING_CONSENT" && latestChange?.status !== "REQUESTED";
             const currentIndex = milestones.findIndex(([key]) => key === item.status);
             const terminal = item.status === "COMPLETE" || item.status === "RESOLVED";
             const writingNeedsReview = item.writingWorkflow?.state === "FIRST_DRAFT_READY" || item.writingWorkflow?.state === "FINAL_DRAFT_READY";
