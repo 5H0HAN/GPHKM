@@ -8,7 +8,7 @@ import { orderItemContentChangeEvent, orderItemContentChangeRequest, orderItemCo
 import { supplierPacket, supplierPacketAcknowledgement, supplierPacketAttempt, supplierPacketAttemptEvent, supplierPacketItem, supplierPacketManualEvidence, supplierPacketProviderEvent } from "@/db/packet-schema";
 import { supplier, supplierContact } from "@/db/catalog-schema";
 import { supplierFulfillmentOutcome, supplierFulfillmentOutcomeResolution } from "@/db/supplier-outcome-schema";
-import { assertCompletePacketReplacement, assertPacketActionable, buildSupplierPacket, confirmManualSupplierReceipt, mayAccessSupplierPacket, mayStartManualPacketHandoff, monotonicProviderAttemptState, parseExplicitInstant, recordManualExportAttempt, recordManualHandoff, recordManualHandoffCutoff, renderSupplierEmail, resolveUnknownAttempt, startPacketAttempt, supplierShareContentHash, transitionItem, type ItemState, type PacketAttempt, type PacketAttemptState, type PacketItemInput, type SupplierPacket } from "@/modules/fulfillment/workflow";
+import { assertCompletePacketReplacement, assertPacketActionable, buildSupplierPacket, confirmManualSupplierReceipt, legacySupplierPacketHash, mayAccessSupplierPacket, mayStartManualPacketHandoff, monotonicProviderAttemptState, parseExplicitInstant, recordManualExportAttempt, recordManualHandoff, recordManualHandoffCutoff, renderSupplierEmail, resolveUnknownAttempt, startPacketAttempt, supplierShareContentHash, transitionItem, type ItemState, type PacketAttempt, type PacketAttemptState, type PacketItemInput, type SupplierPacket } from "@/modules/fulfillment/workflow";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { appendAuditEvent } from "@/server/audit/append";
 import { logSafeFailure } from "@/server/observability/safe-log";
@@ -793,7 +793,17 @@ async function loadCurrentPacket(tx: Tx, row: typeof supplierPacket.$inferSelect
       });
     }),
   });
-  if (rebuilt.contentHash !== row.contentHash) throw new Error("Packet content changed after preview; create a new packet version and obtain fresh consent");
+  if (rebuilt.contentHash !== row.contentHash) {
+    const legacyConsentShape = stored.items.every((item) => !Object.prototype.hasOwnProperty.call(item.consent, "consentEventId"));
+    try {
+      if (legacyConsentShape && stored.contentHash === row.contentHash
+        && legacySupplierPacketHash(stored) === row.contentHash
+        && legacySupplierPacketHash(rebuilt) === row.contentHash) return stored;
+    } catch {
+      // Malformed historical timestamps or snapshots must fail closed below.
+    }
+    throw new StaleSupplierPacketSnapshotError("Packet content changed after preview; create a new packet version and obtain fresh consent");
+  }
   return rebuilt;
 }
 

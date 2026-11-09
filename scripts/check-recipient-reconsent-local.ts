@@ -129,6 +129,7 @@ try {
   const ownerId = uuid();
   const otherCustomerId = uuid();
   const superAdminId = uuid();
+  const ordinaryAdminId = uuid();
   const organizationId = uuid();
   const orderId = uuid();
   const supplierId = uuid();
@@ -146,10 +147,12 @@ try {
   await setup.query("begin");
   await setup.query(
     `insert into public.auth_user (id,name,email,email_verified) values
-      ($1,'Re-consent owner',$2,true),($3,'Non-orderer',$4,true),($5,'Re-consent Super Admin',$6,true)`,
-    [ownerId, `${ownerId}@reconsent.invalid`, otherCustomerId, `${otherCustomerId}@reconsent.invalid`, superAdminId, `${superAdminId}@reconsent.invalid`],
+      ($1,'Re-consent owner',$2,true),($3,'Non-orderer',$4,true),($5,'Re-consent Super Admin',$6,true),
+      ($7,'Re-consent ordinary Admin',$8,true)`,
+    [ownerId, `${ownerId}@reconsent.invalid`, otherCustomerId, `${otherCustomerId}@reconsent.invalid`,
+      superAdminId, `${superAdminId}@reconsent.invalid`, ordinaryAdminId, `${ordinaryAdminId}@reconsent.invalid`],
   );
-  await setup.query("insert into public.staff_account (user_id,role,active) values ($1,'SUPER_ADMIN',true)", [superAdminId]);
+  await setup.query("insert into public.staff_account (user_id,role,active) values ($1,'SUPER_ADMIN',true),($2,'ADMIN',true)", [superAdminId, ordinaryAdminId]);
   await setup.query("insert into public.organization (id,name,created_by) values ($1,'Re-consent fixture',$2)", [organizationId, ownerId]);
   await setup.query("insert into public.organization_member (id,organization_id,user_id,role,active) values ($1,$2,$3,'OWNER',true)", [uuid(), organizationId, ownerId]);
   await setup.query("insert into public.wallet_account (organization_id,currency) values ($1,'USD')", [organizationId]);
@@ -263,6 +266,38 @@ try {
     "select count(*)::int as count from public.gphkm_customer_approved_content($1,$2,$3)", [first.requestId, ownerId, organizationId]);
   assert.equal(pendingProjection.rows[0]?.count, 1, "orderer sees exact approved re-consent content before consent");
 
+  await setup.query("begin");
+  await setup.query("select set_config('app.user_id',$1,true),set_config('app.staff_role','',true)", [ordinaryAdminId]);
+  await setup.query("savepoint admin_request_guc");
+  await expectRejected(() => setup.query(
+    `insert into public.order_item_content_change_request
+       (id,order_item_id,request_number,requested_by_user_id,base_version,purpose,target_supplier_id,target_url,anchor_text,article_text,instructions)
+     values ($1,$2,999,$3,1,'RECIPIENT_RECONSENT',$4,$5,$6,$7,'')`,
+    [uuid(), ITEM_ID, ownerId, supplierId, first.content.targetUrl, first.content.anchorText, first.content.articleText]),
+    ["23514"], "an active Admin cannot create recipient re-consent with an unset role GUC");
+  await setup.query("rollback to savepoint admin_request_guc");
+  await setup.query("release savepoint admin_request_guc");
+
+  await setup.query("savepoint admin_version_guc");
+  await expectRejected(() => setup.query(
+    `insert into public.order_item_content_version
+       (id,order_item_id,request_id,version,target_url,anchor_text,article_text,instructions,supplier_id,recipient_email,content_hash,approved_by_user_id)
+     values ($1,$2,$3,3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [uuid(), ITEM_ID, first.requestId, first.content.targetUrl, first.content.anchorText, first.content.articleText,
+      first.content.instructions, supplierId, currentRecipient, first.contentHash, ordinaryAdminId]),
+    ["23514"], "an active Admin cannot create a recipient re-consent version with an unset role GUC");
+  await setup.query("rollback to savepoint admin_version_guc");
+  await setup.query("release savepoint admin_version_guc");
+
+  await setup.query("savepoint admin_review_event_guc");
+  await expectRejected(() => setup.query(
+    `insert into public.order_item_content_change_event (id,request_id,actor_user_id,event_type)
+     values ($1,$2,$3,'REQUESTED')`, [uuid(), first.requestId, ordinaryAdminId]),
+    ["42501"], "an active Admin cannot write re-consent review events with an unset role GUC");
+  await setup.query("rollback to savepoint admin_review_event_guc");
+  await setup.query("release savepoint admin_review_event_guc");
+  await setup.query("commit");
+
   const projectionPool = new Pool({ connectionString: isolatedRuntimeUrl.href, connectionTimeoutMillis: 5000, max: 1 });
   try {
     const projectionDb = drizzle({ client: projectionPool });
@@ -333,6 +368,7 @@ try {
   await staff.query("rollback to savepoint stale_packet_retry");
   await staff.query("release savepoint stale_packet_retry");
   await staff.query("commit");
+
   const second = await reconsent({ actorId: superAdminId, ordererId: ownerId, organizationId, orderId, itemId: ITEM_ID,
     supplierId, recipient: racedRecipient, requestNumber: 2, version: 3, priorVersion: 2 });
 
@@ -404,6 +440,14 @@ try {
   await staff.query("release savepoint export_denied");
   await staff.query("commit");
 
+  const postPreparationProjection = await customer.query(
+    "select version, count(*) over()::int as count from public.gphkm_customer_approved_content($1,$2,$3)",
+    [second.requestId, ownerId, organizationId]);
+  assert.equal(postPreparationProjection.rows.length, 1,
+    "current consent remains available to the orderer after packet preparation closes retry eligibility");
+  assert.equal(postPreparationProjection.rows[0]?.count, 1);
+  assert.equal(postPreparationProjection.rows[0]?.version, 3);
+
   const audit = await staff.query(
     "select count(*)::int as count from public.audit_event where target_id=$1 and action='SUPPLIER_RECIPIENT_RECONSENT_REQUESTED'", [ITEM_ID]);
   assert.equal(audit.rows[0]?.count, 2, "each Super Admin re-consent request is audited, including a replacement after recipient drift");
@@ -417,7 +461,7 @@ try {
     [ITEM_ID, handoffAt]);
   assert.equal(cutoff.rows[0]?.unchanged, true, "re-consent and replacement packet reservation do not reset the handoff cutoff or start publication work");
 
-  console.log("Local recipient re-consent regression passed: reconciled-not-delivered eligibility, Super Admin audit, orderer-only exact-recipient consent, stale recipient lock race, canonical disclosure-version enforcement, replacement packet validation, Resend-only post-cutoff retry, and unchanged Preparing cutoff.");
+  console.log("Local recipient re-consent regression passed: reconciled-not-delivered eligibility, Super Admin authority despite an unset role GUC, orderer-only exact-recipient consent, stale recipient lock race, current post-preparation consent projection, canonical disclosure-version enforcement, replacement packet validation, Resend-only post-cutoff retry, and unchanged Preparing cutoff.");
 } finally {
   await Promise.all([setup.end().catch(() => undefined), staff.end().catch(() => undefined), customer.end().catch(() => undefined),
     observer.end().catch(() => undefined)]);

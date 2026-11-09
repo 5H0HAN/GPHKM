@@ -193,17 +193,19 @@ export async function consentToContentChange(headers: Headers, organizationId: s
         .from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
         .where(and(eq(customerOrderItem.id, request.orderItemId), eq(customerOrder.organizationId, organizationId))).limit(1);
       if (!orderRow || orderRow.ordererId !== actor.userId) throw new Error("Content consent is unavailable");
-      // Match packet preparation's order -> supplier -> item lock order. The
-      // scoped SECURITY DEFINER helper can see the current route without
-      // exposing staff-only supplier data through customer RLS.
-      stage = "RECIPIENT_LOCKS";
-      await tx.execute(sql`select public.gphkm_lock_customer_recipient_reconsent(${requestId})`);
+      const recipientReconsent = request.purpose === "RECIPIENT_RECONSENT";
+      if (recipientReconsent) {
+        // Match packet preparation's order -> supplier -> item lock order. The
+        // scoped SECURITY DEFINER helper can see the current route without
+        // exposing staff-only supplier data through customer RLS.
+        stage = "RECIPIENT_LOCKS";
+        await tx.execute(sql`select public.gphkm_lock_customer_recipient_reconsent(${requestId})`);
+      }
       // The consent-event trigger locks this fulfillment row and rechecks that
       // handoff has not started. Customer row writes stay read-only until the
       // consent event, where the trigger revalidates this locked recipient.
       stage = "FULFILLMENT_GATE";
       const [fulfillment] = await tx.select().from(orderItemFulfillment).where(eq(orderItemFulfillment.orderItemId, request.orderItemId)).limit(1);
-      const recipientReconsent = request.purpose === "RECIPIENT_RECONSENT";
       if (!fulfillment || (recipientReconsent
         ? fulfillment.state !== "HANDOFF_PENDING" || !fulfillment.handedOffAt || Boolean(fulfillment.workStartedAt)
         : fulfillment.handedOffAt || ["IN_FULFILLMENT", "PUBLICATION_PENDING", "EVIDENCE_REVIEW", "COMPLETED", "CANCELED_REFUNDED"].includes(fulfillment.state))) {

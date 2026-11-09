@@ -290,6 +290,65 @@ try {
   assert.deepEqual(status.rows[0], { state: "ON_HOLD", state_before_hold: "READY_FOR_HANDOFF", recovery_count: 1, resolved_count: 2 },
     "recovery resolves every same-route outcome, preserves the hold, and leaves its original evidence intact");
 
+  // A later failure on the unchanged route must reopen the equivalent-offer
+  // workflow even though earlier outcomes on this generation were recovered.
+  const alternativeSupplierId = randomUUID();
+  const repeatOutcomeId = randomUUID();
+  const replacementRequestId = randomUUID();
+  const replacementVersionId = randomUUID();
+  const equivalentOfferId = randomUUID();
+  const replacementHash = "d".repeat(64);
+  await setup.query("begin");
+  await setup.query("select set_config('app.user_id',$1,true)", [superAdminId]);
+  await setup.query("savepoint repeat_failure_offer");
+  await setup.query(
+    "insert into supplier (id,name,status,created_by_user_id) values ($1,'Recovery replacement supplier','ACTIVE',$2)",
+    [alternativeSupplierId, superAdminId],
+  );
+  await setup.query(
+    "insert into supplier_contact (id,supplier_id,name,email,is_primary) values ($1,$2,'Primary contact','replacement@recovery.invalid',true)",
+    [randomUUID(), alternativeSupplierId],
+  );
+  await setup.query(
+    `insert into supplier_fulfillment_outcome (id,order_item_id,supplier_id,support_case_id,actor_user_id,outcome,reason,idempotency_key,request_hash)
+     values ($1,$2,$3,$4,$5,'CANNOT_FULFILL','Supplier failed again after recovery',$6,$7)`,
+    [repeatOutcomeId, itemIds[0], supplierId, caseId, superAdminId, `repeat-${repeatOutcomeId}`, hash],
+  );
+  await setup.query(
+    `insert into order_item_content_change_request
+       (id,order_item_id,request_number,requested_by_user_id,base_version,purpose,target_supplier_id,target_url,anchor_text,article_text,instructions)
+     values ($1,$2,1,$3,1,'CONTENT_CHANGE',$4,'https://replacement.example/article','replacement anchor',
+       'Synthetic replacement content for database regression',NULL)`,
+    [replacementRequestId, itemIds[0], ownerId, alternativeSupplierId],
+  );
+  await setup.query(
+    `insert into order_item_content_version
+       (id,order_item_id,request_id,version,target_url,anchor_text,article_text,instructions,supplier_id,recipient_email,content_hash,approved_by_user_id)
+     values ($1,$2,$3,2,'https://replacement.example/article','replacement anchor',
+       'Synthetic replacement content for database regression','',$4,'replacement@recovery.invalid',$5,$6)`,
+    [replacementVersionId, itemIds[0], replacementRequestId, alternativeSupplierId, replacementHash, superAdminId],
+  );
+  await setup.query(
+    `insert into order_item_equivalent_offer
+       (id,order_item_id,support_case_id,content_request_id,content_version_id,title,website_url,description,equivalence_note,categories,
+        country_code,language,link_type,link_validity,turnaround_days,sponsored_content_marking,terms,locked_price_minor,offered_by_user_id)
+     values ($1,$2,$3,$4,$5,'Replacement fixture','https://replacement.example/','Equivalent replacement fixture',
+       'Comparable audience and publication scope',ARRAY['General'],'US','English','DOFOLLOW','PERMANENT',30,false,'{}'::jsonb,3000,$6)`,
+    [equivalentOfferId, itemIds[0], caseId, replacementRequestId, replacementVersionId, superAdminId],
+  );
+  await setup.query(
+    `insert into order_item_equivalent_offer_route (offer_id,supplier_id,recipient_email,content_hash,route_generation)
+     values ($1,$2,'replacement@recovery.invalid',$3,2)`, [equivalentOfferId, alternativeSupplierId, replacementHash],
+  );
+  const offered = await setup.query(
+    `insert into order_item_equivalent_offer_event (id,offer_id,actor_user_id,event_type,content_hash)
+     values ($1,$2,$3,'OFFERED',$4) returning id`, [randomUUID(), equivalentOfferId, superAdminId, replacementHash],
+  );
+  assert.equal(offered.rowCount, 1, "a fresh failure after recovery permits an equivalent offer on the current route");
+  await setup.query("rollback to savepoint repeat_failure_offer");
+  await setup.query("release savepoint repeat_failure_offer");
+  await setup.query("rollback");
+
   await setup.query("begin");
   await setup.query("alter table order_item_fulfillment disable trigger user");
   await setup.query("update order_item_fulfillment set state = 'HANDOFF_PENDING', state_before_hold = null where order_item_id = $1", [itemIds[0]]);
@@ -318,7 +377,7 @@ try {
   await setup.query("release savepoint immutable_recovery");
   await setup.query("rollback");
 
-  console.log("Local supplier-recovery database regression passed: privilege and assignment checks, stale-route rejection, held-item packet blocking, concurrent idempotency, multi-outcome resolution, immutable history, scoped reads, and resumed packet-attempt validation.");
+  console.log("Local supplier-recovery database regression passed: privilege and assignment checks, stale-route rejection, held-item packet blocking, concurrent idempotency, multi-outcome resolution, immutable history, scoped reads, same-route repeat failure with equivalent-offer recovery, and resumed packet-attempt validation.");
 } finally {
   await Promise.all([setup.end().catch(() => undefined), runtimeA.end().catch(() => undefined), runtimeB.end().catch(() => undefined)]);
   if (created) {

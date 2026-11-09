@@ -6,12 +6,13 @@ import { readFile } from "node:fs/promises";
 import { sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { assertCustomerEquivalentOfferItemIds, MAX_CUSTOMER_EQUIVALENT_OFFER_ITEMS } from "../src/modules/fulfillment/equivalent-offers.ts";
-import { assertSupplierOutcomeMayBeRecorded } from "../src/modules/fulfillment/supplier-outcome.ts";
+import { assertSupplierOutcomeMayBeRecorded, normalizeSupplierRecoveryReason } from "../src/modules/fulfillment/supplier-outcome.ts";
 import {
   acknowledgementFollowUpAt,
   assertPacketActionable,
   assertCompletePacketReplacement,
   buildSupplierPacket,
+  legacySupplierPacketHash,
   confirmManualSupplierReceipt,
   customerOrderItemProjection,
   deliveryFollowUpAt,
@@ -77,6 +78,13 @@ test("packet access requires every included item to remain assigned to the Admin
   assert.equal(mayAccessSupplierPacket({ actorId: "admin_a", actorRole: "ADMIN", assignments: [] }), false);
   assert.equal(mayAccessSupplierPacket({ actorId: "super", actorRole: "SUPER_ADMIN", assignments: [assigned] }), true);
   assert.equal(mayAccessSupplierPacket({ actorId: "finance", actorRole: "FINANCE", assignments: [assigned] }), false);
+});
+
+test("supplier recovery reasons normalize form whitespace before persistence and hashing", () => {
+  assert.equal(normalizeSupplierRecoveryReason("  Availability\nconfirmed\tby supplier.  "), "Availability confirmed by supplier.");
+  assert.throws(() => normalizeSupplierRecoveryReason("\n\t  "), /valid internal recovery reason/);
+  assert.throws(() => normalizeSupplierRecoveryReason("valid\u0000reason"), /valid internal recovery reason/);
+  assert.throws(() => normalizeSupplierRecoveryReason("x".repeat(2001)), /valid internal recovery reason/);
 });
 
 test("the 50-order customer page can check all 1,250 possible equivalent offers", async () => {
@@ -172,6 +180,44 @@ test("packet builder groups one order, organization, and supplier; consent binds
   assert.throws(() => buildSupplierPacket(packetInput({ recipient: "editor@example.net\r\nBcc:attacker@example.com" })), /recipient is invalid/);
   assert.throws(() => buildSupplierPacket(packetInput({ createdBy: "admin_b" })), /assigned Admin/);
   assert.throws(() => buildSupplierPacket(packetInput({ createdByRole: "FINANCE" })), /cannot prepare supplier packets/);
+});
+
+test("legacy supplier packet snapshots keep their millisecond consent timestamp hash", () => {
+  const packet = buildSupplierPacket(packetInput({ items: [{
+    ...packetInput().items[0],
+    consent: { ...packetInput().items[0].consent, acceptedAt: "2026-10-28T00:00:00.123456Z" },
+  }] }));
+  const legacy = {
+    id: packet.id,
+    version: packet.version,
+    organizationId: packet.organizationId,
+    orderId: packet.orderId,
+    supplierId: packet.supplierId,
+    recipient: packet.recipient,
+    createdBy: packet.createdBy,
+    createdAt: packet.createdAt,
+    items: packet.items.map(({ consent, ...item }) => ({
+      ...item,
+      consent: {
+        disclosureVersion: consent.disclosureVersion,
+        contentHash: consent.contentHash,
+        supplierId: consent.supplierId,
+        recipient: consent.recipient,
+        acceptedAt: new Date(consent.acceptedAt).toISOString(),
+      },
+    })),
+  };
+  const legacyHash = createHash("sha256").update(JSON.stringify(legacy)).digest("hex");
+  assert.equal(legacySupplierPacketHash(packet), legacyHash);
+  assert.notEqual(legacySupplierPacketHash(buildSupplierPacket(packetInput({
+    items: [{ ...packetInput().items[0], reference: "GPH-ITEM-02" }],
+  }))), legacyHash);
+});
+
+test("database consent guard accepts legacy timestamp precision only without an event identifier", async () => {
+  const migration = await readFile(new URL("../src/db/migrations/0185_legacy_packet_timestamp_compat.sql", import.meta.url), "utf8");
+  assert.match(migration, /IS NOT DISTINCT FROM[\s\S]*?SS\.US/);
+  assert.match(migration, /NOT \(packet_item->'consent' \? 'consentEventId'\)[\s\S]*?SS\.MS/);
 });
 
 test("supplier EML contains minimal body, encodes body, and blocks ambiguous resend", () => {
@@ -366,6 +412,7 @@ test("packet preparation serializes order packet versions without locking the re
   const equivalentOffers = await readFile(new URL("../src/server/fulfillment/equivalent-offers.ts", import.meta.url), "utf8");
   const adminService = await readFile(new URL("../src/server/fulfillment/admin.ts", import.meta.url), "utf8");
   const prepare = service.slice(service.indexOf("export async function prepareSupplierPackets"), service.indexOf("export async function getSupplierPacket"));
+  const currentPacket = service.slice(service.indexOf("async function loadCurrentPacket"), service.indexOf("function resendConfig"));
   assert.match(prepare, /pg_advisory_xact_lock\(pg_catalog\.hashtextextended/);
   assert.match(prepare, /supplier_packet_prepare:/);
   assert.doesNotMatch(prepare, /\.from\(customerOrder\)[\s\S]{0,120}\.for\("update"\)/,
@@ -374,8 +421,11 @@ test("packet preparation serializes order packet versions without locking the re
     "item locks still serialize work that can change packet eligibility");
   assert.doesNotMatch(prepare, /orderBy\(asc\(orderItemFulfillmentSupplier\.orderItemId\)\)\.for\("share"\)/,
     "the runtime role has SELECT but intentionally no UPDATE privilege on fulfillment routes");
-  const currentPacket = service.slice(service.indexOf("async function loadCurrentPacket"), service.indexOf("export async function"));
   assert.doesNotMatch(currentPacket, /orderBy\(asc\(orderItemFulfillmentSupplier\.orderItemId\)\)\.for\("share"\)/);
+  assert.match(currentPacket, /legacyConsentShape[\s\S]*legacySupplierPacketHash\(stored\) === row\.contentHash[\s\S]*legacySupplierPacketHash\(rebuilt\) === row\.contentHash/,
+    "only a stored legacy snapshot and its live rebuild may use the historical hash projection");
+  assert.match(currentPacket, /StaleSupplierPacketSnapshotError\("Packet content changed after preview/,
+    "changed or malformed packet snapshots fail closed as stale");
   const createOffer = equivalentOffers.slice(equivalentOffers.indexOf("export async function createEquivalentOffer"));
   assert.doesNotMatch(createOffer, /from\(orderItemFulfillmentSupplier\)[^;]*\.for\("share"\)/,
     "route reads after the item lock do not request a lock the runtime role cannot take");

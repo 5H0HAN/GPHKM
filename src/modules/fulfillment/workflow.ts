@@ -366,6 +366,37 @@ export function buildSupplierPacket(input: {
   return Object.freeze({ ...snapshot, contentHash: hashCanonical(snapshot), items: Object.freeze(frozenItems) });
 }
 
+export function legacySupplierPacketHash(packet: SupplierPacket): string {
+  const snapshot = {
+    id: packet.id,
+    version: packet.version,
+    organizationId: packet.organizationId,
+    orderId: packet.orderId,
+    supplierId: packet.supplierId,
+    recipient: packet.recipient,
+    createdBy: packet.createdBy,
+    createdAt: packet.createdAt,
+    items: packet.items.map((item) => ({
+      orderItemId: item.orderItemId,
+      assignedAdminId: item.assignedAdminId,
+      reference: item.reference,
+      placementRequirements: [...item.placementRequirements],
+      targetUrl: item.targetUrl,
+      anchorText: item.anchorText,
+      article: item.article,
+      instructions: item.instructions,
+      consent: {
+        disclosureVersion: item.consent.disclosureVersion,
+        contentHash: item.consent.contentHash,
+        supplierId: item.consent.supplierId,
+        recipient: item.consent.recipient,
+        acceptedAt: new Date(item.consent.acceptedAt).toISOString(),
+      },
+    })),
+  };
+  return hashCanonical(snapshot);
+}
+
 export function renderSupplierEmail(packet: SupplierPacket, maxEmlBytes: number, pdfAttachment?: Uint8Array): { subject: string; text: string; eml: string } {
   if (!Number.isSafeInteger(maxEmlBytes) || maxEmlBytes < 1) throw new Error("Configured EML size limit is invalid");
   const delivery = supplierDeliveryProjection(packet);

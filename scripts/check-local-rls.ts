@@ -107,7 +107,7 @@ async function seedSyntheticPacketItem(client: Client, statement: string, values
 
 async function insertCurrentBaseConsentPacket(client: Client, input: {
   packetId: string; version: number; orderItemId: string; supplierId: string; recipient: string;
-  contentHash: string; createdByUserId: string;
+  contentHash: string; createdByUserId: string; legacySnapshot?: boolean;
 }) {
   const packet = await client.query(
     `insert into supplier_packet (id, version, organization_id, order_id, supplier_id, recipient, packet, content_hash, created_by_user_id)
@@ -126,8 +126,9 @@ async function insertCurrentBaseConsentPacket(client: Client, input: {
            'consent', jsonb_build_object(
              'disclosureVersion', item.consent_notice_version, 'contentHash', $6::text, 'supplierId', $4::text,
              'recipient', lower(btrim($5::text)), 'consentEventId', null,
-             'acceptedAt', to_char(item.consented_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
-           )
+             'acceptedAt', to_char(item.consented_at at time zone 'UTC', case when $8::boolean
+               then 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"' else 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"' end)
+           ) - case when $8::boolean then 'consentEventId' else '' end
          ))
        ), $6::text, $7::text
        from customer_order_item item
@@ -137,16 +138,24 @@ async function insertCurrentBaseConsentPacket(client: Client, input: {
        left join order_item_writing writing on writing.order_item_id = item.id
        join supplier_contact contact on contact.supplier_id = route.supplier_id and contact.is_primary
       where item.id = $3::text and route.supplier_id = $4::text and lower(btrim(contact.email)) = lower(btrim($5::text))`,
-    [input.packetId, input.version, input.orderItemId, input.supplierId, input.recipient, input.contentHash, input.createdByUserId],
+    [input.packetId, input.version, input.orderItemId, input.supplierId, input.recipient, input.contentHash, input.createdByUserId, input.legacySnapshot === true],
   );
   assert.equal(packet.rowCount, 1, "consent-bound packet fixture uses the current route and recipient");
-  const membership = await client.query(
-    `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
-     select $1, item.id, fulfillment.assigned_admin_id, item.consent_notice_version, item.consented_at, $3
-       from customer_order_item item join order_item_fulfillment fulfillment on fulfillment.order_item_id = item.id
-      where item.id = $2::text`, [input.packetId, input.orderItemId, input.contentHash],
-  );
-  assert.equal(membership.rowCount, 1, "consent-bound packet fixture inserts one guarded membership");
+  if (input.legacySnapshot) await client.query("ALTER TABLE public.supplier_packet_item DISABLE TRIGGER supplier_packet_item_guard");
+  let membership;
+  try {
+    membership = await client.query(
+      `insert into supplier_packet_item (packet_id, order_item_id, assigned_admin_id, consent_notice_version, consented_at, consent_content_hash)
+       select $1, item.id, fulfillment.assigned_admin_id, item.consent_notice_version, item.consented_at, $3
+         from customer_order_item item join order_item_fulfillment fulfillment on fulfillment.order_item_id = item.id
+        where item.id = $2::text`, [input.packetId, input.orderItemId, input.contentHash],
+    );
+  } finally {
+    if (input.legacySnapshot) await client.query("ALTER TABLE public.supplier_packet_item ENABLE TRIGGER supplier_packet_item_guard");
+  }
+  assert.equal(membership.rowCount, 1, input.legacySnapshot
+    ? "historical packet fixture inserts one membership row"
+    : "consent-bound packet fixture inserts one guarded membership");
 }
 
 assertLocalDatabaseUrl(databaseUrl, "gphkm_migration");
@@ -2136,8 +2145,13 @@ try {
   await insertCurrentBaseConsentPacket(migration, {
     packetId: manualPacketId, version: 1, orderItemId: orderItemFixture,
     supplierId: supplierFixture, recipient: "old-supplier@example.invalid", contentHash: "f".repeat(64), createdByUserId: adminA,
+    legacySnapshot: true,
   });
   await migration.query("update order_item_fulfillment set state = 'HANDOFF_PENDING' where order_item_id = $1", [orderItemFixture]);
+  const legacyConsent = await migration.query<{ current: boolean }>(
+    "select public.gphkm_supplier_packet_item_consent_is_current($1, $2) as current", [manualPacketId, orderItemFixture],
+  );
+  assert.equal(legacyConsent.rows[0]?.current, true, "valid pre-event snapshots with millisecond consent timestamps remain current");
   await migration.query("SET LOCAL ROLE gphkm_runtime");
   await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [adminA, organizationA]);
   await migration.query(

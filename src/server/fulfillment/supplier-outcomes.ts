@@ -9,7 +9,7 @@ import { supplierFulfillmentOutcome } from "@/db/supplier-outcome-schema";
 import { appendAuditEvent } from "@/server/audit/append";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { mayReadFulfillmentContent } from "@/modules/fulfillment/console";
-import { assertSupplierOutcomeMayBeRecorded } from "@/modules/fulfillment/supplier-outcome";
+import { assertSupplierOutcomeMayBeRecorded, normalizeSupplierRecoveryReason } from "@/modules/fulfillment/supplier-outcome";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Outcome = "REJECTED" | "CANNOT_FULFILL" | "NONRESPONSIVE";
@@ -115,8 +115,7 @@ export async function recoverSupplierFailure(headers: Headers, input: {
   itemId: string; reason: string; idempotencyKey: string;
 }) {
   if (![input.itemId, input.idempotencyKey].every((value) => UUID.test(value))) throw new Error("Supplier recovery is unavailable");
-  const reason = input.reason.trim();
-  if (reason.length < 5 || reason.length > 2000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(reason)) throw new Error("Add a valid internal recovery reason");
+  const reason = normalizeSupplierRecoveryReason(input.reason);
   const actor = await requireStaffAccess(headers, "fulfillment.manage");
   if (actor.role !== "SUPER_ADMIN") throw new Error("Forbidden");
   const requestHash = hash({ itemId: input.itemId, reason });
