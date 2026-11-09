@@ -6,8 +6,14 @@ const PAGE_WIDTH = 612;
 const PAGE_HEIGHT = 792;
 const MARGIN = 52;
 
+export class UnsupportedSupplierPacketPdfTextError extends Error {
+  constructor() {
+    super("The PDF font cannot preserve all packet text. Export EML or send without a PDF.");
+  }
+}
+
 function splitLine(text: string, maxWidth: number, font: Awaited<ReturnType<PDFDocument["embedFont"]>>, size: number): string[] {
-  const words = text.trim().split(/\s+/).filter(Boolean);
+  const words = text.split(/[ \t]+/).filter(Boolean);
   const lines: string[] = [];
   let current = "";
   for (const word of words) {
@@ -40,6 +46,7 @@ export async function buildSupplierPacketPdf(packet: SupplierPacket): Promise<Ui
   pdf.setCreator("GPHKM");
   const regular = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
+  const characters = new Map([[regular, new Set(regular.getCharacterSet())], [bold, new Set(bold.getCharacterSet())]]);
   const pages: ReturnType<typeof pdf.addPage>[] = [];
   let page = pdf.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   pages.push(page);
@@ -52,8 +59,12 @@ export async function buildSupplierPacketPdf(packet: SupplierPacket): Promise<Ui
     const indent = options.indent ?? 0;
     const gap = options.gap ?? size * 1.45;
     const width = PAGE_WIDTH - MARGIN * 2 - indent;
-    for (const paragraph of text.replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "?").split(/\r?\n/)) {
-      for (const line of splitLine(paragraph.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ""), width, font, size)) {
+    const supported = characters.get(font)!;
+    for (const paragraph of text.split(/\r\n|[\r\n]/)) {
+      for (const character of paragraph) {
+        if (character !== "\t" && !supported.has(character.codePointAt(0)!)) throw new UnsupportedSupplierPacketPdfTextError();
+      }
+      for (const line of splitLine(paragraph, width, font, size)) {
         if (y < MARGIN + 28) startPage();
         page.drawText(line, { x: MARGIN + indent, y, size, font, color: options.color ?? rgb(0.12, 0.16, 0.22) });
         y -= gap;

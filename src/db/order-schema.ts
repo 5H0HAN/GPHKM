@@ -29,6 +29,7 @@ export const customerOrder = pgTable("customer_order", {
   check("customer_order_totals_valid", sql`${t.placementTotalMinor} >= 0 and ${t.writingTotalMinor} >= 0 and ${t.totalMinor} > 0 and ${t.totalMinor} = ${t.placementTotalMinor} + ${t.writingTotalMinor}`),
   check("customer_order_idempotency_valid", sql`length(${t.idempotencyKey}) between 16 and 128 and ${t.requestHash} ~ '^[0-9a-f]{64}$'`),
   check("customer_order_checkout_state_valid", sql`(${t.checkoutState} = 'PENDING_POST' and ${t.paidLedgerEntryId} is null) or (${t.checkoutState} = 'PAID' and ${t.paidLedgerEntryId} is not null)`),
+  check("customer_order_content_sharing_notice_current", sql`${t.contentSharingNoticeVersion} = 'gphkm-content-sharing-v1'`),
   check("customer_order_status_valid", sql`${t.customerStatus} in ('ORDER_RECEIVED', 'CONTENT_REVIEW', 'PREPARING', 'IN_PROGRESS', 'LINK_VERIFICATION', 'COMPLETE', 'RESOLVED')`),
   check("customer_order_content_policy_snapshot_valid", sql`(${t.contentPolicyVersion} is null and ${t.contentPolicyAcceptedAt} is null) or (${t.contentPolicyVersion} = 'gphkm-content-policy-v1' and ${t.contentPolicyAcceptedAt} is not null)`),
 ]).enableRLS();
@@ -39,6 +40,8 @@ export const customerOrderItem = pgTable("customer_order_item", {
   listingId: text("listing_id").notNull().references(() => listing.id),
   listingRevision: integer("listing_revision").notNull(),
   customerListingSnapshot: jsonb("customer_listing_snapshot").$type<Record<string, unknown>>().notNull(),
+  placementDisclosureVersion: text("placement_disclosure_version"),
+  writingRefundDisclosureVersion: text("writing_refund_disclosure_version"),
   placementPriceMinor: numeric("placement_price_minor", { precision: 20, scale: 0 }).notNull(),
   writingSelected: boolean("writing_selected").notNull(),
   writingPriceMinor: numeric("writing_price_minor", { precision: 20, scale: 0 }).notNull().default("0"),
@@ -61,7 +64,10 @@ export const customerOrderItem = pgTable("customer_order_item", {
   check("customer_order_item_target_url_safe", sql`${t.targetUrl} ~* '^https?://[^/?#[:space:]]+([/?#].*)?$' and ${t.targetUrl} !~* '^https?://[^/@?#]+@' and ${t.targetUrl} !~ '[[:cntrl:][:space:]]'`),
   check("customer_order_item_writing_valid", sql`(not ${t.writingSelected} and ${t.writingPriceMinor} = 0 and ${t.writingFirstStageMinor} = 0 and ${t.writingFinalStageMinor} = 0 and ${t.articleText} is not null and ${t.writingBrief} is null) or (${t.writingSelected} and ${t.writingBrief} is not null and ${t.articleText} is null)`),
   check("customer_order_item_consent_valid", sql`${t.supplierSharingConsented} and length(${t.consentNoticeVersion}) between 1 and 80`),
+  check("customer_order_item_consent_notice_current", sql`${t.consentNoticeVersion} = 'gphkm-content-sharing-v1'`),
   check("customer_order_item_text_bounds", sql`length(${t.targetUrl}) between 1 and 2048 and length(${t.anchorText}) between 1 and 200 and length(${t.instructions}) <= 4000 and (${t.articleText} is null or length(${t.articleText}) between 1 and 20000) and (${t.writingBrief} is null or length(${t.writingBrief}) between 1 and 4000)`),
+  check("customer_order_item_disclosure_versions_valid", sql`${t.placementDisclosureVersion} is not null and length(${t.placementDisclosureVersion}) between 1 and 80 and case when ${t.writingSelected} then ${t.writingRefundDisclosureVersion} is not null and length(${t.writingRefundDisclosureVersion}) between 1 and 80 else ${t.writingRefundDisclosureVersion} is null end`),
+  check("customer_order_item_disclosure_versions_current", sql`${t.placementDisclosureVersion} = 'gphkm-placement-disclosure-v1' and case when ${t.writingSelected} then ${t.writingRefundDisclosureVersion} = 'gphkm-writing-stages-v1' else ${t.writingRefundDisclosureVersion} is null end`),
   check("customer_order_item_status_valid", sql`${t.customerStatus} in ('ORDER_RECEIVED', 'CONTENT_REVIEW', 'PREPARING', 'IN_PROGRESS', 'LINK_VERIFICATION', 'COMPLETE', 'RESOLVED')`),
 ]).enableRLS();
 

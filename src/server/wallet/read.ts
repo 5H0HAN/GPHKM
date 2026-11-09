@@ -1,7 +1,9 @@
 import "server-only";
 import { count, desc, eq, sql } from "drizzle-orm";
 import { organization, paymentAttempt, walletAccount } from "@/db/schema";
-import { withOrganizationContext } from "@/server/identity/customer-context";
+import { db } from "@/db";
+import { workspaceMarketplaceAccessQuery } from "@/db/workspace-marketplace-access";
+import { requireVerifiedCustomer, withOrganizationContext } from "@/server/identity/customer-context";
 import { isMarketplaceTrialActive, marketplaceTrialEndsAt } from "@/modules/wallet/marketplace-trial";
 
 export async function getWalletSummary(headers: Headers, organizationId: string, requiredMinor?: bigint) {
@@ -64,6 +66,22 @@ export async function getMarketplaceAccess(headers: Headers, organizationId: str
       trialEndsAt,
       trialActive,
     };
+  });
+}
+
+export async function listWorkspaceMarketplaceAccess(headers: Headers, organizationIds: readonly string[]) {
+  if (!organizationIds.length) return [];
+  const actor = await requireVerifiedCustomer(headers);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    const { rows } = await tx.execute<{ organization_id: string; created_at: Date; paid_access_active: boolean }>(
+      workspaceMarketplaceAccessQuery(organizationIds),
+    );
+    return rows.map((row) => ({
+      organizationId: row.organization_id,
+      paidAccessActive: row.paid_access_active,
+      trialEndsAt: marketplaceTrialEndsAt(row.created_at).toISOString(),
+    }));
   });
 }
 

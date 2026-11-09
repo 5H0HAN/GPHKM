@@ -6,7 +6,7 @@ import styles from "./customer.module.css";
 import { loadCustomerWorkspace } from "./workspace";
 import { OrganizationOnboarding } from "./organization-onboarding";
 import { TrialBanner } from "./trial-banner";
-import { getMarketplaceAccess } from "@/server/wallet/read";
+import { listWorkspaceMarketplaceAccess } from "@/server/wallet/read";
 import { headers } from "next/headers";
 import { getCustomerLegalState } from "@/server/legal/consent";
 import { CustomerLegalAcceptance } from "./legal-acceptance";
@@ -62,18 +62,9 @@ export default async function CustomerLayout({ children }: { children: ReactNode
   }
 
   const requestHeaders = await headers();
-  const accessByOrganization = await Promise.all(workspace.organizations.map(async (organization) => {
-    try {
-      const access = await getMarketplaceAccess(requestHeaders, organization.id);
-      return {
-        organizationId: organization.id,
-        paidAccessActive: access.paidAccessActive,
-        trialEndsAt: access.trialEndsAt.toISOString(),
-      };
-    } catch {
-      return null;
-    }
-  }));
+  const accessByOrganization = await listWorkspaceMarketplaceAccess(
+    requestHeaders, workspace.organizations.map((organization) => organization.id),
+  ).catch(() => []);
   return (
     <div className={styles.frame} data-theme={appearance.toLowerCase()}>
       <div className={styles.layout}>
@@ -95,7 +86,7 @@ export default async function CustomerLayout({ children }: { children: ReactNode
             <span className={styles.crumb}>Customer workspace</span>
             {workspace.organizations.length ? <OrganizationSwitcher organizations={workspace.organizations} /> : <span className={styles.quiet}>No organization yet</span>}
           </header>
-          <TrialBanner organizations={accessByOrganization.filter((access) => access !== null)} />
+          <TrialBanner organizations={accessByOrganization} />
           {!legal && <div className={styles.error} role="alert">The current Terms and Privacy documents could not be loaded. Protected organization actions remain unavailable. You can still use account settings and view your acceptance history.</div>}
           {legal && !legal.accepted && <CustomerLegalAcceptance documents={legal.documents} />}
           <div className={styles.content}>{children}</div>

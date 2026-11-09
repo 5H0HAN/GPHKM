@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { assertStripeCheckoutEnabled, getStripeRuntime, isStripeWalletCheckoutAvailable, stripeEventMatchesMode, stripeEventMatchesProviderAccount } from "../src/server/payments/stripe.ts";
+import { assertStripeCheckoutEnabled, getStripeRuntime, isStripeWalletCheckoutAvailable, stripeEventMatchesMode, stripeEventMatchesProviderAccount, stripeWalletReturnUrl } from "../src/server/payments/stripe.ts";
 
 test("live Stripe checkout remains closed until both launch flags are enabled", () => {
   const testKey = ["sk", "test", "placeholder"].join("_");
@@ -21,11 +22,57 @@ test("live Stripe checkout remains closed until both launch flags are enabled", 
   }));
   assert.equal(isStripeWalletCheckoutAvailable({}), false);
   assert.equal(isStripeWalletCheckoutAvailable({ STRIPE_SECRET_KEY: testKey }), false);
-  assert.equal(isStripeWalletCheckoutAvailable({ STRIPE_SECRET_KEY: testKey, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_test_placeholder" }), true);
-  assert.equal(isStripeWalletCheckoutAvailable({ STRIPE_SECRET_KEY: testKey, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_live_placeholder" }), false);
-  assert.equal(isStripeWalletCheckoutAvailable({ STRIPE_SECRET_KEY: restrictedLiveKey, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_live_placeholder" }), false);
-  assert.equal(isStripeWalletCheckoutAvailable({ STRIPE_SECRET_KEY: restrictedLiveKey, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_live_placeholder", GPHKM_REAL_MONEY_ENABLED: "true", GPHKM_LAUNCH_GATES_VERIFIED: "true" }), true);
+  const webhookConfig = {
+    STRIPE_WEBHOOK_SECRET: ["whsec", "placeholder"].join("_"),
+    STRIPE_WEBHOOK_DATABASE_URL: "postgresql://gphkm_webhook@localhost/gphkm",
+  };
+  assert.equal(isStripeWalletCheckoutAvailable({ ...webhookConfig, STRIPE_SECRET_KEY: testKey, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_live_placeholder" }), false);
+  const liveConfig = { ...webhookConfig, STRIPE_SECRET_KEY: restrictedLiveKey, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_live_placeholder" };
+  assert.equal(isStripeWalletCheckoutAvailable(liveConfig), false);
+  assert.equal(isStripeWalletCheckoutAvailable({ ...liveConfig, GPHKM_REAL_MONEY_ENABLED: "true", GPHKM_LAUNCH_GATES_VERIFIED: "true" }), true);
   assert.throws(() => getStripeRuntime({ STRIPE_SECRET_KEY: "prefix_sk_test_placeholder" }), /not recognized/);
+});
+
+test("test funding requires webhook signing and database configuration before creating attempts", () => {
+  const testConfig = {
+    STRIPE_SECRET_KEY: ["sk", "test", "placeholder"].join("_"),
+    NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_test_placeholder",
+    STRIPE_WEBHOOK_SECRET: ["whsec", "placeholder"].join("_"),
+    STRIPE_WEBHOOK_DATABASE_URL: "postgresql://gphkm_webhook@localhost/gphkm",
+  };
+  assert.equal(isStripeWalletCheckoutAvailable(testConfig), true);
+  for (const [key, invalidValue] of [
+    ["STRIPE_WEBHOOK_SECRET", undefined], ["STRIPE_WEBHOOK_SECRET", "not-a-signing-secret"],
+    ["STRIPE_WEBHOOK_DATABASE_URL", undefined], ["STRIPE_WEBHOOK_DATABASE_URL", "https://localhost/gphkm"],
+  ]) {
+    assert.equal(isStripeWalletCheckoutAvailable({ ...testConfig, [key]: invalidValue }), false);
+  }
+  const probe = spawnSync(process.execPath, ["--conditions=react-server", "--import", "tsx", "--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import { POST } from "./src/app/api/customer/wallet/top-ups/route.ts";
+
+    const origin = process.env.CUSTOMER_APP_URL;
+    for (const setting of ["STRIPE_WEBHOOK_SECRET", "STRIPE_WEBHOOK_DATABASE_URL"]) {
+      const configured = process.env[setting];
+      delete process.env[setting];
+      const response = await POST(new Request(new URL("/api/customer/wallet/top-ups", origin), {
+        method: "POST",
+        headers: { host: new URL(origin).host, origin, "content-type": "application/json" },
+        body: JSON.stringify({ organizationId: "synthetic", amount: "50", idempotencyKey: "00000000-0000-4000-8000-000000000001" }),
+      }));
+      assert.equal(response.status, 503);
+      process.env[setting] = configured;
+    }
+  `], {
+    cwd: new URL("../", import.meta.url),
+    env: {
+      ...process.env, ...testConfig, NODE_ENV: "test", CUSTOMER_APP_URL: "http://customer.localhost:3000",
+      STAFF_APP_URL: "http://staff.localhost:3000", DATABASE_URL: "postgresql://gphkm_runtime@localhost:1/gphkm",
+    },
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.equal(probe.status, 0, probe.stderr || probe.error?.message);
 });
 
 test("Stripe API requests have a bounded timeout and retry budget", () => {
@@ -40,6 +87,24 @@ test("recharge UI hides the payment form when server configuration or live launc
   assert.match(page, /isStripeWalletCheckoutAvailable\(\)/);
   assert.match(checkout, /if \(!checkoutAvailable\) return <p/);
   assert.match(checkout, /role="status" aria-live="polite" aria-atomic="true" className=\{customerStyles\.panelText\}>Payment confirmation is being checked/);
+});
+
+test("recharge returns to the authorized payment organization and describes the current access policy", async () => {
+  const returnUrl = stripeWalletReturnUrl("org-123&session_id=other", { CUSTOMER_APP_URL: "https://customer.example" });
+  const parsed = new URL(returnUrl);
+  assert.equal(parsed.origin, "https://customer.example");
+  assert.equal(parsed.pathname, "/customer/wallet/recharge");
+  assert.equal(parsed.searchParams.get("organizationId"), "org-123&session_id=other");
+  assert.deepEqual(parsed.searchParams.getAll("session_id"), ["{CHECKOUT_SESSION_ID}"]);
+  assert.match(returnUrl, /session_id=\{CHECKOUT_SESSION_ID\}$/);
+  const topups = await readFile(new URL("../src/server/wallet/topups.ts", import.meta.url), "utf8");
+  const page = await readFile(new URL("../src/app/customer/wallet/recharge/page.tsx", import.meta.url), "utf8");
+  const checkout = await readFile(new URL("../src/app/customer/wallet/recharge/topup-checkout.tsx", import.meta.url), "utf8");
+  assert.match(topups, /return_url: stripeWalletReturnUrl\(attempt\.organizationId\)/);
+  assert.match(page, /typeof params\.session_id === "string" && requestedOrganizationId === organizationId/);
+  assert.match(checkout, /await result\.checkout\.confirm\(\)/);
+  assert.match(checkout, /meets the current minimum grants marketplace access for the current policy term/);
+  assert.doesNotMatch(checkout, /six.month|at least[^<]*50/i);
 });
 
 test("Stripe webhook events must match the configured key mode", () => {

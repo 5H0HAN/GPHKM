@@ -21,7 +21,7 @@ function PaymentForm({ onSubmitted }: { onSubmitted: () => void }) {
     setPending(true);
     setError("");
     try {
-      const confirmed = await result.checkout.confirm({ returnUrl: `${window.location.origin}/customer/wallet/recharge` });
+      const confirmed = await result.checkout.confirm();
       if (confirmed.type === "error") setError(confirmed.error.message);
       else onSubmitted();
     } catch {
@@ -116,7 +116,7 @@ export function TopUpCheckout({ organizationId, returnedFromProvider, checkoutAv
           <label className={styles.fieldLabel} htmlFor="topup-amount">Amount (USD)</label>
           <input id="topup-amount" className={styles.amountInput} type="number" inputMode="decimal" autoComplete="off" min="0.01" step="0.01"
             value={amount} onChange={(event) => setAmount(event.target.value)} disabled={retryPending} required />
-          <p className={customerStyles.panelText}>A single settled top-up of at least {"$"}50 qualifies for marketplace access under the current six-month policy.</p>
+          <p className={customerStyles.panelText}>A single settled top-up that meets the current minimum grants marketplace access for the current policy term.</p>
           {error ? <p className={styles.error} role="alert">{error}</p> : null}
           <button className={styles.button} type="submit" disabled={busy}>{busy ? "Preparing secure checkout…" : retryPending ? "Retry secure checkout" : "Continue to payment"}</button>
         </form>

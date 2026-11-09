@@ -58,6 +58,7 @@ export default async function FulfillmentItemPage({ params, searchParams }: { pa
           <div><dt>Target URL</dt><dd className={styles.break}>{result.item.targetUrl}</dd></div>
           <div><dt>Anchor text</dt><dd>{result.item.anchorText}</dd></div>
           <div><dt>Placement requirements</dt><dd>{String(listing.buyerRequirements ?? "No additional requirements")}</dd></div>
+          {result.item.instructions && <div><dt>Publication instructions</dt><dd className={styles.content}>{result.item.instructions}</dd></div>}
         </dl>
         {result.item.writingSelected ? <><h3>Customer writing brief</h3><pre className={styles.content}>{result.item.writingBrief}</pre></> : <><h3>Customer article</h3><pre className={styles.content}>{result.item.articleText}</pre></>}
       </section>

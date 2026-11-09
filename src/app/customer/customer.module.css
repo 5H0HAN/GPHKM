@@ -673,6 +673,10 @@
 :global(.catalogConsent) { display: flex; align-items: flex-start; gap: 8px; color: var(--text-secondary); font-size: 11px; line-height: 1.55; }
 :global(.catalogConsent input) { flex: 0 0 auto; margin-top: 2px; }
 :global(.catalogError) { margin: 0; color: var(--error); font-size: 12px; }
+:global(.catalogStaleDisclosure) { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--error); background: var(--surface-1); color: var(--text-primary); }
+:global(.catalogStaleDisclosure p) { max-width: 72ch; margin: 0; font-size: 13px; line-height: 1.55; }
+:global(.catalogStaleDisclosure button) { justify-self: start; }
+:global(.catalogStaleDisclosure:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
 :global(.catalogCheckout > button) { justify-self: start; }
 :global(.catalogCheckout > button:disabled) { opacity: .55; cursor: wait; }
 :global(.customerOrders) { display: grid; gap: 14px; }
@@ -794,6 +798,7 @@
 :global(.catalogOrderTray button) { grid-column: 2; grid-row: 1 / span 2; }
 :global(.catalogPrimaryButton:disabled) { cursor: wait; opacity: .65; }
 :global(.catalogSecondaryButton) { border-color: var(--border-strong); background: var(--surface-1); color: var(--text-primary); }
+:global(.catalogFlow .catalogSecondaryButton),:global(.catalogStaleDisclosure .catalogSecondaryButton) { border-color: var(--border-strong); background: var(--surface-1); color: var(--text-primary); }
 :global(.catalogOrderTray button:focus-visible),:global(.catalogPrimaryButton:focus-visible),:global(.catalogSecondaryButton:focus-visible),:global(.catalogWriting input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
 :global(.catalogNoMetrics) { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 :global(.catalogFlow) { display: grid; gap: 18px; max-width: 980px; margin: 8px 0 40px; }

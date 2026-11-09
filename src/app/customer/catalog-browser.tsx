@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import type { CustomerListing } from "@/modules/catalog/domain";
+import { CHECKOUT_DISCLOSURES } from "@/modules/orders/checkout";
 import { CUSTOMER_CONTENT_POLICY } from "@/modules/orders/content-policy";
 
 type ItemDraft = {
@@ -14,7 +15,7 @@ type ItemDraft = {
   writingBrief: string;
   useWriting: boolean;
 };
-type SelectedItem = { listing: CustomerListing; draft: ItemDraft };
+type SelectedItem = { listing: CustomerListing; draft: ItemDraft; unavailable?: boolean };
 
 const emptyDraft = (): ItemDraft => ({ targetUrl: "", anchorText: "", instructions: "", articleText: "", writingBrief: "", useWriting: false });
 const dollars = (cents: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
@@ -39,6 +40,27 @@ function metricScopeLabel(scope: CustomerListing["metrics"][number]["metricScope
   return scope === "HOST" ? "Host" : scope === "REGISTERED_DOMAIN" ? "Registered domain" : "Domain";
 }
 
+function ListingRequirements({ listing, showOverview = false }: { listing: CustomerListing; showOverview?: boolean }) {
+  return <details className="catalogMore">
+    <summary>Placement details &amp; requirements</summary>
+    <dl className="catalogTerms">
+      {showOverview && <>
+        <div><dt>Placement term</dt><dd>{validityLabel[listing.linkValidity]}</dd></div>
+        <div><dt>Link type</dt><dd>{linkTypeLabel[listing.linkType]}</dd></div>
+        <div><dt>Turnaround</dt><dd>About {listing.turnaroundDays} days</dd></div>
+        <div><dt>Language and region</dt><dd>{listing.primaryLanguage} · {listing.countryCode}</dd></div>
+      </>}
+      <div><dt>Sports and gaming</dt><dd>{listing.allowsSportsAndGaming ? "Allowed" : "Not allowed"}</dd></div>
+      <div><dt>Pharmacy</dt><dd>{listing.allowsPharmacy ? "Allowed" : "Not allowed"}</dd></div>
+      <div><dt>Crypto</dt><dd>{listing.allowsCrypto ? "Allowed" : "Not allowed"}</dd></div>
+      <div><dt>Foreign-language content</dt><dd>{listing.allowsForeignLanguage ? "Allowed" : "Not allowed"}</dd></div>
+      <div><dt>Sponsored marking</dt><dd>{listing.sponsoredContentMarking ? "Required" : "Not required"}</dd></div>
+      <div className="catalogTermsWide"><dt>Placement availability</dt><dd>The stated term describes the publisher&apos;s intent and is not a guarantee that the link will remain available. After verified completion, GPHKM does not offer a replacement or refund if it later disappears.</dd></div>
+    </dl>
+    {listing.buyerRequirements && <div className="catalogRequirements"><h4>Buyer requirements</h4><p>{listing.buyerRequirements}</p></div>}
+  </details>;
+}
+
 type CatalogFilterProps = {
   search: string; category: string; country: string; language: string; doFollowOnly: boolean;
   categories: readonly string[]; languages: readonly string[];
@@ -56,13 +78,15 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   const [policyAccepted, setPolicyAccepted] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [disclosuresOutdated, setDisclosuresOutdated] = useState(false);
   const idempotencyKeyRef = useRef("");
   const errorRef = useRef<HTMLParagraphElement>(null);
+  const outdatedDisclosureRef = useRef<HTMLDivElement>(null);
   const catalogFlowHeadingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
+  useEffect(() => { if (disclosuresOutdated) outdatedDisclosureRef.current?.focus(); }, [disclosuresOutdated]);
   useEffect(() => { if (step !== "browse") catalogFlowHeadingRef.current?.focus(); }, [step]);
-  const listingById = new Map(listings.map((listing) => [listing.id, listing]));
-  const selectedListings = Object.values(selected).map((item) => listingById.get(item.listing.id) ?? item.listing);
+  const selectedListings = Object.values(selected).map((item) => item.listing);
   const total = selectedListings.reduce((sum, listing) => sum + listing.retailPriceCents + (selected[listing.id].draft.useWriting ? listing.writingPriceCents ?? 0 : 0), 0);
 
   function change(listingId: string, field: keyof ItemDraft, value: string | boolean) {
@@ -124,6 +148,10 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   function continueToReview() {
     setError("");
     if (!selectedListings.length) { setError("Select at least one website to continue."); return; }
+    if (Object.values(selected).some((item) => item.unavailable)) {
+      setError("Remove unavailable placements before continuing.");
+      return;
+    }
     for (const listing of selectedListings) {
       const item = selected[listing.id].draft;
       if (!item.targetUrl.trim() || !item.anchorText.trim() || (item.useWriting ? !item.writingBrief.trim() : !item.articleText.trim())) {
@@ -131,10 +159,17 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
         return;
       }
     }
+    if (selectedListings.some((listing) => selected[listing.id].draft.useWriting && !listing.writingEnabled)) {
+      setError("Turn off Writing for listings where it is no longer available.");
+      return;
+    }
+    setConsent(false);
+    setPolicyAccepted(false);
     setStep("review");
   }
 
   async function checkout() {
+    if (busy || disclosuresOutdated) return;
     setError("");
     if (!selectedListings.length) { setError("Select at least one website to continue."); return; }
     if (!policyAccepted) { setError("Review and accept the content policy to continue."); return; }
@@ -158,6 +193,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
           order: {
             idempotencyKey: idempotencyKeyRef.current,
             acceptContentPolicy: policyAccepted,
+            disclosureVersions: CHECKOUT_DISCLOSURES,
             items: selectedListings.map((listing) => {
               const item = selected[listing.id].draft;
               return {
@@ -173,8 +209,29 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
           },
         }),
       });
-      const result = await response.json().catch(() => null) as { error?: string; code?: string } | null;
-      if (result?.code === "LISTING_CHANGED" || result?.code === "LISTING_UNAVAILABLE") router.refresh();
+      const result = await response.json().catch(() => null) as { error?: string; code?: string; refreshedListings?: CustomerListing[] } | null;
+      if (result?.code === "LISTING_CHANGED" || result?.code === "LISTING_UNAVAILABLE") {
+        setConsent(false);
+        setPolicyAccepted(false);
+        idempotencyKeyRef.current = "";
+        if (result.refreshedListings) {
+          const refreshed = new Map(result.refreshedListings.map((listing) => [listing.id, listing]));
+          setSelected((current) => Object.fromEntries(Object.entries(current).map(([id, item]) => {
+            const listing = refreshed.get(id);
+            return [id, listing ? {
+              listing,
+              draft: item.draft,
+            } : { ...item, unavailable: true }];
+          })));
+          setStep("details");
+        }
+        router.refresh();
+      }
+      if (result?.code === "CHECKOUT_DISCLOSURES_CHANGED") {
+        setConsent(false);
+        setPolicyAccepted(false);
+        setDisclosuresOutdated(true);
+      }
       if (!response.ok) throw new Error(result?.error ?? "Order could not be completed.");
       idempotencyKeyRef.current = "";
       router.push(`/customer/orders?organizationId=${encodeURIComponent(organizationId)}&placed=1`);
@@ -192,8 +249,8 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
     return <div className="catalogItemDetails">
       <label>Destination URL <span>Required</span><input type="url" required maxLength={2048} value={item.targetUrl} onChange={(event) => change(listing.id, "targetUrl", event.currentTarget.value)} placeholder="https://your-site.com/page" /></label>
       <label>Anchor text <span>Required</span><input required maxLength={200} value={item.anchorText} onChange={(event) => change(listing.id, "anchorText", event.currentTarget.value)} placeholder="Text that should link to your page" /></label>
-      {listing.writingEnabled && <label className="catalogWriting"><input type="checkbox" checked={item.useWriting} onChange={(event) => change(listing.id, "useWriting", event.currentTarget.checked)} /> Add GPHKM Writing · {dollars(listing.writingPriceCents ?? 0)} · about {listing.writingTurnaroundDays} days</label>}
-      {item.useWriting ? <><p className="catalogStageText">Writing has two disclosed stages: first draft {dollars(listing.writingFirstDraftCents ?? 0)} and final draft {dollars(listing.writingFinalDraftCents ?? 0)} after your included revision. Approving the first draft without a revision completes both stages. A delivered stage is earned; only undelivered stages may be credited if a cancellation is approved under the disclosed policy. You review and approve the draft before publication instructions are prepared.</p><label>Writing brief <span>Required</span><textarea required maxLength={4000} rows={5} value={item.writingBrief} onChange={(event) => change(listing.id, "writingBrief", event.currentTarget.value)} placeholder="Describe the topic, audience, and points to cover" /></label></>
+      {(listing.writingEnabled || item.useWriting) && <label className="catalogWriting"><input type="checkbox" checked={item.useWriting} onChange={(event) => change(listing.id, "useWriting", event.currentTarget.checked)} /> {listing.writingEnabled ? `Add GPHKM Writing · ${dollars(listing.writingPriceCents ?? 0)} · about ${listing.writingTurnaroundDays} days` : "Writing is unavailable for this placement. Turn it off and provide your own article."}</label>}
+      {item.useWriting ? <>{listing.writingEnabled && <p className="catalogStageText">Writing has two disclosed stages: first draft {dollars(listing.writingFirstDraftCents ?? 0)} and final draft {dollars(listing.writingFinalDraftCents ?? 0)} after your included revision. Approving the first draft without a revision completes both stages. A delivered stage is earned; only undelivered stages may be credited if a cancellation is approved under the disclosed policy. You review and approve the draft before publication instructions are prepared.</p>}<label>Writing brief <span>Required</span><textarea required maxLength={4000} rows={5} value={item.writingBrief} onChange={(event) => change(listing.id, "writingBrief", event.currentTarget.value)} placeholder="Describe the topic, audience, and points to cover" /></label></>
         : <label>Article <span>Required</span><textarea required maxLength={20000} rows={8} value={item.articleText} onChange={(event) => change(listing.id, "articleText", event.currentTarget.value)} placeholder="Paste the article you want published" /></label>}
       <label>Additional publication instructions <span>Optional</span><textarea maxLength={4000} rows={3} value={item.instructions} onChange={(event) => change(listing.id, "instructions", event.currentTarget.value)} placeholder="Anything else needed for this placement" /></label>
     </div>;
@@ -215,7 +272,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
             <ul className="catalogCategories" aria-label="Website categories">{listing.categories.map((category) => <li key={category}>{category}</li>)}</ul>
             <div className="catalogQuickFacts" aria-label="Placement overview"><div><span>Language &amp; region</span><strong>{listing.primaryLanguage} · {listing.countryCode}</strong></div><div><span>Link type</span><strong>{linkTypeLabel[listing.linkType]}</strong></div><div><span>Placement term</span><strong>{validityLabel[listing.linkValidity]}</strong></div><div><span>Turnaround</span><strong>About {listing.turnaroundDays} days</strong></div></div>
             <section className="catalogMetrics" aria-label="Approved domain metrics"><div className="catalogMetricsHeader"><h3>Domain metrics</h3><span>Source-attributed observations</span></div>{presentMetrics.length ? <div className="catalogMetricGrid">{presentMetrics.map(({ metric, label, shortLabel }) => <div className="catalogMetric" key={`${metric.provider}-${metric.metricScope}-${metric.observedOn}-${metric.value}`}><span className="catalogMetricLabel" title={label}>{shortLabel}</span><div className="catalogMetricReading"><strong>{metric.value === null ? "—" : formatMetric(metric.value)}</strong><small>{metricScopeLabel(metric.metricScope)}{formatMetricDate(metric.observedOn) ? ` · ${formatMetricDate(metric.observedOn)}` : ""}</small>{metric.attributionText && <span>{metric.attributionText}</span>}</div></div>)}</div> : <p className="catalogNoMetrics">No approved domain metrics are available for this listing yet.</p>}</section>
-            <details className="catalogMore"><summary>Placement details &amp; requirements</summary><dl className="catalogTerms"><div><dt>Sports and gaming</dt><dd>{listing.allowsSportsAndGaming ? "Allowed" : "Not allowed"}</dd></div><div><dt>Pharmacy</dt><dd>{listing.allowsPharmacy ? "Allowed" : "Not allowed"}</dd></div><div><dt>Crypto</dt><dd>{listing.allowsCrypto ? "Allowed" : "Not allowed"}</dd></div><div><dt>Foreign-language content</dt><dd>{listing.allowsForeignLanguage ? "Allowed" : "Not allowed"}</dd></div><div><dt>Sponsored marking</dt><dd>{listing.sponsoredContentMarking ? "Required" : "Not required"}</dd></div><div className="catalogTermsWide"><dt>Placement availability</dt><dd>The stated term describes the publisher&apos;s intent and is not a guarantee that the link will remain available. After verified completion, GPHKM does not offer a replacement or refund if it later disappears.</dd></div></dl>{listing.buyerRequirements && <div className="catalogRequirements"><h4>Buyer requirements</h4><p>{listing.buyerRequirements}</p></div>}</details>
+            <ListingRequirements listing={listing} />
           </article>;
         })}
       </div>
@@ -225,18 +282,25 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
 
     {step !== "browse" && <section className="catalogFlow" aria-labelledby="catalog-flow-heading">
       <nav className="catalogStepNav" aria-label="Order progress"><span>1 <span>Choose placements</span></span><span aria-current={step === "details" ? "step" : undefined}>2 <span>Add order details</span></span><span aria-current={step === "review" ? "step" : undefined}>3 <span>Review order</span></span></nav>
-      <header className="catalogFlowHeader"><div><p className="catalogFlowCount">{selectedListings.length} placement{selectedListings.length === 1 ? "" : "s"} · {dollars(total)} estimated</p><h2 id="catalog-flow-heading" ref={catalogFlowHeadingRef} tabIndex={-1}>{stepLabel}</h2><p>{step === "details" ? "Add one destination and anchor per placement. Your text stays editable until you place the order." : "Check every placement, the estimated total, and the content-sharing terms before placing the order."}</p></div><button type="button" className="catalogSecondaryButton" onClick={() => setStep("browse")}>Back to marketplace</button></header>
+      <header className="catalogFlowHeader"><div><p className="catalogFlowCount">{selectedListings.length} placement{selectedListings.length === 1 ? "" : "s"} · {dollars(total)} estimated</p><h2 id="catalog-flow-heading" ref={catalogFlowHeadingRef} tabIndex={-1}>{stepLabel}</h2><p>{step === "details" ? "Add one destination and anchor per placement. Your text stays editable until you place the order." : "Check every placement, the estimated total, and the content-sharing terms before placing the order."}</p></div><button type="button" className="catalogSecondaryButton" disabled={busy} onClick={() => setStep("browse")}>Back to marketplace</button></header>
+      {disclosuresOutdated && <div ref={outdatedDisclosureRef} role="alert" tabIndex={-1} className="catalogStaleDisclosure">
+        <p>Checkout terms changed while this page was open. Copy any article or brief you want to keep before reloading; unsent details are stored only in this page and will be cleared on reload.</p>
+        <button type="button" className="catalogSecondaryButton" disabled={busy} onClick={() => window.location.reload()}>Reload current terms</button>
+      </div>}
       {step === "details" ? <>
         <details className="catalogCopyDetails"><summary>Copy shared details across selected placements</summary><p>Copy text into each selected item, then review and edit it separately. Article text only copies to placements using customer-supplied content.</p><div className="catalogSharedGrid"><label>Shared destination URL<input type="url" maxLength={2048} value={sharedDetails.targetUrl} onChange={(event) => setSharedDetails((current) => ({ ...current, targetUrl: event.currentTarget.value }))} /></label><label>Shared anchor text<input maxLength={200} value={sharedDetails.anchorText} onChange={(event) => setSharedDetails((current) => ({ ...current, anchorText: event.currentTarget.value }))} /></label><label>Shared publication instructions<textarea maxLength={4000} rows={3} value={sharedDetails.instructions} onChange={(event) => setSharedDetails((current) => ({ ...current, instructions: event.currentTarget.value }))} /></label><label>Shared article<textarea maxLength={20000} rows={3} value={sharedDetails.articleText} onChange={(event) => setSharedDetails((current) => ({ ...current, articleText: event.currentTarget.value }))} /></label><label>Shared writing brief<textarea maxLength={4000} rows={3} value={sharedDetails.writingBrief} onChange={(event) => setSharedDetails((current) => ({ ...current, writingBrief: event.currentTarget.value }))} /></label></div><button type="button" className="catalogCopyButton" onClick={copySharedDetails}>Copy into selected placements</button></details>
-        <div className="catalogOrderItems">{selectedListings.map((listing, index) => <article className="catalogOrderItem" key={listing.id}><header><span className="catalogItemNumber">Placement {index + 1}</span><div><h3>{listing.title}</h3><p>{listing.categories.join(" · ")}</p><button type="button" className="catalogItemRemove" onClick={() => removeSelected(listing.id)}>Remove from order</button></div><strong>{dollars(listing.retailPriceCents + (selected[listing.id].draft.useWriting ? listing.writingPriceCents ?? 0 : 0))}</strong></header>{fields(listing)}</article>)}</div>
+        <div className="catalogOrderItems">{selectedListings.map((listing, index) => <article className="catalogOrderItem" key={listing.id}><header><span className="catalogItemNumber">Placement {index + 1}</span><div><h3>{listing.title}</h3><p>{listing.categories.join(" · ")}</p><button type="button" className="catalogItemRemove" onClick={() => removeSelected(listing.id)}>Remove from order</button></div><strong>{dollars(listing.retailPriceCents + (selected[listing.id].draft.useWriting ? listing.writingPriceCents ?? 0 : 0))}</strong></header>{selected[listing.id].unavailable ? <p>This listing is no longer available. Remove it to continue.</p> : <>
+          <ListingRequirements listing={listing} showOverview />
+          {fields(listing)}
+        </>}</article>)}</div>
         {error && <p ref={errorRef} role="alert" tabIndex={-1} className="catalogError">{error}</p>}
         <div className="catalogFlowActions"><button type="button" className="catalogPrimaryButton" onClick={continueToReview}>Review order <span aria-hidden="true">→</span></button></div>
       </> : <>
         <div className="catalogReviewList">{selectedListings.map((listing) => { const item = selected[listing.id].draft; return <article key={listing.id}><div><h3>{listing.title}</h3><p>{item.useWriting ? "GPHKM Writing" : "Customer-provided article"} · {validityLabel[listing.linkValidity]} placement</p><p className="catalogReviewDestination">Destination: {item.targetUrl}</p><p>Anchor text: {item.anchorText}</p><details className="catalogReviewContent"><summary>Review {item.useWriting ? "writing brief" : "article"}{item.instructions.trim() ? " and instructions" : ""}</summary><pre>{item.useWriting ? item.writingBrief : item.articleText}</pre>{item.instructions.trim() && <><strong>Additional publication instructions</strong><pre>{item.instructions}</pre></>}</details></div><strong>{dollars(listing.retailPriceCents + (item.useWriting ? listing.writingPriceCents ?? 0 : 0))}</strong></article>; })}</div>
         <p className="catalogReviewNotice">Estimated total <strong>{dollars(total)}</strong>. Final amount is checked against current listing prices and available wallet funds. A completed placement has no replacement or refund if its link later disappears.</p>
-        <section className="catalogPolicy" aria-labelledby="content-policy-heading"><h3 id="content-policy-heading">Content policy &amp; sharing</h3><details><summary>Read the content rules</summary><ul>{CUSTOMER_CONTENT_POLICY.map((rule) => <li key={rule}>{rule}</li>)}</ul><p>These rules work alongside each listing&apos;s requirements.</p></details><label className="catalogConsent"><input type="checkbox" checked={policyAccepted} onChange={(event) => { setPolicyAccepted(event.currentTarget.checked); idempotencyKeyRef.current = ""; }} /> I have the rights needed to submit this content and links, and I agree to follow the GPHKM content policy.</label><label className="catalogConsent"><input type="checkbox" checked={consent} onChange={(event) => { setConsent(event.currentTarget.checked); idempotencyKeyRef.current = ""; }} /> I understand the approved article or brief, destination URL, anchor text, and necessary instructions will be shared with the publication partner to fulfill each placement.</label></section>
+        <section className="catalogPolicy" aria-labelledby="content-policy-heading"><h3 id="content-policy-heading">Content policy &amp; sharing</h3><details><summary>Read the content rules</summary><ul>{CUSTOMER_CONTENT_POLICY.map((rule) => <li key={rule}>{rule}</li>)}</ul><p>These rules work alongside each listing&apos;s requirements.</p></details><label className="catalogConsent"><input type="checkbox" disabled={busy || disclosuresOutdated} checked={policyAccepted} onChange={(event) => { setPolicyAccepted(event.currentTarget.checked); idempotencyKeyRef.current = ""; }} /> I have the rights needed to submit this content and links, and I agree to follow the GPHKM content policy.</label><label className="catalogConsent"><input type="checkbox" disabled={busy || disclosuresOutdated} checked={consent} onChange={(event) => { setConsent(event.currentTarget.checked); idempotencyKeyRef.current = ""; }} /> I understand the approved article or brief, destination URL, anchor text, and necessary instructions will be shared with the publication partner to fulfill each placement.</label></section>
         {error && <p ref={errorRef} role="alert" tabIndex={-1} className="catalogError">{error}</p>}
-        <div className="catalogFlowActions catalogReviewActions"><button type="button" className="catalogSecondaryButton" onClick={() => setStep("details")}>Back to details</button><button type="button" className="catalogPrimaryButton" disabled={busy} onClick={checkout}>{busy ? "Placing order…" : `Place order · ${dollars(total)}`}</button></div>
+        <div className="catalogFlowActions catalogReviewActions"><button type="button" className="catalogSecondaryButton" disabled={busy} onClick={() => setStep("details")}>Back to details</button><button type="button" className="catalogPrimaryButton" disabled={busy || disclosuresOutdated} onClick={checkout}>{busy ? "Placing order…" : `Place order · ${dollars(total)}`}</button></div>
       </>}
     </section>}
   </>;

@@ -10,12 +10,13 @@ export default async function RechargePage({ searchParams }: { searchParams: Pro
   const workspace = await loadCustomerWorkspace();
   if (!workspace.authenticated) return null;
   const params = await searchParams;
-  const organizationId = selectedOrganizationId(workspace.organizations, Array.isArray(params.organizationId) ? params.organizationId[0] : params.organizationId);
+  const requestedOrganizationId = Array.isArray(params.organizationId) ? params.organizationId[0] : params.organizationId;
+  const organizationId = selectedOrganizationId(workspace.organizations, requestedOrganizationId);
   const organization = workspace.organizations.find((org) => org.id === organizationId);
   if (!organizationId || !organization || organization.role !== "OWNER") {
     return <div className={styles.error}>Only an organization Owner can load wallet balance. Ask an Owner to continue.</div>;
   }
-  const returnedFromProvider = typeof params.session_id === "string";
+  const returnedFromProvider = typeof params.session_id === "string" && requestedOrganizationId === organizationId;
 
   return (
     <>

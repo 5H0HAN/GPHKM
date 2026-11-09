@@ -189,8 +189,8 @@ try {
   await setup.query("alter table public.order_item_fulfillment_supplier disable trigger user");
   await setup.query(
     `insert into public.customer_order_item (id,order_id,listing_id,listing_revision,customer_listing_snapshot,
-       placement_price_minor,writing_selected,target_url,anchor_text,article_text,supplier_sharing_consented,consent_notice_version)
-     values ($1,$2,$3,1,jsonb_build_object('title','Re-consent listing'),1000,false,$4,$5,$6,true,$7)`,
+       placement_price_minor,writing_selected,target_url,anchor_text,article_text,supplier_sharing_consented,consent_notice_version,placement_disclosure_version)
+     values ($1,$2,$3,1,jsonb_build_object('title','Re-consent listing'),1000,false,$4,$5,$6,true,$7,'gphkm-placement-disclosure-v1')`,
     [ITEM_ID, orderId, listingId, targetUrl, anchorText, articleText, CURRENT_NOTICE],
   );
   await setup.query(
@@ -265,6 +265,19 @@ try {
   const pendingProjection = await customer.query(
     "select count(*)::int as count from public.gphkm_customer_approved_content($1,$2,$3)", [first.requestId, ownerId, organizationId]);
   assert.equal(pendingProjection.rows[0]?.count, 1, "orderer sees exact approved re-consent content before consent");
+
+  await customer.query("begin");
+  try {
+    for (const [contextUser, contextOrganization] of [["", ""], [otherCustomerId, organizationId], [ownerId, uuid()]]) {
+      await customer.query("select set_config('app.user_id',$1,true),set_config('app.organization_id',$2,true)",
+        [contextUser, contextOrganization]);
+      const denied = await customer.query(
+        "select count(*)::int as count from public.gphkm_customer_approved_content($1,$2,$3)", [first.requestId, ownerId, organizationId]);
+      assert.equal(denied.rows[0]?.count, 0, "request parameters cannot replace the runtime actor or tenant context");
+    }
+  } finally {
+    await customer.query("rollback");
+  }
 
   await setup.query("begin");
   await setup.query("select set_config('app.user_id',$1,true),set_config('app.staff_role','',true)", [ordinaryAdminId]);

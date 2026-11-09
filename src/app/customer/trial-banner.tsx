@@ -14,7 +14,7 @@ type OrganizationAccess = {
 export function TrialBanner({ organizations }: { organizations: OrganizationAccess[] }) {
   const searchParams = useSearchParams();
   const selectedId = searchParams.get("organizationId");
-  const selected = organizations.find(({ organizationId }) => organizationId === selectedId) ?? organizations[0];
+  const selected = selectedId ? organizations.find(({ organizationId }) => organizationId === selectedId) : organizations[0];
   const [now, setNow] = useState<number | null>(null);
 
   useEffect(() => {

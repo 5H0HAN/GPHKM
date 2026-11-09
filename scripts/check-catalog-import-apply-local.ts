@@ -8,7 +8,8 @@ import {
   catalogImportApplyEvent, catalogImportBatch, catalogImportRow, listing, listingRevision,
   listingSourcing, listingUrl,
 } from "@/db/catalog-schema";
-import { applySelectedImportRowsInTransaction } from "@/server/catalog/imports";
+import { insertDraftListingInTransaction, updateListingInTransaction } from "@/server/catalog/admin";
+import { applySelectedImportRowsInTransaction, applyStagedImportUpdateInTransaction, correctStagedImportRow } from "@/server/catalog/imports";
 
 function localDatabaseUrl(value: string | undefined, expectedRole: string): URL {
   if (!value) throw new Error("Import apply check requires database URLs from .env");
@@ -39,6 +40,8 @@ const batchId = randomUUID();
 const readyRowId = randomUUID();
 const secondReadyRowId = randomUUID();
 const reviewRowId = randomUUID();
+const existingListingId = randomUUID();
+const existingWebsiteUrl = `https://f08-${randomUUID().replaceAll("-", "")}.example/`;
 const websiteUrl = `https://f08-${randomUUID().replaceAll("-", "")}.example/`;
 const secondWebsiteUrl = `https://f08-${randomUUID().replaceAll("-", "")}.example/`;
 const migration = new Client({ connectionString: migrationUrl.href, connectionTimeoutMillis: 5000 });
@@ -101,8 +104,9 @@ try {
       current_user: "gphkm_runtime", session_user: "gphkm_runtime", app_user_id: actorId,
     }, "apply runs with the real restricted runtime role and transaction-local Admin context");
 
-    const result = await applySelectedImportRowsInTransaction(tx, actorId, batchId,
-      [{ rowId: reviewRowId }, { rowId: secondReadyRowId }, { rowId: readyRowId }]);
+    const reviewedRows = await tx.select({ rowId: catalogImportRow.id, rowVersion: sql<string>`"catalog_import_row".xmin::text` })
+      .from(catalogImportRow).where(eq(catalogImportRow.batchId, batchId)).orderBy(sql`${catalogImportRow.rowNumber} desc`);
+    const result = await applySelectedImportRowsInTransaction(tx, actorId, batchId, reviewedRows);
     assert.equal(result.appliedCount, 2);
     assert.equal(result.batchStatus, "PARTIALLY_APPLIED");
     assert.equal(result.appliedListings.length, 2);
@@ -234,6 +238,129 @@ try {
   assert.deepEqual(rollbackEvidence.rows[0], {
     batch_status: "STAGED", listing_count: "0", apply_event_count: "0", audit_count: "0",
   }, "transaction rollback removes the draft, apply event, and all audit records");
+  await assert.rejects(correctStagedImportRow(new Headers(), batchId, reviewRowId,
+    { categories: "Forged supplier label" }, ["Business"], ""), /Import field cannot be corrected/);
+
+  await migration.query(
+    `insert into marketplace_listing (id, title, description, country_code, primary_language, categories,
+       retail_price_cents, link_type, link_validity, turnaround_days, sponsored_content_marking)
+     values ($1, 'Synthetic existing listing', 'Fixture for concurrent URL editing.', 'US', 'English', ARRAY['Business'],
+       2500, 'DOFOLLOW', 'PERMANENT', 10, true)`,
+    [existingListingId],
+  );
+  await migration.query(
+    `insert into marketplace_listing_sourcing (listing_id, commercial_source, supplier_id, fulfillment_supplier_id, created_by_user_id)
+     values ($1, 'SUPPLIER_SOURCED', $2, $2, $3)`,
+    [existingListingId, supplierId, actorId],
+  );
+  await migration.query("insert into marketplace_listing_url (listing_id, website_url) values ($1, $2)", [existingListingId, existingWebsiteUrl]);
+  const getRowVersion = async (rowId: string) => {
+    const result = await migration.query<{ row_version: string }>("select xmin::text as row_version from catalog_import_row where id = $1", [rowId]);
+    return result.rows[0].row_version;
+  };
+
+  const staleVersion = await getRowVersion(readyRowId);
+  await migration.query("update catalog_import_row set proposed_retail_price_cents = 2600 where id = $1", [readyRowId]);
+  await assert.rejects(db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actorId}, true)`);
+    await applySelectedImportRowsInTransaction(tx, actorId, batchId, [{ rowId: readyRowId, rowVersion: staleVersion }]);
+  }), /IMPORT_REVIEW_CHANGED/);
+
+  const version = await getRowVersion(readyRowId);
+  const editorLocked = Promise.withResolvers<void>();
+  const releaseEditor = Promise.withResolvers<void>();
+  const importerStarted = Promise.withResolvers<number>();
+  const rollback = new Error("Roll back synthetic race check");
+  const fixtureTerms = {
+    title: "Synthetic existing listing", description: "Fixture for concurrent URL editing.", websiteUrl,
+    countryCode: "US", primaryLanguage: "English", categories: ["Business"], retailPriceCents: 2500,
+    linkType: "DOFOLLOW", linkValidity: "PERMANENT", turnaroundDays: 10, sponsoredContentMarking: true,
+    allowsSportsAndGaming: null, allowsPharmacy: null, allowsCrypto: null, allowsForeignLanguage: null,
+    writingEnabled: false, writingPriceCents: null, writingTurnaroundDays: null,
+    writingFirstDraftCents: null, writingFinalDraftCents: null, buyerRequirements: null,
+  } satisfies Parameters<typeof insertDraftListingInTransaction>[2]["terms"];
+  const editor = assert.rejects(db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actorId}, true)`);
+    await updateListingInTransaction(tx, actorId, {
+      id: existingListingId, expectedRevision: 1, reason: "Synthetic concurrent URL edit",
+      terms: fixtureTerms,
+      commercialSource: "SUPPLIER_SOURCED", supplierId, fulfillmentSupplierId: supplierId, urlVisibleWithoutRecharge: false,
+    });
+    editorLocked.resolve();
+    await releaseEditor.promise;
+    throw rollback;
+  }), (error) => error === rollback);
+  void editor.catch(editorLocked.reject);
+  await editorLocked.promise;
+  const importer = assert.rejects(db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actorId}, true), set_config('lock_timeout', '5s', true)`);
+    const result = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+    importerStarted.resolve(result.rows[0].pid);
+    const applied = await applySelectedImportRowsInTransaction(tx, actorId, batchId, [{ rowId: readyRowId, rowVersion: version }]);
+    assert.equal(applied.appliedCount, 1, "import rechecks after the URL edit rolls back");
+    throw rollback;
+  }), (error) => error === rollback);
+  void importer.catch(importerStarted.reject);
+  try {
+    const importerPid = await importerStarted.promise;
+    let blocked = false;
+    for (let attempt = 0; attempt < 50 && !blocked; attempt++) {
+      const result = await migration.query<{ blocked: boolean }>(
+        "select cardinality(pg_blocking_pids($1)) > 0 as blocked", [importerPid],
+      );
+      blocked = result.rows[0].blocked;
+      if (!blocked) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(blocked, true, "an import conflict check waits for an uncommitted catalog URL edit");
+  } finally {
+    releaseEditor.resolve();
+    await Promise.all([editor, importer]);
+  }
+
+  // Simulate an already-reviewed exact match, then a newer edit before apply.
+  await migration.query(
+    `update catalog_import_row set staged_values = jsonb_set(staged_values, '{websiteUrl}', to_jsonb($2::text)),
+       status = 'DUPLICATE_REVIEW', duplicate_of_listing_ids = jsonb_build_array($3::text) where id = $1`,
+    [readyRowId, existingWebsiteUrl, existingListingId],
+  );
+  const reviewedVersion = await getRowVersion(readyRowId);
+  await assert.rejects(db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actorId}, true)`);
+    await tx.update(listing).set({ revision: 2 }).where(eq(listing.id, existingListingId));
+    await applyStagedImportUpdateInTransaction(tx, actorId, batchId, readyRowId, existingListingId,
+      { rowVersion: reviewedVersion, listingRevision: 1 }, "Review exact website match");
+  }), /IMPORT_REVIEW_CHANGED/);
+  await assert.rejects(db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actorId}, true)`);
+    const result = await applyStagedImportUpdateInTransaction(tx, actorId, batchId, readyRowId, existingListingId,
+      { rowVersion: reviewedVersion, listingRevision: 1 }, "Review exact website match");
+    assert.equal(result.revision, 2, "the reviewed row can still revise its exact match");
+    throw rollback;
+  }), (error) => error === rollback);
+  await assert.rejects(db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actorId}, true)`);
+    await insertDraftListingInTransaction(tx, actorId, {
+      terms: { ...fixtureTerms, websiteUrl: existingWebsiteUrl }, commercialSource: "PLATFORM_OWNED",
+      supplierId: null, fulfillmentSupplierId: null, urlVisibleWithoutRecharge: false,
+    });
+    await applyStagedImportUpdateInTransaction(tx, actorId, batchId, readyRowId, existingListingId,
+      { rowVersion: reviewedVersion, listingRevision: 1 }, "Review exact website match");
+  }), /IMPORT_REVIEW_CHANGED/);
+
+  await migration.query(
+    `update catalog_import_row set status = 'READY', duplicate_decision = 'KEEP_SEPARATE',
+       duplicate_reason = 'Reviewed separate offer', duplicate_decided_at = now(), duplicate_decided_by_user_id = $2
+       where id = $1`,
+    [readyRowId, actorId],
+  );
+  const separateVersion = await getRowVersion(readyRowId);
+  await assert.rejects(db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actorId}, true)`);
+    const result = await applySelectedImportRowsInTransaction(tx, actorId, batchId,
+      [{ rowId: readyRowId, rowVersion: separateVersion }]);
+    assert.equal(result.appliedCount, 1, "a reviewed separate offer remains eligible for draft creation");
+    throw rollback;
+  }), (error) => error === rollback);
   console.log("Local import apply transaction check passed (synthetic fixture; all apply writes rolled back).");
 } finally {
   try {
@@ -243,6 +370,9 @@ try {
         await migration.query("BEGIN");
         await migration.query("delete from catalog_import_row where batch_id = $1", [batchId]);
         await migration.query("delete from catalog_import_batch where id = $1", [batchId]);
+        await migration.query("delete from marketplace_listing_url where listing_id = $1", [existingListingId]);
+        await migration.query("delete from marketplace_listing_sourcing where listing_id = $1", [existingListingId]);
+        await migration.query("delete from marketplace_listing where id = $1", [existingListingId]);
         await migration.query("delete from supplier where id = $1", [supplierId]);
         await migration.query("delete from staff_account where user_id = $1", [actorId]);
         await migration.query("delete from auth_user where id = $1", [actorId]);

@@ -1,6 +1,6 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { supportCase, supportCaseEvent } from "@/db/support-schema";
 import { customerOrder, customerOrderItem, orderItemFulfillment } from "@/db/order-schema";
@@ -9,9 +9,17 @@ import { requireStaffAccess, type StaffActor } from "@/server/auth/staff";
 import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganizationContext } from "@/server/identity/customer-context";
 import { assertSupportTransition, customerCanReplyToSupportCase, customerSupportProjection, financeOutcome, supportQueueFilter, supportState, supportText, type SupportAudience } from "@/modules/support/cases";
 import { staffCatalogPagination } from "@/modules/catalog/pagination";
-import { decodeSupportEventCursor, encodeSupportEventCursor } from "@/modules/support/event-cursor";
+import { decodeSupportEventCursor, encodeSupportEventCursor, type SupportEventCursor } from "@/modules/support/event-cursor";
 import { logSafeFailure } from "@/server/observability/safe-log";
 import { mayReadFulfillmentContent } from "@/modules/fulfillment/console";
+
+// JavaScript Dates truncate PostgreSQL microseconds, which would skip rows
+// sharing the anchor's millisecond. Use the database value for the cursor.
+const supportEventCursorTime = sql<string>`to_char(${supportCaseEvent.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+
+function beforeSupportEvent(cursor: SupportEventCursor | null) {
+  return cursor ? sql`(${supportCaseEvent.createdAt}, ${supportCaseEvent.id}) < (${cursor.createdAt}::timestamptz, ${cursor.id})` : undefined;
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 function identity(value: string) { if (!UUID.test(value)) throw new Error("Support request is unavailable"); return value; }
@@ -115,16 +123,20 @@ export async function openCustomerSupportCase(headers: Headers, organizationId: 
       // partial unique index below remains the database-level race backstop.
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(
         'gphkm:support-order:' || ${organizationId} || ':' || ${requestedOrderId}, 0))`);
-      const [active] = await tx.select().from(supportCase).where(and(
+      const [candidate] = await tx.select({ id: supportCase.id }).from(supportCase).where(and(
         eq(supportCase.organizationId, organizationId), eq(supportCase.orderId, requestedOrderId),
         sql`${supportCase.state} not in ('RESOLVED','CLOSED')`, isNull(supportCase.mergedIntoCaseId),
       )).limit(1);
-      if (active) {
-        const message: HistoryInput = { caseId: active.id, actorUserId: actor.userId, actorKind: "CUSTOMER",
-          kind: "REPLY", audience: "CUSTOMER", body: summary, idempotencyKey: input.idempotencyKey };
-        await appendHistory(tx, message);
-        await audit(tx, active, actor.userId, "SUPPORT_CUSTOMER_REPLY", "RECORDED");
-        return { caseId: active.id, reused: true };
+      if (candidate) {
+        // Staff resolves by locking the case row, independently of the order lock.
+        const active = await lockedCase(tx, candidate.id);
+        if (customerCanReplyToSupportCase(active.state)) {
+          const message: HistoryInput = { caseId: active.id, actorUserId: actor.userId, actorKind: "CUSTOMER",
+            kind: "REPLY", audience: "CUSTOMER", body: summary, idempotencyKey: input.idempotencyKey };
+          await appendHistory(tx, message);
+          await audit(tx, active, actor.userId, "SUPPORT_CUSTOMER_REPLY", "RECORDED");
+          return { caseId: active.id, reused: true };
+        }
       }
     } else {
       contextItemId = null;
@@ -204,15 +216,16 @@ export async function getCustomerSupportCase(headers: Headers, organizationId: s
     const caseIds = [row.id, ...merged.map((item) => item.id)];
     const cursor = decodeSupportEventCursor(before);
     const scope = and(inArray(supportCaseEvent.caseId, caseIds), eq(supportCaseEvent.audience, "CUSTOMER"));
-    const eventQuery = tx.select().from(supportCaseEvent).where(cursor ? and(scope, or(
-      lt(supportCaseEvent.createdAt, cursor.createdAt),
-      and(eq(supportCaseEvent.createdAt, cursor.createdAt), lt(supportCaseEvent.id, cursor.id)),
-    )) : scope);
+    const eventQuery = tx.select({
+      id: supportCaseEvent.id, audience: supportCaseEvent.audience, kind: supportCaseEvent.kind,
+      actorKind: supportCaseEvent.actorKind, body: supportCaseEvent.body, createdAt: supportCaseEvent.createdAt,
+      cursorTime: supportEventCursorTime,
+    }).from(supportCaseEvent).where(and(scope, beforeSupportEvent(cursor)));
     const fetched = await eventQuery.orderBy(desc(supportCaseEvent.createdAt), desc(supportCaseEvent.id)).limit(51);
     const hasMore = fetched.length > 50;
     const history = (hasMore ? fetched.slice(0, 50) : fetched).reverse();
     const last = history[0];
-    const olderCursor = hasMore && last ? encodeSupportEventCursor({ createdAt: last.createdAt, id: last.id }) : null;
+    const olderCursor = hasMore && last ? encodeSupportEventCursor({ createdAt: last.cursorTime, id: last.id }) : null;
     return { ...customerSupportProjection(row, history), canReply: customerCanReplyToSupportCase(row.state), olderCursor };
   });
 }
@@ -290,16 +303,14 @@ export async function getStaffSupportCase(headers: Headers, caseId: string, befo
     const cursor = decodeSupportEventCursor(before);
     const eventQuery = tx.select({ id: supportCaseEvent.id, kind: supportCaseEvent.kind, audience: supportCaseEvent.audience,
       actorKind: supportCaseEvent.actorKind, body: supportCaseEvent.body, fromState: supportCaseEvent.fromState,
-      toState: supportCaseEvent.toState, decision: supportCaseEvent.decision, createdAt: supportCaseEvent.createdAt })
-      .from(supportCaseEvent).where(cursor ? and(inArray(supportCaseEvent.caseId, caseIds), or(
-        lt(supportCaseEvent.createdAt, cursor.createdAt),
-        and(eq(supportCaseEvent.createdAt, cursor.createdAt), lt(supportCaseEvent.id, cursor.id)),
-      )) : inArray(supportCaseEvent.caseId, caseIds));
+      toState: supportCaseEvent.toState, decision: supportCaseEvent.decision, createdAt: supportCaseEvent.createdAt,
+      cursorTime: supportEventCursorTime })
+      .from(supportCaseEvent).where(and(inArray(supportCaseEvent.caseId, caseIds), beforeSupportEvent(cursor)));
     const fetched = await eventQuery.orderBy(desc(supportCaseEvent.createdAt), desc(supportCaseEvent.id)).limit(51);
     const hasMore = fetched.length > 50;
     const events = (hasMore ? fetched.slice(0, 50) : fetched).reverse();
     const last = events[0];
-    const olderCursor = hasMore && last ? encodeSupportEventCursor({ createdAt: last.createdAt, id: last.id }) : null;
+    const olderCursor = hasMore && last ? encodeSupportEventCursor({ createdAt: last.cursorTime, id: last.id }) : null;
     await audit(tx, row, actor.userId, "SUPPORT_CASE_VIEWED", "ALLOWED");
     return { redirectCaseId: null, row, itemContexts: scopedItemContexts, events, olderCursor, actorRole: actor.role };
   });

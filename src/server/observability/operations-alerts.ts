@@ -119,7 +119,7 @@ async function getRoleScopedWork(actor: StaffInboxActor) {
     }
 
     let stagedImportCount = 0;
-    let stagedImportRows: Array<{ total: number; batchId: string; createdAt: Date; rowCount: number }> = [];
+    let stagedImportRows: Array<{ batchId: string; createdAt: Date; rowCount: number; revision: string }> = [];
     if (hasStaffPermission(actor.role, "supplier.manage")) {
       const result = await tx.execute(sql`
         WITH batch_counts AS (
@@ -136,14 +136,20 @@ async function getRoleScopedWork(actor: StaffInboxActor) {
           ORDER BY created_at ASC, batch_id ASC
           LIMIT ${OPERATIONS_INBOX_PREVIEW_LIMIT}
         )
-        SELECT totals.total, previews.batch_id, previews.created_at, previews.row_count
+        SELECT totals.total, previews.batch_id, previews.created_at, previews.row_count, revisions.row_revision
         FROM totals LEFT JOIN previews ON true
+        LEFT JOIN LATERAL (
+          SELECT md5(string_agg(import_row.id || ':' || import_row.xmin::text, ',' ORDER BY import_row.id)) AS row_revision
+          FROM public.catalog_import_row AS import_row
+          WHERE import_row.batch_id = previews.batch_id
+            AND import_row.status IN ('READY', 'NEEDS_REVIEW', 'DUPLICATE_REVIEW', 'INVALID')
+        ) AS revisions ON true
         ORDER BY previews.created_at ASC NULLS LAST, previews.batch_id ASC NULLS LAST
       `);
-      const rows = (result as unknown as { rows?: Array<{ total: number; batch_id: string | null; created_at: Date | string | null; row_count: number | null }> }).rows ?? [];
+      const rows = (result as unknown as { rows?: Array<{ total: number; batch_id: string | null; created_at: Date | string | null; row_count: number | null; row_revision: string | null }> }).rows ?? [];
       stagedImportCount = Number(rows[0]?.total ?? 0);
-      stagedImportRows = rows.flatMap((row) => row.batch_id && row.created_at && row.row_count !== null
-        ? [{ total: Number(row.total), batchId: row.batch_id, createdAt: normalizeOperationTimestamp(row.created_at), rowCount: Number(row.row_count) }]
+      stagedImportRows = rows.flatMap((row) => row.batch_id && row.created_at && row.row_count !== null && row.row_revision
+        ? [{ batchId: row.batch_id, createdAt: normalizeOperationTimestamp(row.created_at), rowCount: Number(row.row_count), revision: row.row_revision }]
         : []);
     }
 
@@ -375,7 +381,7 @@ export async function getStaffOperationsAlerts(headers: Headers, actor: StaffInb
           title: `Import batch ${row.batchId.slice(0, 8).toUpperCase()}`,
           detail: `${row.rowCount} staged row${row.rowCount === 1 ? "" : "s"} need review or application`,
           action: "Review batch", href: `/staff/suppliers/imports/${encodeURIComponent(row.batchId)}`,
-          updatedAt: row.createdAt.toISOString(), dateLabel: "Staged",
+          updatedAt: row.createdAt.toISOString(), dateLabel: "Staged", revision: row.revision,
         })),
       });
       if (imports) alerts.push(imports);

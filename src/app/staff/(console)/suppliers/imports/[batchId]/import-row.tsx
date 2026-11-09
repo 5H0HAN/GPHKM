@@ -82,6 +82,7 @@ export function ImportStagedRow({ row, batchId, supplierId, pageNumber, activeSt
   const singleResult = lastAction === "apply" && !applying ? singleApplyState : null;
   const appliedListing = singleResult?.kind === "applied" ? singleResult.listing : row.appliedListing;
   const skippedRow = singleResult?.kind === "skipped" ? singleResult.row : null;
+  const rowVersion = skippedRow?.rowVersion ?? correction?.rowVersion ?? row.rowVersion;
   const currentStatus = appliedListing ? "APPLIED" : skippedRow?.status ?? correction?.status ?? row.status;
   const values = (correction?.values ?? row.values) as Record<string, unknown>;
   const originalValues = (correction?.originalValues ?? row.originalValues) as Record<string, unknown>;
@@ -196,11 +197,12 @@ export function ImportStagedRow({ row, batchId, supplierId, pageNumber, activeSt
       </section>}
       </div>
       <aside className={layout.importRowActions} aria-label={`Actions for row ${row.rowNumber}`}>
-        {currentStatus === "READY" && <label className={layout.bulkSelect}><input form="apply-form" type="checkbox" name="rowId" value={row.id} />Select for batch import</label>}
+        {currentStatus === "READY" && <label className={layout.bulkSelect}><input form="apply-form" type="checkbox" name="reviewedRow" value={`${row.id}:${rowVersion}`} />Select for batch import</label>}
         {currentStatus !== "APPLIED" && currentStatus !== "REJECTED" && <>
           <form action={singleApplyAction} onSubmit={() => setLastAction("apply")}>
             <input type="hidden" name="batchId" value={batchId} />
             <input type="hidden" name="rowId" value={row.id} />
+            <input type="hidden" name="rowVersion" value={rowVersion} />
             <button className={layout.singleApplyButton} type="submit" disabled={!canCreateDraft || applying}>
               {applying ? "Importing row…" : "Import row to inventory"}
             </button>
@@ -232,6 +234,7 @@ export function ImportStagedRow({ row, batchId, supplierId, pageNumber, activeSt
         </tbody></table></div>
         {match.updateEligible && updateReady && <ImportActionForm action={updateImportMatchAction} className={layout.updatePanel}>
           <input type="hidden" name="batchId" value={batchId} /><input type="hidden" name="rowId" value={row.id} />
+          <input type="hidden" name="rowVersion" value={rowVersion} /><input type="hidden" name="listingRevision" value={match.revision} />
           <input type="hidden" name="listingId" value={match.id} /><input type="hidden" name="page" value={pageNumber} />
           <input type="hidden" name="status" value={activeStatus} />
           <p>Apply the reviewed supplier fields as a new listing revision. Retail price, internal supplier assignment, writing settings, and live/paused status stay unchanged.</p>

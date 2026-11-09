@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, isNull, lte, notInArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { customerOrder, customerOrderItem, orderItemFulfillment, orderItemFulfillmentSupplier, orderItemWriting, publicationEvidence } from "@/db/order-schema";
+import { orderItemContentChangeEvent, orderItemContentVersion } from "@/db/change-request-schema";
 import { staffAccount, user } from "@/db/schema";
 import { supplier, supplierContact } from "@/db/catalog-schema";
 import { customerMilestone, transitionItem, type ItemState } from "@/modules/fulfillment/workflow";
@@ -132,8 +133,17 @@ export async function getFulfillmentItem(headers: Headers, itemId: string) {
       revisionRequestText: orderItemWriting.revisionRequestText, finalDraftText: orderItemWriting.finalDraftText,
       approvedArticleText: orderItemWriting.approvedArticleText, updatedAt: orderItemWriting.updatedAt,
     }).from(orderItemWriting).where(eq(orderItemWriting.orderItemId, itemId)).limit(1) : [];
-    let currentContent: Awaited<ReturnType<typeof getConsentedSupplierPacketContent>> = null;
-    try { currentContent = await getConsentedSupplierPacketContent(tx, itemId); } catch { /* Pending review or consent keeps the immutable original visible until approval. */ }
+    // Display the latest consented version even while a newer request is
+    // pending. Packet preparation still checks the current recipient and consent.
+    const [currentContent] = await tx.select({
+      targetUrl: orderItemContentVersion.targetUrl, anchorText: orderItemContentVersion.anchorText,
+      articleText: orderItemContentVersion.articleText, instructions: orderItemContentVersion.instructions,
+    }).from(orderItemContentVersion).innerJoin(orderItemContentChangeEvent, and(
+      eq(orderItemContentChangeEvent.requestId, orderItemContentVersion.requestId),
+      eq(orderItemContentChangeEvent.versionId, orderItemContentVersion.id),
+      eq(orderItemContentChangeEvent.contentHash, orderItemContentVersion.contentHash),
+      eq(orderItemContentChangeEvent.eventType, "CONSENTED"),
+    )).where(eq(orderItemContentVersion.orderItemId, itemId)).orderBy(desc(orderItemContentVersion.version)).limit(1);
     const [supplierRow] = await tx.select({ id: supplier.id, name: supplier.name, status: supplier.status,
       routeGeneration: orderItemFulfillmentSupplier.routeGeneration, contactName: supplierContact.name, email: supplierContact.email })
       .from(orderItemFulfillmentSupplier)
@@ -177,6 +187,7 @@ export async function getFulfillmentItem(headers: Headers, itemId: string) {
     const effectiveItem = currentContent ? {
       ...item, targetUrl: currentContent.targetUrl, anchorText: currentContent.anchorText,
       articleText: currentContent.articleText ?? item.articleText,
+      instructions: currentContent.instructions,
     } : item;
     return { fulfillment, item: effectiveItem, writing: writing ?? null, supplier: supplierRow ?? null,
       supplierHandoffConfirmed: handoffEvidence.confirmed,

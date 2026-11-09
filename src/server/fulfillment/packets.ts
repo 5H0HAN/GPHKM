@@ -21,6 +21,7 @@ import { hashOrderContent } from "@/modules/orders/content-changes";
 import { readPrivateFile, savePrivateFile } from "@/server/storage/private-files";
 import { linkPrivateFileUpload, preparePrivateFileUpload, queuePrivateFileDeleteOutsideTransaction } from "@/server/storage/private-file-lifecycle";
 import { readSmallJsonResponse } from "@/modules/security/small-json-response";
+import { isDefinitiveResendRejection, readResendMessageId } from "@/modules/fulfillment/resend-send-result";
 
 type Actor = { userId: string; role: "ADMIN" | "FINANCE" | "SUPER_ADMIN" };
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -920,14 +921,13 @@ export async function sendSupplierPacket(headers: Headers, packetId: string, res
     return { state: result.state };
   }
   if (!response.ok) {
-    const knownFailure = response.status >= 400 && response.status < 500;
+    const knownFailure = isDefinitiveResendRejection(response.status);
     const state = knownFailure ? "RECONCILED_FAILED" : "UNKNOWN";
     const result = await transitionPacketAttempt({ attemptId: prepared.attemptId, state, eventCode: knownFailure ? "PROVIDER_REJECTED" : "PROVIDER_OUTCOME_UNKNOWN", actorId: prepared.actorId, actorKind: "STAFF", ...(knownFailure ? { resolvedAt: new Date() } : { unknownAt: new Date() }), packetId, itemIds: prepared.packet.items.map((item) => item.orderItemId) });
     return { state: result.state };
   }
-  let providerReference: string | undefined;
-  try { providerReference = (await readSmallJsonResponse<{ id?: string }>(response)).id; } catch { }
-  if (!providerReference || /[\r\n\0]/.test(providerReference)) {
+  const providerReference = await readResendMessageId(response);
+  if (!providerReference) {
     const result = await transitionPacketAttempt({ attemptId: prepared.attemptId, state: "UNKNOWN", eventCode: "PROVIDER_RESPONSE_AMBIGUOUS", actorId: prepared.actorId, actorKind: "STAFF", unknownAt: new Date(), packetId, itemIds: prepared.packet.items.map((item) => item.orderItemId) });
     return { state: result.state };
   }

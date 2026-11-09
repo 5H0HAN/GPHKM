@@ -164,7 +164,7 @@ try {
     `insert into customer_order (id, organization_id, actor_user_id, idempotency_key, request_hash,
        placement_total_minor, writing_total_minor, total_minor, content_sharing_notice_version,
        content_policy_version, content_policy_accepted_at, customer_status, checkout_state)
-     values ($1, $2, $3, $4, $5, 3000, 0, 3000, 'recovery-fixture-v1',
+     values ($1, $2, $3, $4, $5, 3000, 0, 3000, 'gphkm-content-sharing-v1',
        'gphkm-content-policy-v1', clock_timestamp(), 'ORDER_RECEIVED', 'PENDING_POST')`,
     [orderId, organizationId, ownerId, `recovery-${orderId}`, hash],
   );
@@ -191,9 +191,9 @@ try {
     await setup.query(
       `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
          placement_price_minor, writing_selected, target_url, anchor_text, article_text,
-         supplier_sharing_consented, consent_notice_version)
+         supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
        values ($1, $2, $3, 1, jsonb_build_object('title', $4::text), 1000, false,
-         'https://example.invalid/recovery', 'fixture', 'Synthetic approved article for database regression', true, 'recovery-fixture-v1')`,
+         'https://example.invalid/recovery', 'fixture', 'Synthetic approved article for database regression', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1')`,
       [itemIds[index], orderId, listingIds[index], `Recovery fixture ${index + 1}`],
     );
     await setup.query("insert into order_item_financial (order_item_id, commercial_source, supplier_id, fulfillment_supplier_id) values ($1, 'SUPPLIER_SOURCED', $2, $2)",

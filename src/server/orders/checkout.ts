@@ -3,8 +3,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { organization, walletAccount } from "@/db/schema";
 import { listing } from "@/db/catalog-schema";
-import { customerOrder, customerOrderItem, customerOrderItemMilestone, orderItemFulfillment, orderItemWriting, publicationEvidence } from "@/db/order-schema";
-import { CONTENT_SHARING_NOTICE_VERSION, CUSTOMER_CONTENT_POLICY_VERSION, PLACEMENT_DISCLOSURE_VERSION, WRITING_REFUND_DISCLOSURE_VERSION, customerOrderPagination, customerOrderProjection, validateCheckoutInput, type CheckoutInput } from "@/modules/orders/checkout";
+import { customerOrder, customerOrderItem, customerOrderItemMilestone, orderItemFulfillment, orderItemWriting } from "@/db/order-schema";
+import { CUSTOMER_ORDERS_PAGE_SIZE, checkoutDisclosuresAreCurrent, customerOrderPagination, customerOrderProjection, validateCheckoutInput, type CheckoutInput } from "@/modules/orders/checkout";
+import { mayRequestContentChange } from "@/modules/orders/content-changes";
 import { customerHomeTimestampIso } from "@/modules/orders/home-summary";
 import { isMarketplaceTrialActive } from "@/modules/wallet/marketplace-trial";
 import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganizationContext } from "@/server/identity/customer-context";
@@ -22,14 +23,14 @@ function requestDigest(input: CheckoutInput): string {
     articleText: item.useWriting ? null : item.articleText?.trim(),
     writingBrief: item.useWriting ? item.writingBrief?.trim() : null,
     useWriting: item.useWriting === true,
-    placementDisclosureVersion: PLACEMENT_DISCLOSURE_VERSION,
-    writingRefundDisclosureVersion: item.useWriting === true ? WRITING_REFUND_DISCLOSURE_VERSION : null,
+    placementDisclosureVersion: input.disclosureVersions.placementDisclosureVersion,
+    writingRefundDisclosureVersion: item.useWriting === true ? input.disclosureVersions.writingRefundDisclosureVersion : null,
     shareWithPublicationPartner: item.shareWithPublicationPartner,
   }));
   return createHash("sha256").update(JSON.stringify({
     items: normalized,
-    contentSharingNoticeVersion: CONTENT_SHARING_NOTICE_VERSION,
-    contentPolicyVersion: CUSTOMER_CONTENT_POLICY_VERSION,
+    contentSharingNoticeVersion: input.disclosureVersions.contentSharingNoticeVersion,
+    contentPolicyVersion: input.disclosureVersions.contentPolicyVersion,
     acceptContentPolicy: input.acceptContentPolicy,
   })).digest("hex");
 }
@@ -70,6 +71,7 @@ function listingSnapshot(row: typeof listing.$inferSelect) {
 
 export async function createWalletFundedOrder(headers: Headers, organizationId: string, rawInput: unknown) {
   const errors = validateCheckoutInput(rawInput);
+  if (errors.some((error) => error.code === "INVALID_DISCLOSURE_VERSIONS")) throw new Error("Checkout disclosures changed");
   if (errors.length) throw new Error("Invalid order details");
   const input = rawInput as CheckoutInput;
   const digest = requestDigest(input);
@@ -89,6 +91,8 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
       if (existing.checkoutState !== "PAID") throw new Error("Order checkout requires reconciliation");
       return { orderId: existing.id, totalMinor: existing.totalMinor, replayed: true };
     }
+
+    if (!checkoutDisclosuresAreCurrent(input.disclosureVersions)) throw new Error("Checkout disclosures changed");
 
     const now = new Date();
     const [org] = await tx.select({ createdAt: organization.createdAt }).from(organization)
@@ -160,8 +164,8 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
       placementTotalMinor: placementTotal.toString(),
       writingTotalMinor: writingTotal.toString(),
       totalMinor: total.toString(),
-      contentSharingNoticeVersion: CONTENT_SHARING_NOTICE_VERSION,
-      contentPolicyVersion: CUSTOMER_CONTENT_POLICY_VERSION,
+      contentSharingNoticeVersion: input.disclosureVersions.contentSharingNoticeVersion,
+      contentPolicyVersion: input.disclosureVersions.contentPolicyVersion,
       contentPolicyAcceptedAt: now,
     });
     await tx.insert(customerOrderItem).values(prepared.map(({ id, input: item, row, useWriting, placement, writing, first, final }) => ({
@@ -170,6 +174,8 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
       listingId: row.id,
       listingRevision: row.revision,
       customerListingSnapshot: listingSnapshot(row),
+      placementDisclosureVersion: input.disclosureVersions.placementDisclosureVersion,
+      writingRefundDisclosureVersion: useWriting ? input.disclosureVersions.writingRefundDisclosureVersion : null,
       placementPriceMinor: placement.toString(),
       writingSelected: useWriting,
       writingPriceMinor: writing.toString(),
@@ -181,7 +187,7 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
       articleText: useWriting ? null : item.articleText!.trim(),
       writingBrief: useWriting ? item.writingBrief!.trim() : null,
       supplierSharingConsented: true,
-      consentNoticeVersion: CONTENT_SHARING_NOTICE_VERSION,
+      consentNoticeVersion: input.disclosureVersions.contentSharingNoticeVersion,
     })));
     const writingRows = prepared.filter((item) => item.useWriting).map((item) => ({ orderItemId: item.id }));
     if (writingRows.length) await tx.insert(orderItemWriting).values(writingRows);
@@ -249,7 +255,7 @@ export async function getCustomerOrderHomeSummary(headers: Headers, organization
   });
 }
 
-export async function getMyOrdersPage(headers: Headers, organizationId: string, requestedPage: unknown = 1, pageSize = 50) {
+export async function getMyOrdersPage(headers: Headers, organizationId: string, requestedPage: unknown = 1, pageSize = CUSTOMER_ORDERS_PAGE_SIZE) {
   const actor = await requireVerifiedCustomer(headers);
   return withOrganizationContext(headers, organizationId, async (tx, role) => {
     // A customer request must not inherit a staff RLS policy if the same user
@@ -257,7 +263,7 @@ export async function getMyOrdersPage(headers: Headers, organizationId: string, 
     const scope = [eq(customerOrder.organizationId, organizationId)];
     if (role === "MEMBER") scope.push(eq(customerOrder.actorUserId, actor.userId));
     const [count] = await tx.select({ total: sql<number>`count(*)::integer` }).from(customerOrder).where(and(...scope));
-    const pagination = customerOrderPagination(requestedPage, count.total, pageSize);
+    const pagination = customerOrderPagination(requestedPage, count.total, Math.min(pageSize, CUSTOMER_ORDERS_PAGE_SIZE));
     const rows = await tx.select().from(customerOrder)
       .where(and(...scope))
       .orderBy(desc(customerOrder.createdAt), desc(customerOrder.id)).limit(pagination.limit).offset(pagination.offset);
@@ -270,6 +276,9 @@ export async function getMyOrdersPage(headers: Headers, organizationId: string, 
     const fulfillment = itemIds.length ? await tx.select({
       orderItemId: orderItemFulfillment.orderItemId,
       customerStatus: orderItemFulfillment.customerStatus,
+      state: orderItemFulfillment.state,
+      handedOffAt: orderItemFulfillment.handedOffAt,
+      workStartedAt: orderItemFulfillment.workStartedAt,
       updatedAt: orderItemFulfillment.updatedAt,
       nextUpdateAt: orderItemFulfillment.nextUpdateAt,
     }).from(orderItemFulfillment).where(inArray(orderItemFulfillment.orderItemId, itemIds)) : [];
@@ -280,10 +289,10 @@ export async function getMyOrdersPage(headers: Headers, organizationId: string, 
       occurredAt: customerOrderItemMilestone.occurredAt,
     }).from(customerOrderItemMilestone).where(inArray(customerOrderItemMilestone.orderItemId, itemIds))
       .orderBy(desc(customerOrderItemMilestone.occurredAt), desc(customerOrderItemMilestone.id)) : [];
-    const evidence = itemIds.length ? await tx.select({
-      orderItemId: publicationEvidence.orderItemId,
-      liveUrl: publicationEvidence.liveUrl,
-    }).from(publicationEvidence).where(inArray(publicationEvidence.orderItemId, itemIds)) : [];
+    const { rows: evidence } = itemIds.length ? await tx.execute<{ orderItemId: string; liveUrl: string }>(sql`
+      select order_item_id as "orderItemId", live_url as "liveUrl"
+      from public.gphkm_customer_live_publication_urls(array[${sql.join(itemIds.map((id) => sql`${id}`), sql`, `)}]::text[])
+    `) : { rows: [] };
     const ownOrderIds = new Set(rows.filter((order) => order.actorUserId === actor.userId).map((order) => order.id));
     const writingItemIds = items.filter((item) => ownOrderIds.has(item.orderId)).map((item) => item.id);
     const writingRows = writingItemIds.length ? await tx.select({
@@ -305,6 +314,7 @@ export async function getMyOrdersPage(headers: Headers, organizationId: string, 
     type CustomerOrderItem = (typeof items)[number] & {
       lastUpdatedAt?: string | null; nextUpdateAt?: string | null; publicationUrls: string[];
       milestoneHistory: Array<{ status: string; nextUpdateAt: string | null; occurredAt: string }>;
+      canRequestContentChange: boolean;
       writingWorkflow: null | { state: string; firstDraftText: string | null; revisionRequestText: string | null; finalDraftText: string | null; approvedArticleText: string | null; writingRefundMinor: string };
     };
     const byOrder = new Map<string, CustomerOrderItem[]>();
@@ -318,6 +328,11 @@ export async function getMyOrdersPage(headers: Headers, organizationId: string, 
           lastUpdatedAt: progress.updatedAt.toISOString(),
           nextUpdateAt: progress.nextUpdateAt?.toISOString() ?? null,
         } : {}),
+        canRequestContentChange: Boolean(progress && !progress.workStartedAt && ownOrderIds.has(item.orderId)
+          && (!item.writingSelected || writing?.approvedArticleText || writing?.state === "CUSTOMER_DECLINED_FINAL")
+          && mayRequestContentChange({
+          requesterId: actor.userId, ordererId: actor.userId, handedOffAt: progress.handedOffAt, state: progress.state,
+        })),
         publicationUrls: urlsByItem.get(item.id) ?? [],
         milestoneHistory: milestonesByItem.get(item.id) ?? [],
         writingWorkflow: writing ? {
@@ -343,5 +358,15 @@ export async function getMyOrderItemForSupport(headers: Headers, organizationId:
     }).from(customerOrderItem).innerJoin(customerOrder, eq(customerOrder.id, customerOrderItem.orderId))
       .where(and(...scope)).limit(1);
     return item ? { id: item.id, orderId: item.orderId, label: `${typeof item.title === "string" ? item.title : "Placement"} · Order ${item.orderId.slice(0, 8)}` } : null;
+  });
+}
+
+export async function getMyOrderForSupport(headers: Headers, organizationId: string, orderId: string) {
+  return withOrganizationContext(headers, organizationId, async (tx) => {
+    const [order] = await tx.select({ id: customerOrder.id }).from(customerOrder).where(and(
+      eq(customerOrder.id, orderId), eq(customerOrder.organizationId, organizationId),
+      sql`public.gphkm_customer_can_read_order(${customerOrder.id}, nullif(current_setting('app.user_id', true), ''), ${organizationId})`,
+    )).limit(1);
+    return order ?? null;
   });
 }

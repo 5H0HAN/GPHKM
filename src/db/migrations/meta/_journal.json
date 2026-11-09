@@ -1310,6 +1310,41 @@
       "when": 1794238027668,
       "tag": "0186_review_fixes",
       "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1794242372423,
+      "tag": "0187_customer_checkout_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 188,
+      "version": "7",
+      "when": 1794242372424,
+      "tag": "0188_bind_customer_approved_content_context",
+      "breakpoints": true
+    },
+    {
+      "idx": 189,
+      "version": "7",
+      "when": 1794242372425,
+      "tag": "0189_scope_supplier_notices_to_current_item",
+      "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1794243372399,
+      "tag": "0190_checkout_disclosure_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 191,
+      "version": "7",
+      "when": 1794244449733,
+      "tag": "0191_require_content_policy_at_checkout",
+      "breakpoints": true
     }
   ]
 }

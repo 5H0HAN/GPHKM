@@ -92,6 +92,15 @@ test("hold-resume choices include only the saved active state and preserve suppl
   assert.equal(fulfillmentTransitionChoices("HANDOFF_PENDING", null, true, true, true).some(({ value }) => value === "IN_FULFILLMENT"), true);
 });
 
+test("the assigned fulfillment detail shows the latest consented instructions", () => {
+  const source = readFileSync(new URL("../src/server/fulfillment/admin.ts", import.meta.url), "utf8");
+  const detail = source.slice(source.indexOf("export async function getFulfillmentItem"), source.indexOf("export async function saveWritingDraft"));
+  const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/[itemId]/page.tsx", import.meta.url), "utf8");
+  assert.match(detail, /mayReadFulfillmentContent[\s\S]*eq\(orderItemContentChangeEvent.versionId, orderItemContentVersion.id\)[\s\S]*eq\(orderItemContentChangeEvent.contentHash, orderItemContentVersion.contentHash\)[\s\S]*"CONSENTED"[\s\S]*desc\(orderItemContentVersion.version\)/);
+  assert.match(detail, /instructions: currentContent.instructions/, "an explicitly cleared instruction cannot fall back to checkout text");
+  assert.match(page, /result.item.instructions[\s\S]*Publication instructions[\s\S]*result.item.instructions/);
+});
+
 test("fulfillment action errors stay on the item page with a recovery message", () => {
   const actions = readFileSync(new URL("../src/app/staff/(console)/fulfillment/actions.ts", import.meta.url), "utf8");
   const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/[itemId]/page.tsx", import.meta.url), "utf8");
