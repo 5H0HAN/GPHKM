@@ -27,7 +27,7 @@ export function getStripeRuntime(env: Record<string, string | undefined> = proce
   }
   return {
     client: new Stripe(key, {
-      apiVersion: "2026-09-30.endive",
+      apiVersion: "2026-10-28.endive",
       timeout: 15_000,
       maxNetworkRetries: 1,
     }),
