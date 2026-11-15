@@ -448,8 +448,9 @@ export function assertCompletePacketReplacement(priorItemIds: readonly string[],
 export function mayStartManualPacketHandoff(items: readonly { state: string; handedOffAt: Date | null; workStartedAt: Date | null }[], hasResendReason: boolean): boolean {
   if (!items.length) return false;
   const firstHandoff = items.every((item) => item.state === "HANDOFF_PENDING" && !item.handedOffAt && !item.workStartedAt);
+  const pendingManualFallback = hasResendReason && items.every((item) => item.state === "HANDOFF_PENDING" && !item.workStartedAt);
   const deliberateResend = hasResendReason && items.every((item) => item.state === "IN_FULFILLMENT" && item.handedOffAt !== null);
-  return firstHandoff || deliberateResend;
+  return firstHandoff || pendingManualFallback || deliberateResend;
 }
 
 const PROVIDER_ATTEMPT_TRANSITIONS: Partial<Record<PacketAttemptState, readonly PacketAttemptState[]>> = {
@@ -479,12 +480,15 @@ export type PacketAttempt = Readonly<{
   resolvedAt?: string;
 }>;
 
-export function mayStartSend(input: { packet: SupplierPacket; attempts: readonly PacketAttempt[]; actorRole: StaffRole; actorId: string; revalidatedPacketHash: string; currentRecipient: string; deliberateResend?: boolean; resendReason?: string }): void {
+export function mayStartSend(input: { packet: SupplierPacket; attempts: readonly PacketAttempt[]; actorRole: StaffRole; actorId: string; revalidatedPacketHash: string; currentRecipient: string; deliberateResend?: boolean; resendReason?: string; allowPendingProviderOutcome?: boolean }): void {
   if (input.actorRole !== "ADMIN" && input.actorRole !== "SUPER_ADMIN") throw new Error("Staff role cannot send supplier packets");
   if (input.actorRole === "ADMIN" && input.packet.items.some((item) => item.assignedAdminId !== input.actorId)) throw new Error("Admin is not assigned to every packet item");
   if (input.revalidatedPacketHash !== input.packet.contentHash || normalizeEmail(input.currentRecipient) !== input.packet.recipient) throw new Error("Packet changed after preview; create a new packet version");
-  const latest = [...input.attempts].filter((attempt) => attempt.packetId === input.packet.id && attempt.packetVersion === input.packet.version && attempt.state !== "MANUAL_EXPORTED").sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  if (latest?.state === "UNKNOWN" || latest?.state === "SENDING") throw new Error("Resolve the current send outcome before another send");
+  const currentAttempts = input.attempts.filter((attempt) => attempt.packetId === input.packet.id && attempt.packetVersion === input.packet.version);
+  const hasUnresolvedAttempt = currentAttempts.some((attempt) => attempt.state === "UNKNOWN" || attempt.state === "SENDING");
+  if (hasUnresolvedAttempt && !input.allowPendingProviderOutcome) throw new Error("Resolve the current send outcome before another send");
+  const latest = [...currentAttempts].filter((attempt) => attempt.state !== "MANUAL_EXPORTED")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))[0];
   if (latest && (!input.deliberateResend || !input.resendReason?.trim())) throw new Error("A prior send exists; an audited deliberate resend reason is required");
 }
 
@@ -493,7 +497,7 @@ export function markUnknownAttempt(attempt: PacketAttempt, at: string): PacketAt
   return { ...attempt, state: "UNKNOWN", unknownAt: at };
 }
 
-export function startPacketAttempt(input: { packet: SupplierPacket; id: string; actorId: string; actorRole: StaffRole; attempts: readonly PacketAttempt[]; revalidatedPacketHash: string; currentRecipient: string; at: string; deliberateResend?: boolean; resendReason?: string }): PacketAttempt {
+export function startPacketAttempt(input: { packet: SupplierPacket; id: string; actorId: string; actorRole: StaffRole; attempts: readonly PacketAttempt[]; revalidatedPacketHash: string; currentRecipient: string; at: string; deliberateResend?: boolean; resendReason?: string; allowPendingProviderOutcome?: boolean }): PacketAttempt {
   mayStartSend(input);
   requireEventFields(input.id, input.actorId, input.at);
   return Object.freeze({ id: input.id, packetId: input.packet.id, packetVersion: input.packet.version, actorId: input.actorId, recipient: input.packet.recipient, state: "SENDING", createdAt: input.at });

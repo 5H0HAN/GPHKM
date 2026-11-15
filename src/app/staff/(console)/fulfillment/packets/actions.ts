@@ -9,18 +9,18 @@ import { beginManualSupplierHandoff, markStuckSupplierPacketUnknown, prepareSupp
 
 function get(form: FormData, key: string) { const value = form.get(key); return typeof value === "string" ? value.trim() : ""; }
 
-export async function preparePacketsAction(form: FormData) {
+export async function preparePacketsAction(form: FormData): Promise<{ redirectTo: string }> {
   const orderId = get(form, "orderId");
   const itemIds = form.getAll("itemIds").filter((value): value is string => typeof value === "string");
   let packetIds: string[];
   try { packetIds = await prepareSupplierPackets(await headers(), orderId, itemIds); }
   catch (error) {
     logSafeFailure("supplier_packet_prepare_failed", error, randomUUID(), { orderId });
-    redirect(`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&error=prepare`);
+    return { redirectTo: `/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&error=prepare` };
   }
-  if (!packetIds.length) redirect(`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&error=empty`);
+  if (!packetIds.length) return { redirectTo: `/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&error=empty` };
   const preparedIds = encodeURIComponent(packetIds.join(","));
-  redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetIds[0])}?preparedIds=${preparedIds}`);
+  return { redirectTo: `/staff/fulfillment/packets/${encodeURIComponent(packetIds[0])}?preparedIds=${preparedIds}` };
 }
 
 export async function requestRecipientReconsentAction(form: FormData) {
@@ -36,14 +36,16 @@ export async function requestRecipientReconsentAction(form: FormData) {
   redirect(`/staff/fulfillment/packets/new?orderId=${encodeURIComponent(orderId)}&consentRequested=1`);
 }
 
-export async function sendSupplierPacketAction(form: FormData) {
+export async function sendSupplierPacketAction(form: FormData): Promise<{ redirectTo: string }> {
   const packetId = get(form, "packetId");
   try { await sendSupplierPacket(await headers(), packetId, get(form, "resendReason"), get(form, "attachPdf") === "on"); }
   catch (error) {
-    const code = error instanceof UnsupportedSupplierPacketPdfTextError ? "pdf-text" : "send";
-    redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?error=${code}`);
+    const code = error instanceof UnsupportedSupplierPacketPdfTextError ? "pdf-text"
+      : error instanceof Error && error.message === "A prior send exists; an audited deliberate resend reason is required" ? "resend-reason"
+        : "send";
+    return { redirectTo: `/staff/fulfillment/packets/${encodeURIComponent(packetId)}?error=${code}` };
   }
-  redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?sent=1`);
+  return { redirectTo: `/staff/fulfillment/packets/${encodeURIComponent(packetId)}?sent=1` };
 }
 
 export async function beginManualHandoffAction(form: FormData) {
@@ -63,9 +65,10 @@ export async function reconcileManualHandoffUnsentAction(form: FormData) {
 
 export async function recordSupplierAcknowledgementAction(form: FormData) {
   const packetId = get(form, "packetId");
-  try { await recordSupplierAcknowledgement(await headers(), { packetId, attemptId: get(form, "attemptId"), reference: get(form, "reference") }); }
+  if (get(form, "confirmSupplierReceipt") !== "on") redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?error=ack-confirm#supplier-acknowledgement`);
+  try { await recordSupplierAcknowledgement(await headers(), { packetId, attemptId: get(form, "attemptId"), reference: get(form, "reference"), confirmSupplierReceipt: true }); }
   catch { redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?error=acknowledgement`); }
-  redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?acknowledged=1`);
+  redirect(`/staff/fulfillment/packets/${encodeURIComponent(packetId)}?acknowledged=1#supplier-acknowledgement`);
 }
 
 export async function reconcilePacketAttemptAction(form: FormData) {

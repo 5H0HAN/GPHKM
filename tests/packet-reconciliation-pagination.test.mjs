@@ -43,10 +43,18 @@ test("packet reconciliation pages every issue queue with stable bounds", async (
   assert.doesNotMatch(queue, /\.limit\((?:100|200)\)/);
 
   const pageSource = await readFile(new URL("../src/app/staff/(console)/fulfillment/packets/reconciliation/page.tsx", import.meta.url), "utf8");
-  assert.match(pageSource, /Packet attempt pages/);
+  assert.match(pageSource, /Needs review pages/);
   assert.match(pageSource, /Provider event pages/);
-  assert.match(pageSource, /Unpacket item pages/);
+  assert.match(pageSource, /Placements without a packet pages/);
   assert.match(pageSource, /Held packet pages/);
+  assert.match(pageSource, /If Resend is Accepted, Delayed, or still unclear, open the packet and use the audited manual handoff/);
+  assert.match(pageSource, /ACCEPTED: "Accepted by email provider"/);
+  assert.match(pageSource, /data\.heldPackets\.length \?/);
+  assert.match(pageSource, /data\.unpacketItems\.length \?/);
+  assert.match(pageSource, /data\.unmatchedEvents\.length \?/);
+  const pageStyles = await readFile(new URL("../src/app/staff/(console)/fulfillment/packets/packets.module.css", import.meta.url), "utf8");
+  assert.match(pageStyles, /\.reconciliationTable td::before \{ content: attr\(data-label\)/);
+  assert.match(pageStyles, /@media \(max-width: 680px\)[\s\S]*\.reconciliationTable tbody \{ display: grid/);
   const detailPage = await readFile(new URL("../src/app/staff/(console)/fulfillment/packets/[packetId]/page.tsx", import.meta.url), "utf8");
   assert.match(detailPage, /data\.holdReason === "PACKET_SIZE_REVIEW"/);
   assert.match(detailPage, /successful under-limit action clears this hold and records the review/);
