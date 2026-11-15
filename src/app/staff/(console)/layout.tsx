@@ -41,7 +41,7 @@ export default async function ConsoleLayout({ children }: Readonly<{ children: R
         <h1>Staff workspace temporarily unavailable</h1>
         <p role="alert">We couldn’t verify staff access just now. A previous action may already have completed; reload and check its status before trying it again.</p>
         <p>If the problem continues, share reference {requestId} with your system administrator.</p>
-        <Link href="/staff">Retry</Link>
+        <a href="/staff">Retry</a>
       </main>
     </div>;
   }

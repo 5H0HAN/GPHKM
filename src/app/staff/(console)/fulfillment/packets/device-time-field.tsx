@@ -4,7 +4,7 @@ import { useId, useState } from "react";
 import { deviceLocalIsoTimestamp } from "@/modules/fulfillment/device-time";
 import styles from "./packets.module.css";
 
-const SENT_TIME_PATTERN = "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:[.][0-9]{1,3})?)?(?:Z|[+-][0-9]{2}:[0-9]{2})";
+const SENT_TIME_PATTERN = "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2}(?:[.][0-9]{1,3})?)?(?:Z|(?:[+]|-)[0-9]{2}:[0-9]{2})";
 
 export function DeviceTimeField() {
   const inputId = useId();

@@ -129,6 +129,7 @@ export function customerOrderProjection(order: {
     canRequestContentChange?: boolean;
     lastUpdatedAt?: string | null; nextUpdateAt?: string | null; publicationUrls?: string[];
     milestoneHistory?: Array<{ status: string; nextUpdateAt: string | null; occurredAt: string }>;
+    cancellationHistory?: Array<{ id: string; state: string; reason: string; decisionReason: string | null; refundMinor: string; requestedAt: string }>;
     writingWorkflow?: null | {
       state: string; firstDraftText: string | null; revisionRequestText: string | null;
       finalDraftText: string | null; approvedArticleText: string | null; writingRefundMinor: string;
@@ -182,6 +183,14 @@ export function customerOrderProjection(order: {
         status: milestone.status,
         nextUpdateAt: milestone.nextUpdateAt,
         occurredAt: milestone.occurredAt,
+      })),
+      cancellationHistory: (item.cancellationHistory ?? []).slice(-20).map((request) => ({
+        id: request.id,
+        state: request.state,
+        reason: request.reason,
+        decisionReason: request.decisionReason,
+        refundMinor: request.refundMinor,
+        requestedAt: request.requestedAt,
       })),
     })),
   };

@@ -1004,7 +1004,8 @@ export async function beginManualSupplierHandoff(headers: Headers, packetId: str
       throw new Error("Manual handoff is unavailable for a recipient-consent recovery; use the Resend action");
     }
     const fulfillmentRows = await lockPacketFulfillmentRows(tx, packet);
-    const previousRows = await tx.select().from(supplierPacketAttempt).where(eq(supplierPacketAttempt.packetId, packetId));
+    const previousRows = await tx.select().from(supplierPacketAttempt).where(eq(supplierPacketAttempt.packetId, packetId))
+      .orderBy(desc(supplierPacketAttempt.createdAt), desc(supplierPacketAttempt.id));
     if (previousRows.some((attempt) => attempt.type === "MANUAL_SEND" && attempt.state === "SENDING")) {
       throw new Error("A manual handoff is already in progress");
     }
@@ -1013,8 +1014,7 @@ export async function beginManualSupplierHandoff(headers: Headers, packetId: str
     const id = randomUUID();
     const resend = resendReason?.trim() ?? "";
     if (!mayStartManualPacketHandoff(fulfillmentRows, resend.length > 0)) throw new Error("Packet items are no longer eligible for handoff");
-    const latestProviderAttempt = previousRows.filter((attempt) => attempt.type === "SEND")
-      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0];
+    const latestProviderAttempt = previousRows.find((attempt) => attempt.type === "SEND");
     const providerOutcomePending = Boolean(latestProviderAttempt
       && ["SENDING", "UNKNOWN", "ACCEPTED", "DELIVERY_ISSUE"].includes(latestProviderAttempt.state));
     const started = startPacketAttempt({ packet, id, actorId: actor.userId,

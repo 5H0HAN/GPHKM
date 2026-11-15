@@ -42,6 +42,7 @@ test("customer order projection exposes only customer-facing fields", () => {
       id: "item-1", listingId: "listing-1", customerListingSnapshot: { title: "Example", supplierId: "private", commercialSource: "SUPPLIER_SOURCED", websiteUrl: "https://hidden.test" },
       placementPriceMinor: "12000", writingSelected: false, writingPriceMinor: "0", targetUrl: "https://buyer.test",
       anchorText: "link", instructions: "Please use the second section.", articleText: "article", writingBrief: null, customerStatus: "ORDER_RECEIVED",
+      cancellationHistory: [{ id: "cancel-1", state: "APPROVED", reason: "Changed plans", decisionReason: "Approved before handoff", refundMinor: "12000", requestedAt: "2026-11-12T10:00:00.000Z", decisionByUserId: "private-staff" }],
     }],
   });
   assert.equal(result.items[0].status, "ORDER_RECEIVED");
@@ -51,6 +52,11 @@ test("customer order projection exposes only customer-facing fields", () => {
   assert.equal("sourceCostMinor" in result.items[0], false);
   assert.equal("supplierId" in result.items[0].listing, false);
   assert.equal("websiteUrl" in result.items[0].listing, false);
+  assert.deepEqual(result.items[0].cancellationHistory, [{
+    id: "cancel-1", state: "APPROVED", reason: "Changed plans", decisionReason: "Approved before handoff",
+    refundMinor: "12000", requestedAt: "2026-11-12T10:00:00.000Z",
+  }]);
+  assert.equal(JSON.stringify(result.items[0].cancellationHistory).includes("private-staff"), false);
 });
 
 test("checkout checks displayed disclosure versions and saves them alongside immutable listing snapshots", () => {

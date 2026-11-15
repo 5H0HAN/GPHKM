@@ -318,6 +318,29 @@ export async function getMyOrdersPage(
       .where(inArray(customerOrderItem.orderId, ids))
       .orderBy(desc(customerOrderItem.createdAt));
     const itemIds = items.map((item) => item.id);
+    const cancellationRows = itemIds.length ? await tx.execute<{
+      id: string; orderItemId: string; state: string; reason: string; decisionReason: string | null; refundMinor: string; requestedAt: Date;
+    }>(sql`
+      select id, "orderItemId", state, reason, "decisionReason", "refundMinor", "requestedAt"
+      from (
+        select cancellation.id,
+          cancellation.order_item_id as "orderItemId",
+          cancellation.state,
+          cancellation.reason,
+          cancellation.decision_reason as "decisionReason",
+          cancellation.refund_minor as "refundMinor",
+          cancellation.requested_at as "requestedAt",
+          row_number() over (
+            partition by cancellation.order_item_id
+            order by cancellation.requested_at desc, cancellation.id desc
+          ) as history_rank
+        from public.order_item_cancellation_request cancellation
+        where cancellation.organization_id = ${organizationId}
+          and cancellation.order_item_id in (${sql.join(itemIds.map((id) => sql`${id}`), sql`, `)})
+      ) recent
+      where history_rank <= 20
+      order by "orderItemId", "requestedAt", id
+    `) : { rows: [] };
     const fulfillment = itemIds.length ? await tx.select({
       orderItemId: orderItemFulfillment.orderItemId,
       customerStatus: orderItemFulfillment.customerStatus,
@@ -347,6 +370,17 @@ export async function getMyOrdersPage(
       writingRefundMinor: orderItemWriting.writingRefundMinor,
     }).from(orderItemWriting).where(inArray(orderItemWriting.orderItemId, writingItemIds)) : [];
     const fulfillmentByItem = new Map(fulfillment.map((row) => [row.orderItemId, row]));
+    const cancellationHistoryByItem = new Map<string, Array<{
+      id: string; state: string; reason: string; decisionReason: string | null; refundMinor: string; requestedAt: string;
+    }>>();
+    for (const row of cancellationRows.rows) {
+      const history = cancellationHistoryByItem.get(row.orderItemId) ?? [];
+      history.push({
+        id: row.id, state: row.state, reason: row.reason, decisionReason: row.decisionReason,
+        refundMinor: row.refundMinor, requestedAt: row.requestedAt.toISOString(),
+      });
+      cancellationHistoryByItem.set(row.orderItemId, history);
+    }
     const milestonesByItem = new Map<string, Array<{ status: string; nextUpdateAt: string | null; occurredAt: string }>>();
     for (const row of milestoneRows) {
       const history = milestonesByItem.get(row.orderItemId) ?? [];
@@ -359,6 +393,7 @@ export async function getMyOrdersPage(
     type CustomerOrderItem = (typeof items)[number] & {
       lastUpdatedAt?: string | null; nextUpdateAt?: string | null; publicationUrls: string[];
       milestoneHistory: Array<{ status: string; nextUpdateAt: string | null; occurredAt: string }>;
+      cancellationHistory: Array<{ id: string; state: string; reason: string; decisionReason: string | null; refundMinor: string; requestedAt: string }>;
       canRequestContentChange: boolean;
       writingWorkflow: null | { state: string; firstDraftText: string | null; revisionRequestText: string | null; finalDraftText: string | null; approvedArticleText: string | null; writingRefundMinor: string };
     };
@@ -380,6 +415,7 @@ export async function getMyOrdersPage(
         })),
         publicationUrls: urlsByItem.get(item.id) ?? [],
         milestoneHistory: milestonesByItem.get(item.id) ?? [],
+        cancellationHistory: cancellationHistoryByItem.get(item.id) ?? [],
         writingWorkflow: writing ? {
           state: writing.state, firstDraftText: writing.firstDraftText, revisionRequestText: writing.revisionRequestText,
           finalDraftText: writing.finalDraftText, approvedArticleText: writing.approvedArticleText,

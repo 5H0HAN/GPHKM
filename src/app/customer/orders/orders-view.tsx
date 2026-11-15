@@ -3,7 +3,7 @@ import Link from "next/link";
 import { randomUUID } from "node:crypto";
 import { getMyOrdersPage, type CustomerOrdersView } from "@/server/orders/checkout";
 import { updateCustomerWritingAction } from "./actions";
-import { OrderItemCancellationForm } from "./cancellation-form";
+import { OrderItemCancellationForm, OrderItemCancellationHistory } from "./cancellation-form";
 import { ContentChangeForm } from "./content-change-form";
 import { listContentChangesForCustomerBatch, type CustomerContentChange } from "@/server/orders/content-changes";
 import { loadCustomerWorkspace, selectedOrganizationId } from "../workspace";
@@ -271,8 +271,17 @@ export async function CustomerOrdersView({ searchParams, view }: {
                 </div>
               </details>}
 
+              {!canManagePlacement && item.writingSelected && item.writingWorkflow?.approvedArticleText && <details className={styles.writingPanel} id={`writing-${item.id}`}>
+                <summary>Approved article from GPHKM Writing</summary>
+                <div className={styles.detailsBody}>
+                  <p>This is the article approved for your placement.</p>
+                  <pre>{item.writingWorkflow.approvedArticleText}</pre>
+                </div>
+              </details>}
+
               {canManagePlacement && (offersByItem.get(item.id) ?? []).map((offer) => <EquivalentOfferCard key={offer.id} offer={offer} organizationId={organizationId} />)}
 
+              {!canManagePlacement && <OrderItemCancellationHistory history={item.cancellationHistory ?? []} />}
               {canManagePlacement && <details className={styles.moreActions}>
                 <summary>Change or cancel this placement</summary>
                 <div className={styles.detailsBody}>

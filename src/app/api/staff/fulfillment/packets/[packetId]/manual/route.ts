@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_REQUEST_BYTES = MAX_FILE_BYTES + 64 * 1024;
 
-type ManualResult = "manual" | "manual-time" | "manual-recipient" | "manual-reference" | "manual-evidence" | "manual-size" | "manual-confirm" | "manual-state";
+type ManualResult = "manual" | "manual-failed" | "manual-time" | "manual-recipient" | "manual-reference" | "manual-evidence" | "manual-size" | "manual-confirm" | "manual-state";
 
 function redirectToPacket(packetId: string, result: ManualResult) {
   const staffUrl = process.env.STAFF_APP_URL;
@@ -16,7 +16,7 @@ function redirectToPacket(packetId: string, result: ManualResult) {
 }
 
 function manualFailureResult(error: unknown): ManualResult {
-  if (!(error instanceof Error)) return "manual";
+  if (!(error instanceof Error)) return "manual-failed";
   switch (error.message) {
     case "Enter the actual sent time with its timezone after beginning the handoff": return "manual-time";
     case "Actual recipient is invalid":
@@ -28,7 +28,7 @@ function manualFailureResult(error: unknown): ManualResult {
     case "Pending manual handoff reservation unavailable":
     case "Content-sharing consent does not match supplier and recipient":
     case "Content changed after consent; obtain fresh consent": return "manual-state";
-    default: return "manual";
+    default: return "manual-failed";
   }
 }
 
@@ -40,7 +40,7 @@ export async function POST(request: Request, context: { params: Promise<{ packet
     const staffOrigin = process.env.STAFF_APP_URL;
     if (!origin || !staffOrigin || new URL(origin).origin !== new URL(staffOrigin).origin) return new Response("Forbidden", { status: 403 });
     const length = Number(request.headers.get("content-length"));
-    if (!Number.isSafeInteger(length) || length < 1) return redirectToPacket(packetId, "manual");
+    if (!Number.isSafeInteger(length) || length < 1) return redirectToPacket(packetId, "manual-failed");
     if (length > MAX_REQUEST_BYTES) return redirectToPacket(packetId, "manual-size");
     if (!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data;")) return new Response("Unsupported media type", { status: 415 });
     const form = await request.formData();

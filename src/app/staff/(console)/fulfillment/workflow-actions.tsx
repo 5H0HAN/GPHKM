@@ -48,7 +48,7 @@ export function FulfillmentWorkflowActions({ itemId, state, choices, minimumDate
 
     {canPause && <details className={styles.pauseAction}>
       <summary>Pause this placement for review</summary>
-      <p>Use this only when work must stop for an internal review. The customer will continue to see “Preparing your placement”; the pause reason stays private.</p>
+      <p>Use this only when work must stop for an internal review. The customer stays at their current order stage; the pause reason stays private.</p>
       <RedirectingForm action={updateFulfillmentAction} className={styles.form}>
         <input type="hidden" name="itemId" value={itemId} />
         <input type="hidden" name="to" value="ON_HOLD" />

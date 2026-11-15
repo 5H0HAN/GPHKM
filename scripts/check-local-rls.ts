@@ -396,6 +396,7 @@ try {
   const resendPacketId = `pkt_${randomUUID()}`;
   const resendPacketAttemptId = randomUUID();
   const manualPacketId = `pkt_${randomUUID()}`;
+  const manualProviderAttemptId = randomUUID();
   const manualPacketAttemptId = randomUUID();
   const staleRoutePacketId = `pkt_${randomUUID()}`;
   const staleRouteAttemptId = randomUUID();
@@ -2283,6 +2284,31 @@ try {
     "select public.gphkm_supplier_packet_item_consent_is_current($1, $2) as current", [manualPacketId, orderItemFixture],
   );
   assert.equal(legacyConsent.rows[0]?.current, true, "valid pre-event snapshots with millisecond consent timestamps remain current");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [adminA, organizationA]);
+  await migration.query(
+    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key, provider)
+     values ($1, $2, 'SEND', 'SENDING', $3, 'old-supplier@example.invalid', $4, 'RESEND')`,
+    [manualProviderAttemptId, manualPacketId, adminA, `provider-pending-${suffix}`],
+  );
+  await migration.query(
+    `insert into supplier_packet_attempt_event (id, attempt_id, actor_user_id, actor_kind, from_state, to_state, reason_code)
+     values ($1, $2, $3, 'STAFF', null, 'SENDING', 'INITIAL_SEND')`,
+    [randomUUID(), manualProviderAttemptId, adminA],
+  );
+  await migration.query(
+    `insert into supplier_packet_attempt_event (id, attempt_id, actor_user_id, actor_kind, from_state, to_state, reason_code, reference)
+     values ($1, $2, $3, 'STAFF', 'SENDING', 'ACCEPTED', 'PROVIDER_ACCEPTED', $4)`,
+    [randomUUID(), manualProviderAttemptId, adminA, `resend-${suffix}`],
+  );
+  await migration.query(
+    `update supplier_packet_attempt set state = 'ACCEPTED', provider_reference = $2,
+       accepted_at = now(), resolved_at = now(), updated_at = now() where id = $1`,
+    [manualProviderAttemptId, `resend-${suffix}`],
+  );
+  await migration.query(
+    "update order_item_fulfillment set handed_off_at = now(), updated_at = now() where order_item_id = $1",
+    [orderItemFixture],
+  );
   await migration.query("SET LOCAL ROLE gphkm_runtime");
   await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [adminA, organizationA]);
   await migration.query(
@@ -2290,6 +2316,11 @@ try {
      values ($1, $2, 'MANUAL_SEND', 'SENDING', $3, 'old-supplier@example.invalid', $4)`,
     [manualPacketAttemptId, manualPacketId, adminA, `manual-reservation-${suffix}`],
   );
+  await expectPermissionDenied(migration, "duplicate manual reservation while a provider-pending fallback is already reserved", () => migration.query(
+    `insert into supplier_packet_attempt (id, packet_id, type, state, actor_user_id, recipient, idempotency_key)
+     values ($1, $2, 'MANUAL_SEND', 'SENDING', $3, 'old-supplier@example.invalid', $4)`,
+    [randomUUID(), manualPacketId, adminA, `duplicate-manual-reservation-${suffix}`],
+  ));
   await migration.query(
     `insert into supplier_packet_attempt_event (id, attempt_id, actor_user_id, actor_kind, from_state, to_state, reason_code)
      values ($1, $2, $3, 'STAFF', null, 'SENDING', 'MANUAL_SEND_RESERVED')`,

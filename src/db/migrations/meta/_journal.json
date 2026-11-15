@@ -1352,6 +1352,13 @@
       "when": 1794356382000,
       "tag": "0192_manual_send_advances_customer_stage",
       "breakpoints": true
+    },
+    {
+      "idx": 193,
+      "version": "7",
+      "when": 1794758996322,
+      "tag": "0193_allow_pending_supplier_manual_fallback",
+      "breakpoints": true
     }
   ]
 }

@@ -244,6 +244,11 @@ test("supplier EML contains minimal body, encodes body, and blocks ambiguous res
   const failed = resolveUnknownAttempt({ attempt: markUnknownAttempt(sending, now), outcome: "RECONCILED_FAILED", actorId: "admin_a", actorRole: "ADMIN", at: now, reason: "Provider confirms no message was accepted" });
   assert.throws(() => mayStartSend({ packet, attempts: [failed], actorRole: "ADMIN", actorId: "admin_a", revalidatedPacketHash: packet.contentHash, currentRecipient: packet.recipient }), /deliberate resend reason/);
   assert.doesNotThrow(() => mayStartSend({ packet, attempts: [failed], actorRole: "ADMIN", actorId: "admin_a", revalidatedPacketHash: packet.contentHash, currentRecipient: packet.recipient, deliberateResend: true, resendReason: "Provider reconciliation confirms no send" }));
+  const manualFallback = { id: "manual_attempt_1", packetId: packet.id, packetVersion: packet.version, actorId: "admin_a", recipient: packet.recipient, state: "MANUAL_SENT", createdAt: "2026-10-31T00:00:01.000Z" };
+  assert.throws(() => mayStartSend({ packet, attempts: [markUnknownAttempt(sending, now), manualFallback], actorRole: "ADMIN", actorId: "admin_a", revalidatedPacketHash: packet.contentHash, currentRecipient: packet.recipient, deliberateResend: true, resendReason: "Try Resend again" }), /Resolve the current send outcome/,
+    "a later manual record does not hide an unresolved provider attempt");
+  assert.doesNotThrow(() => mayStartSend({ packet, attempts: [{ ...markUnknownAttempt(sending, now), packetVersion: packet.version - 1 }], actorRole: "ADMIN", actorId: "admin_a", revalidatedPacketHash: packet.contentHash, currentRecipient: packet.recipient }),
+    "unresolved attempts from older packet versions do not block the current packet");
 });
 
 test("supplier PDF and email renderers receive an allowlisted delivery projection", async () => {
@@ -334,7 +339,7 @@ test("packet replacements include every item from the old packet and manual rese
   assert.equal(mayStartManualPacketHandoff([], true), false);
 });
 
-test("manual fallback can proceed during a pending provider outcome, but provider retry stays blocked", () => {
+test("manual fallback can proceed during a pending provider outcome, but provider retry stays blocked", async () => {
   const packet = buildSupplierPacket(packetInput());
   const pending = { id: "attempt_1", packetId: packet.id, packetVersion: packet.version, actorId: "admin_a", recipient: packet.recipient, state: "UNKNOWN", createdAt: now };
   const attemptInput = { packet, id: "manual_attempt_1", actorId: "admin_a", actorRole: "ADMIN", attempts: [pending], revalidatedPacketHash: packet.contentHash, currentRecipient: packet.recipient, at: now, deliberateResend: true, resendReason: "The supplier needs the packet while Resend status is pending" };
@@ -344,6 +349,14 @@ test("manual fallback can proceed during a pending provider outcome, but provide
   assert.equal(startPacketAttempt({ ...attemptInput, allowPendingProviderOutcome: true }).state, "SENDING",
     "the separate manual attempt may proceed with an explicit reason");
   assert.throws(() => startPacketAttempt({ ...attemptInput, resendReason: "", allowPendingProviderOutcome: true }), /deliberate resend reason/);
+
+  const migration = await readFile(new URL("../src/db/migrations/0193_allow_pending_supplier_manual_fallback.sql", import.meta.url), "utf8");
+  assert.match(migration, /NEW\.type = 'MANUAL_SEND' AND NOT retry_eligible/,
+    "the database exception is limited to manual fallback and excludes recipient-reconsent retries");
+  assert.match(migration, /ORDER BY attempt\.created_at DESC, attempt\.id DESC LIMIT 1/,
+    "the database uses the same deterministic latest-provider-attempt ordering as the service");
+  assert.match(migration, /latest_provider_state IN \('SENDING','UNKNOWN','ACCEPTED','DELIVERY_ISSUE'\)/,
+    "only unresolved provider outcomes permit the manual fallback");
 });
 
 test("manual handoff requires exact consent-bound recipient and records staff evidence", () => {
@@ -373,9 +386,9 @@ test("manual handoff timestamps require and honor an explicit timezone", () => {
 });
 
 test("manual handoff device-time value uses local time with an explicit offset and preserves the instant", () => {
-  const deviceTime = new Date(2026, 10, 10, 14, 30, 45);
+  const deviceTime = new Date(2026, 10, 10, 14, 30, 45, 950);
   const value = deviceLocalIsoTimestamp(deviceTime);
-  assert.match(value, /^2026-11-10T14:30:45[+-][0-9]{2}:[0-9]{2}$/);
+  assert.match(value, /^2026-11-10T14:30:45\.950[+-][0-9]{2}:[0-9]{2}$/);
   assert.equal(parseExplicitInstant(value)?.toISOString(), deviceTime.toISOString());
   assert.throws(() => deviceLocalIsoTimestamp(new Date(Number.NaN)), /valid device time/);
 });

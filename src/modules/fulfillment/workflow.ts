@@ -484,8 +484,11 @@ export function mayStartSend(input: { packet: SupplierPacket; attempts: readonly
   if (input.actorRole !== "ADMIN" && input.actorRole !== "SUPER_ADMIN") throw new Error("Staff role cannot send supplier packets");
   if (input.actorRole === "ADMIN" && input.packet.items.some((item) => item.assignedAdminId !== input.actorId)) throw new Error("Admin is not assigned to every packet item");
   if (input.revalidatedPacketHash !== input.packet.contentHash || normalizeEmail(input.currentRecipient) !== input.packet.recipient) throw new Error("Packet changed after preview; create a new packet version");
-  const latest = [...input.attempts].filter((attempt) => attempt.packetId === input.packet.id && attempt.packetVersion === input.packet.version && attempt.state !== "MANUAL_EXPORTED").sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
-  if ((latest?.state === "UNKNOWN" || latest?.state === "SENDING") && !input.allowPendingProviderOutcome) throw new Error("Resolve the current send outcome before another send");
+  const currentAttempts = input.attempts.filter((attempt) => attempt.packetId === input.packet.id && attempt.packetVersion === input.packet.version);
+  const hasUnresolvedAttempt = currentAttempts.some((attempt) => attempt.state === "UNKNOWN" || attempt.state === "SENDING");
+  if (hasUnresolvedAttempt && !input.allowPendingProviderOutcome) throw new Error("Resolve the current send outcome before another send");
+  const latest = [...currentAttempts].filter((attempt) => attempt.state !== "MANUAL_EXPORTED")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))[0];
   if (latest && (!input.deliberateResend || !input.resendReason?.trim())) throw new Error("A prior send exists; an audited deliberate resend reason is required");
 }
 

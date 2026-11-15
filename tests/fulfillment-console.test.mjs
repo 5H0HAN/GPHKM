@@ -148,6 +148,7 @@ test("manual-send confirmation errors preserve the reservation and explain safe 
   const field = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/device-time-field.tsx", import.meta.url), "utf8");
   const route = readFileSync(new URL("../src/app/api/staff/fulfillment/packets/[packetId]/manual/route.ts", import.meta.url), "utf8");
   assert.match(page, /latest\.error === "manual" \? <p[\s\S]*GPHKM could not record the manual send, and its reservation is still open/);
+  assert.match(page, /latest\.error === "manual-failed" \? <p[\s\S]*could not confirm whether the manual handoff was recorded[\s\S]*email may already have been sent/);
   assert.match(page, /Do not send this packet again while the outcome is unclear/);
   assert.match(page, /Refresh and check Attempt history before taking another action/);
   assert.match(field, /Use the actual time the email was sent/);
@@ -158,8 +159,42 @@ test("manual-send confirmation errors preserve the reservation and explain safe 
   assert.match(page, /latest\.error === "manual-evidence"/);
   assert.match(route, /function manualFailureResult\(error: unknown\)/);
   assert.match(route, /case "Enter the actual sent time with its timezone after beginning the handoff": return "manual-time"/);
-  assert.match(route, /default: return "manual"/);
+  assert.match(route, /if \(!\(error instanceof Error\)\) return "manual-failed"/);
+  assert.match(route, /default: return "manual-failed"/);
+  assert.match(route, /!Number\.isSafeInteger\(length\) \|\| length < 1\) return redirectToPacket\(packetId, "manual-failed"\)/);
   assert.doesNotMatch(route, /return redirectToPacket\(packetId, `error=\$\{error\.message\}`\)/);
+});
+
+test("device timestamp pattern is valid HTML regex and requires a timezone", () => {
+  const field = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/device-time-field.tsx", import.meta.url), "utf8");
+  const source = field.match(/const SENT_TIME_PATTERN = "([^"]+)";/)?.[1];
+  assert.ok(source, "the input exposes its ISO timestamp pattern");
+  const pattern = new RegExp(`^(?:${source})$`, "v");
+  assert.equal(pattern.test("2026-11-10T14:30:00+06:00"), true);
+  assert.equal(pattern.test("2026-11-10T14:30:00-05:00"), true);
+  assert.equal(pattern.test("2026-11-10T14:30:00Z"), true);
+  assert.equal(pattern.test("2026-11-10T14:30:00"), false);
+});
+
+test("customer history keeps approved writing and cancellation outcomes read-only", () => {
+  const view = readFileSync(new URL("../src/app/customer/orders/orders-view.tsx", import.meta.url), "utf8");
+  const cancellation = readFileSync(new URL("../src/app/customer/orders/cancellation-form.tsx", import.meta.url), "utf8");
+  const orderService = readFileSync(new URL("../src/server/orders/checkout.ts", import.meta.url), "utf8");
+  const projection = readFileSync(new URL("../src/modules/orders/checkout.ts", import.meta.url), "utf8");
+  assert.match(view, /!canManagePlacement && item\.writingSelected && item\.writingWorkflow\?\.approvedArticleText[\s\S]*?Approved article from GPHKM Writing/);
+  assert.match(view, /!canManagePlacement && <OrderItemCancellationHistory history=\{item\.cancellationHistory \?\? \[\]\}/);
+  assert.match(orderService, /row_number\(\) over \([\s\S]*partition by cancellation\.order_item_id[\s\S]*history_rank <= 20/);
+  assert.match(orderService, /cancellationHistoryByItem\.get\(item\.id\) \?\? \[\]/);
+  assert.match(cancellation, /export function OrderItemCancellationHistory/);
+  assert.match(projection, /order\.actorUserId === viewerUserId && item\.writingSelected && item\.writingWorkflow/,
+    "approved draft text remains scoped to the customer who placed the order");
+});
+
+test("staff recovery retry forces a fresh console access check and pause copy preserves the current customer stage", () => {
+  const layout = readFileSync(new URL("../src/app/staff/(console)/layout.tsx", import.meta.url), "utf8");
+  const actions = readFileSync(new URL("../src/app/staff/(console)/fulfillment/workflow-actions.tsx", import.meta.url), "utf8");
+  assert.match(layout, /<a href="\/staff">Retry<\/a>/);
+  assert.match(actions, /customer stays at their current order stage; the pause reason stays private/);
 });
 
 test("recording an actual manual send advances progress and keeps receipt acknowledgement separate", () => {

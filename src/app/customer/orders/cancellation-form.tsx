@@ -9,22 +9,38 @@ function money(minor: string) {
   return `$${(amount / 100n).toLocaleString("en-US")}.${(amount % 100n).toString().padStart(2, "0")}`;
 }
 
+export type CustomerCancellationHistoryItem = {
+  id: string;
+  state: string;
+  reason: string;
+  decisionReason: string | null;
+  refundMinor: string;
+  requestedAt: string;
+};
+
+export function OrderItemCancellationHistory(props: { history: readonly CustomerCancellationHistoryItem[] }) {
+  if (props.history.length === 0) return null;
+  return (
+    <section aria-label="Cancellation history">
+      <h4>Cancellation request history</h4>
+      <ol>
+        {props.history.map((request) => <li key={request.id}>
+          <p><strong>{cancellationCustomerMessage(request.state)}</strong> <time dateTime={request.requestedAt}>{new Date(request.requestedAt).toLocaleDateString("en-US", { dateStyle: "medium", timeZone: "UTC" })}</time></p>
+          <p>Your reason: {request.reason}</p>
+          {request.decisionReason && <p>Review update: {request.decisionReason}</p>}
+          {request.state === "APPROVED" && <p>Wallet credit: {money(request.refundMinor)}</p>}
+        </li>)}
+      </ol>
+    </section>
+  );
+}
+
 export async function OrderItemCancellationForm(props: { organizationId: string; itemId: string }) {
   const { history, canRequest } = await getCustomerOrderItemCancellations(await headers(), props.organizationId, props.itemId);
   const latest = history.at(-1);
   return (
     <section aria-label="Cancellation request">
-      {history.length > 0 && <div>
-        <h4>Cancellation request history</h4>
-        <ol>
-          {history.map((request) => <li key={request.id}>
-            <p><strong>{cancellationCustomerMessage(request.state)}</strong> <time dateTime={request.requestedAt.toISOString()}>{request.requestedAt.toLocaleDateString("en-US", { dateStyle: "medium" })}</time></p>
-            <p>Your reason: {request.reason}</p>
-            {request.decisionReason && <p>Review update: {request.decisionReason}</p>}
-            {request.state === "APPROVED" && <p>Wallet credit: {money(request.refundMinor)}</p>}
-          </li>)}
-        </ol>
-      </div>}
+      <OrderItemCancellationHistory history={history.map((request) => ({ ...request, requestedAt: request.requestedAt.toISOString() }))} />
       {canRequest && latest?.state !== "APPROVED" && latest?.state !== "REQUESTED" && <details>
         <summary>Request item cancellation</summary>
         <p>Requests are reviewed by GPHKM. If approved before fulfillment starts, eligible undelivered amounts are credited to your organization wallet.</p>
