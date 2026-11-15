@@ -1,6 +1,6 @@
 # ADR-0032: Supplier delivery confirmation gates placement progress
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0035](ADR-0035-advance-after-recorded-manual-send.md)
 **Date:** 2026-11-03
 
 ## Context

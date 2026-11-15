@@ -1,6 +1,6 @@
 # ADR-0009: GPHKM-branded customer disclosure and status projection
 
-- **Status:** Accepted
+- **Status:** Accepted; supplier-email progress rule superseded in part by [ADR-0035](ADR-0035-advance-after-recorded-manual-send.md)
 - **Date:** 2026-10-28
 - **Decision owners:** Product / Security / Operations
 

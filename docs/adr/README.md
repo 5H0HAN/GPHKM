@@ -35,3 +35,5 @@ ADRs capture material choices and their consequences. Product behavior details r
 - [ADR-0031: Audited Super Admin same-supplier recovery](ADR-0031-superadmin-same-supplier-recovery.md)
 - [ADR-0032: Supplier delivery confirmation gates placement progress](ADR-0032-supplier-delivery-confirmation-gate.md)
 - [ADR-0033: Keep checkout recipient consent in a private immutable snapshot](ADR-0033-immutable-supplier-recipient-consent.md)
+- [ADR-0034: Allow an audited manual fallback while provider delivery is pending](ADR-0034-audited-manual-fallback-for-pending-supplier-email.md)
+- [ADR-0035: Advance placement after a recorded manual supplier send](ADR-0035-advance-after-recorded-manual-send.md)
