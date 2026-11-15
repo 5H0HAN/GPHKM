@@ -7,6 +7,7 @@ import { sql } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { assertCustomerEquivalentOfferItemIds, MAX_CUSTOMER_EQUIVALENT_OFFER_ITEMS } from "../src/modules/fulfillment/equivalent-offers.ts";
 import { assertSupplierOutcomeMayBeRecorded, normalizeSupplierRecoveryReason } from "../src/modules/fulfillment/supplier-outcome.ts";
+import { deviceLocalIsoTimestamp } from "../src/modules/fulfillment/device-time.ts";
 import {
   acknowledgementFollowUpAt,
   assertPacketActionable,
@@ -29,6 +30,7 @@ import {
   recordManualHandoffCutoff,
   renderSupplierEmail,
   resolveUnknownAttempt,
+  startPacketAttempt,
   supplierDeliveryProjection,
   transitionItem,
 } from "../src/modules/fulfillment/workflow.ts";
@@ -322,10 +324,26 @@ test("packet replacements include every item from the old packet and manual rese
   assert.throws(() => assertCompletePacketReplacement(["a", "b"], new Set(["a"])), /every item in the existing packet/);
   const pending = [{ state: "HANDOFF_PENDING", handedOffAt: null, workStartedAt: null }];
   const handedOff = [{ state: "IN_FULFILLMENT", handedOffAt: new Date(now), workStartedAt: new Date(now) }];
+  const acceptedCutoff = [{ state: "HANDOFF_PENDING", handedOffAt: new Date(now), workStartedAt: null }];
   assert.equal(mayStartManualPacketHandoff(pending, false), true);
   assert.equal(mayStartManualPacketHandoff(handedOff, false), false);
   assert.equal(mayStartManualPacketHandoff(handedOff, true), true);
+  assert.equal(mayStartManualPacketHandoff(acceptedCutoff, false), false);
+  assert.equal(mayStartManualPacketHandoff(acceptedCutoff, true), true,
+    "an audited manual fallback can proceed while provider delivery remains pending");
   assert.equal(mayStartManualPacketHandoff([], true), false);
+});
+
+test("manual fallback can proceed during a pending provider outcome, but provider retry stays blocked", () => {
+  const packet = buildSupplierPacket(packetInput());
+  const pending = { id: "attempt_1", packetId: packet.id, packetVersion: packet.version, actorId: "admin_a", recipient: packet.recipient, state: "UNKNOWN", createdAt: now };
+  const attemptInput = { packet, id: "manual_attempt_1", actorId: "admin_a", actorRole: "ADMIN", attempts: [pending], revalidatedPacketHash: packet.contentHash, currentRecipient: packet.recipient, at: now, deliberateResend: true, resendReason: "The supplier needs the packet while Resend status is pending" };
+
+  assert.throws(() => startPacketAttempt(attemptInput), /Resolve the current send outcome/,
+    "a provider retry still requires reconciliation");
+  assert.equal(startPacketAttempt({ ...attemptInput, allowPendingProviderOutcome: true }).state, "SENDING",
+    "the separate manual attempt may proceed with an explicit reason");
+  assert.throws(() => startPacketAttempt({ ...attemptInput, resendReason: "", allowPendingProviderOutcome: true }), /deliberate resend reason/);
 });
 
 test("manual handoff requires exact consent-bound recipient and records staff evidence", () => {
@@ -354,7 +372,15 @@ test("manual handoff timestamps require and honor an explicit timezone", () => {
   assert.equal(parseExplicitInstant("2026-10-30T14:30:00+14:30"), null);
 });
 
-test("manual send sets the cutoff but only confirmed supplier receipt starts placement work", () => {
+test("manual handoff device-time value uses local time with an explicit offset and preserves the instant", () => {
+  const deviceTime = new Date(2026, 10, 10, 14, 30, 45);
+  const value = deviceLocalIsoTimestamp(deviceTime);
+  assert.match(value, /^2026-11-10T14:30:45[+-][0-9]{2}:[0-9]{2}$/);
+  assert.equal(parseExplicitInstant(value)?.toISOString(), deviceTime.toISOString());
+  assert.throws(() => deviceLocalIsoTimestamp(new Date(Number.NaN)), /valid device time/);
+});
+
+test("recorded manual send sets the cutoff before the same transaction starts placement work", () => {
   const preparing = { state: "HANDOFF_PENDING", updatedAt: "2026-10-30T08:00:00.000Z" };
   const sent = recordManualHandoffCutoff(preparing, "2026-10-30T09:00:00.000Z");
   assert.equal(sent.state, "HANDOFF_PENDING");
@@ -377,20 +403,20 @@ test("manual send sets the cutoff but only confirmed supplier receipt starts pla
   assert.throws(() => recordManualHandoffCutoff(preparing, "not-a-time"), /eligible item/);
 });
 
-test("manual-send service preserves Preparing and does not start work before receipt", async () => {
+test("manual-send service advances eligible placements only after recording the actual send", async () => {
   const service = await readFile(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
   const start = service.indexOf("export async function recordManualSupplierHandoff");
   const end = service.indexOf("export async function reconcileManualSupplierHandoffUnsent", start);
   const manualHandoff = service.slice(start, end);
-  const fulfillmentWriteStart = manualHandoff.indexOf("await tx.update(orderItemFulfillment).set({");
-  const fulfillmentWriteEnd = manualHandoff.indexOf("}).where(eq(orderItemFulfillment.orderItemId", fulfillmentWriteStart);
-  const fulfillmentWrite = manualHandoff.slice(fulfillmentWriteStart, fulfillmentWriteEnd);
-
   assert.match(manualHandoff, /recordManualHandoffCutoff\(/);
-  assert.match(fulfillmentWrite, /handedOffAt: new Date\(cutoff\.handedOffAt!\)/);
-  assert.match(fulfillmentWrite, /customerStatus: item\.state === "HANDOFF_PENDING" \? "PREPARING" : "IN_PROGRESS"/);
-  assert.doesNotMatch(fulfillmentWrite, /workStartedAt/,
-    "manual send records the cutoff and milestone without starting placement work");
+  const attemptSentIndex = manualHandoff.indexOf('state: "MANUAL_SENT"');
+  const workStartIndex = manualHandoff.indexOf("await markItemsHandedOff(");
+  assert.ok(attemptSentIndex >= 0 && workStartIndex > attemptSentIndex,
+    "manual attempt evidence is committed before the item is advanced within the same transaction");
+  assert.match(manualHandoff, /actorRole, at: sentAt, reason: "MANUAL_HANDOFF_RECORDED"/);
+  assert.doesNotMatch(manualHandoff, /customerStatus: item\.state === "HANDOFF_PENDING" \? "PREPARING"/);
+  assert.ok(manualHandoff.indexOf('.for("update").limit(1)') < manualHandoff.indexOf("lockPacketRowAndItems(tx, input.packetId)"),
+    "manual recording locks the attempt before order items, matching provider-event lock order");
 });
 
 test("manual handoff preserves uploaded evidence when transaction commit outcome is ambiguous", async () => {
@@ -400,7 +426,7 @@ test("manual handoff preserves uploaded evidence when transaction commit outcome
   assert.match(manualHandoff, /preparePrivateFileUpload\(\)[\s\S]*savePrivateFile\(file\.bytes, storageKey\)/);
   assert.match(manualHandoff, /linkPrivateFileUpload\(tx, storageKey\)/);
   assert.match(manualHandoff, /recordManualHandoffCutoff\(/);
-  assert.doesNotMatch(manualHandoff, /markItemsHandedOff\(/);
+  assert.match(manualHandoff, /markItemsHandedOff\(/);
   assert.match(manualHandoff, /transactionCallbackReturned = true;[\s\S]*return \{ attemptId: attempt\.id, state: "MANUAL_SENT"/);
   assert.match(manualHandoff, /if \(storageKey && !transactionCallbackReturned\) await queuePrivateFileDeleteOutsideTransaction\(storageKey\)/);
 });
@@ -460,9 +486,10 @@ test("supplier work start requires evidence on the latest active packet for the 
   assert.match(handoffEvidence, /pi\.route_generation = route\.route_generation/);
   assert.match(handoffEvidence, /max\(latest\.version\)/);
   assert.match(handoffEvidence, /attempt\.type = 'SEND'.*attempt\.state = 'DELIVERED'/s);
-  assert.match(handoffEvidence, /attempt\.type in \('MANUAL_SENT','MANUAL_SEND'\).*attempt\.state = 'MANUAL_SENT'[\s\S]*acknowledgement\.packet_id = packet\.id and acknowledgement\.attempt_id = attempt\.id/s);
+  assert.match(handoffEvidence, /attempt\.type in \('MANUAL_SENT','MANUAL_SEND'\).*attempt\.state = 'MANUAL_SENT'[\s\S]*attempt\.sent_at is not null/s);
 
   const migration = await readFile(new URL("../src/db/migrations/0172_manual_receipt_controls_work_start.sql", import.meta.url), "utf8");
+  const manualSendProgressMigration = await readFile(new URL("../src/db/migrations/0192_manual_send_advances_customer_stage.sql", import.meta.url), "utf8");
   assert.match(migration, /packet\.supplier_id = fulfillment_supplier_id/);
   assert.match(migration, /packet\.superseded_at IS NULL/);
   assert.match(migration, /pi\.route_generation = current_route_generation/);
@@ -470,6 +497,11 @@ test("supplier work start requires evidence on the latest active packet for the 
   assert.match(migration, /attempt\.type = 'SEND'.*attempt\.state = 'DELIVERED'/s);
   assert.match(migration, /attempt\.type IN \('MANUAL_SENT','MANUAL_SEND'\)[\s\S]*attempt\.state = 'MANUAL_SENT'[\s\S]*acknowledgement\.packet_id = packet\.id[\s\S]*acknowledgement\.attempt_id = attempt\.id/s);
   assert.match(migration, /NEW\.state = 'HANDOFF_PENDING'[\s\S]*supplier packet preparation is required/);
+  assert.match(manualSendProgressMigration, /attempt\.type IN \('MANUAL_SENT','MANUAL_SEND'\)[\s\S]*attempt\.state = 'MANUAL_SENT'[\s\S]*attempt\.sent_at IS NOT NULL/);
+  assert.doesNotMatch(manualSendProgressMigration, /supplier_packet_acknowledgement/,
+    "manual receipt acknowledgement is separate and does not gate work start");
+  assert.match(manualSendProgressMigration, /packet\.version = \([\s\S]*max\(latest\.version\)/,
+    "the database requires actual send evidence on the current packet version");
 
   const acceptanceMigration = await readFile(new URL("../src/db/migrations/0160_equivalent_acceptance_lock_order.sql", import.meta.url), "utf8");
   assert.match(acceptanceMigration, /SELECT f\.\* INTO fulfillment_row[\s\S]*FOR UPDATE/);
@@ -503,6 +535,12 @@ test("manual handoff reservation blocks cancellation until audited as unsent", a
   const pending = { id: "manual_attempt_1", packetId: packet.id, packetVersion: packet.version, actorId: "admin_a", recipient: packet.recipient, state: "SENDING", createdAt: now, type: "MANUAL_SEND" };
   assert.equal(mayRequestOrdinaryCancellation(item, { source: "PERSISTED", state: pending.state }), false);
   assert.throws(() => mayStartSend({ packet, attempts: [pending], actorRole: "ADMIN", actorId: "admin_a", revalidatedPacketHash: packet.contentHash, currentRecipient: packet.recipient }), /Resolve the current send outcome/);
+  const packetService = await readFile(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
+  const manualReservation = packetService.slice(packetService.indexOf("export async function beginManualSupplierHandoff"), packetService.indexOf("export async function recordManualSupplierHandoff"));
+  assert.match(manualReservation, /previousRows\.some\(\(attempt\) => attempt\.type === "MANUAL_SEND" && attempt\.state === "SENDING"\)/,
+    "a second manual reservation cannot race the first manual email");
+  assert.match(manualReservation, /allowPendingProviderOutcome: true/,
+    "manual fallback is separately permitted while Resend remains pending");
   const reconciled = { ...pending, state: "RECONCILED_FAILED" };
   assert.equal(mayRequestOrdinaryCancellation(item, { source: "PERSISTED", state: reconciled.state }), true);
   assert.throws(() => mayStartSend({ packet, attempts: [reconciled], actorRole: "ADMIN", actorId: "admin_a", revalidatedPacketHash: packet.contentHash, currentRecipient: packet.recipient }), /deliberate resend reason/);

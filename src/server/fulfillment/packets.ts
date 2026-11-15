@@ -70,6 +70,12 @@ async function lockPacketRetryHistory(tx: Tx, packetId: string) {
     .orderBy(asc(supplierPacketAttempt.packetId), asc(supplierPacketAttempt.id)).for("update");
 }
 
+async function isRecipientReconsentRetry(tx: Tx, packetId: string) {
+  const rows = await tx.select({ eligible: sql<boolean>`public.gphkm_supplier_packet_retry_eligible(${supplierPacketItem.orderItemId}, ${packetId})` })
+    .from(supplierPacketItem).where(eq(supplierPacketItem.packetId, packetId));
+  return rows.some((row) => row.eligible);
+}
+
 async function staffTx<T>(headers: Headers, work: (tx: Tx, actor: Actor) => Promise<T>): Promise<T> {
   const actor = await requireStaffAccess(headers, "fulfillment.manage");
   if (actor.role === "FINANCE") throw new Error("Forbidden");
@@ -495,6 +501,7 @@ export async function getSupplierPacket(headers: Headers, packetId: string) {
       packet = jsonPacket(row.packet);
       staleSnapshot = true;
     }
+    const recipientReconsentRetry = await isRecipientReconsentRetry(tx, packetId);
     const [contact] = await tx.select({ name: supplier.name, status: supplier.status })
       .from(supplier).where(eq(supplier.id, row.supplierId)).limit(1);
     const [contactRow] = await tx.select({ name: supplierContact.name, email: supplierContact.email })
@@ -515,13 +522,13 @@ export async function getSupplierPacket(headers: Headers, packetId: string) {
     const stuckAttemptIds = attempts
       .filter((attempt) => attempt.type === "SEND" && attempt.state === "SENDING" && Date.now() - attempt.createdAt.getTime() >= STUCK_SEND_REVIEW_AFTER_MS)
       .map((attempt) => attempt.id);
-    return { packet, holdReason: row.holdReason, heldAt: row.heldAt, supplier: contact ? { name: contact.name, contactName: contactRow?.name ?? null, email: row.recipient } : null, attempts, acknowledgement: acknowledgement ?? null, manualEvidence, events, providerEvents, stuckAttemptIds, actorId: actor.userId, actorRole: actor.role, superseded: row.supersededAt !== null, staleSnapshot };
+    return { packet, holdReason: row.holdReason, heldAt: row.heldAt, supplier: contact ? { name: contact.name, contactName: contactRow?.name ?? null, email: row.recipient } : null, attempts, acknowledgement: acknowledgement ?? null, manualEvidence, events, providerEvents, stuckAttemptIds, actorId: actor.userId, actorRole: actor.role, superseded: row.supersededAt !== null, staleSnapshot, recipientReconsentRetry };
   });
 }
 
-export async function recordSupplierAcknowledgement(headers: Headers, input: { packetId: string; attemptId: string; reference: string }) {
+export async function recordSupplierAcknowledgement(headers: Headers, input: { packetId: string; attemptId: string; reference: string; confirmSupplierReceipt: boolean }) {
   if (!/^pkt_[A-Za-z0-9_-]{6,80}$/.test(input.packetId) || !validId(input.attemptId)
-      || !input.reference.trim() || input.reference.trim().length > 320 || /[\r\n\0]/.test(input.reference)) {
+      || input.confirmSupplierReceipt !== true || !input.reference.trim() || input.reference.trim().length > 320 || /[\r\n\0]/.test(input.reference)) {
     throw new Error("Supplier acknowledgement details are invalid");
   }
   return staffTx(headers, async (tx, actor) => {
@@ -767,20 +774,22 @@ async function loadCurrentPacket(tx: Tx, row: typeof supplierPacket.$inferSelect
       const route = routeByItem.get(item.id);
       const supplierId = route?.supplierId ?? null;
       const resolution = packetContentByItem.get(item.id);
-      if (resolution?.error) throw resolution.error;
+      if (resolution?.error) throw new StaleSupplierPacketSnapshotError("Customer-approved content changed after packet preparation");
       const consentedContent = resolution?.content ?? null;
       if (!recipientSnapshotCurrent && !consentedContent?.consentEventId) {
-        throw new Error("Customer consent for the current supplier recipient is not recorded. Request fresh content consent before preparing a packet.");
+        throw new StaleSupplierPacketSnapshotError("Customer consent for the current supplier recipient is not recorded");
       }
       if (!supplierId || supplierId !== row.supplierId || order.id !== row.orderId || order.organizationId !== row.organizationId
         || !["HANDOFF_PENDING", "IN_FULFILLMENT"].includes(fulfillment.state) || !fulfillment.assignedAdminId || !item.supplierSharingConsented
         || route?.routeGeneration !== snapshotRouteGeneration
-        || (consentedContent?.noticeVersion ?? item.consentNoticeVersion) !== stored.items.find((part) => part.orderItemId === item.id)?.consent.disclosureVersion) throw new Error("Packet item is no longer eligible; prepare a new version and obtain fresh consent");
+        || (consentedContent?.noticeVersion ?? item.consentNoticeVersion) !== stored.items.find((part) => part.orderItemId === item.id)?.consent.disclosureVersion) {
+        throw new StaleSupplierPacketSnapshotError("Packet item is no longer eligible for a new handoff");
+      }
       const article = item.writingSelected
         ? writing?.state === "APPROVED_FIRST" || writing?.state === "APPROVED_FINAL" ? writing.approvedArticleText
           : writing?.state === "CUSTOMER_DECLINED_FINAL" ? consentedContent?.articleText ?? null : null
         : item.articleText;
-      if (!article) throw new Error("The customer-approved final article is no longer available");
+      if (!article) throw new StaleSupplierPacketSnapshotError("The customer-approved final article is no longer available");
       const versionArticle = item.writingSelected ? article : consentedContent?.articleText ?? article;
       return packetItemInput({
         itemId: item.id, orderId: order.id, organizationId: order.organizationId, supplierId,
@@ -991,26 +1000,38 @@ export async function beginManualSupplierHandoff(headers: Headers, packetId: str
     if (row.supersededAt || row.holdReason) throw new Error("Packet unavailable for handoff");
     await requirePacketAssignment(tx, packetId, actor);
     const packet = await loadCurrentPacket(tx, row, { blockUnresolvedSupplierFailure: true });
+    if (await isRecipientReconsentRetry(tx, packetId)) {
+      throw new Error("Manual handoff is unavailable for a recipient-consent recovery; use the Resend action");
+    }
     const fulfillmentRows = await lockPacketFulfillmentRows(tx, packet);
     const previousRows = await tx.select().from(supplierPacketAttempt).where(eq(supplierPacketAttempt.packetId, packetId));
+    if (previousRows.some((attempt) => attempt.type === "MANUAL_SEND" && attempt.state === "SENDING")) {
+      throw new Error("A manual handoff is already in progress");
+    }
     const attempts = previousRows.filter((item) => item.type === "SEND" || item.type === "MANUAL_SENT" || item.type === "MANUAL_SEND")
       .map((attempt) => packetAttemptProjection(attempt, row.version));
     const id = randomUUID();
     const resend = resendReason?.trim() ?? "";
     if (!mayStartManualPacketHandoff(fulfillmentRows, resend.length > 0)) throw new Error("Packet items are no longer eligible for handoff");
+    const latestProviderAttempt = previousRows.filter((attempt) => attempt.type === "SEND")
+      .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())[0];
+    const providerOutcomePending = Boolean(latestProviderAttempt
+      && ["SENDING", "UNKNOWN", "ACCEPTED", "DELIVERY_ISSUE"].includes(latestProviderAttempt.state));
     const started = startPacketAttempt({ packet, id, actorId: actor.userId,
       actorRole: actor.role === "SUPER_ADMIN" ? "SUPER_ADMIN" : "ADMIN", attempts,
       revalidatedPacketHash: packet.contentHash, currentRecipient: row.recipient,
-      at: new Date().toISOString(), deliberateResend: resend.length > 0, resendReason: resend });
+      at: new Date().toISOString(), deliberateResend: resend.length > 0, resendReason: resend,
+      allowPendingProviderOutcome: true });
     await tx.insert(supplierPacketAttempt).values({ id, packetId, type: "MANUAL_SEND", state: "SENDING",
       actorUserId: actor.userId, recipient: started.recipient, idempotencyKey: `manual-send-${id}`,
       resendReason: resend || null, provider: null });
     await tx.insert(supplierPacketAttemptEvent).values({ id: randomUUID(), attemptId: id,
       actorUserId: actor.userId, actorKind: "STAFF", fromState: null, toState: "SENDING",
-      reasonCode: resend ? "DELIBERATE_MANUAL_SEND_RESERVED" : "MANUAL_SEND_RESERVED" });
+      reasonCode: providerOutcomePending ? "MANUAL_FALLBACK_PROVIDER_PENDING" : resend ? "DELIBERATE_MANUAL_SEND_RESERVED" : "MANUAL_SEND_RESERVED" });
     await appendAuditEvent(tx, { actorUserId: actor.userId, action: "SUPPLIER_PACKET_MANUAL_HANDOFF_RESERVED",
       targetType: "SUPPLIER_PACKET", targetId: packetId, metadata: { attemptId: id,
-        version: row.version, itemCount: packet.items.length, recipient: row.recipient, result: "PENDING" } });
+        version: row.version, itemCount: packet.items.length, recipient: row.recipient, result: "PENDING",
+        providerOutcomePending } });
     return { attemptId: id, state: "SENDING" as const };
   });
 }
@@ -1033,16 +1054,22 @@ export async function recordManualSupplierHandoff(headers: Headers, input: { pac
     const result = await staffTx(headers, async (tx, actor) => {
     await lockPacketSupplierContact(tx, input.packetId);
     await lockPacketRetryHistory(tx, input.packetId);
-    const row = await lockPacketRowAndItems(tx, input.packetId);
-    await requirePacketAssignment(tx, input.packetId, actor);
-    if (row.supersededAt || row.holdReason) throw new Error("Packet is no longer eligible for handoff");
-    const packet = await loadCurrentPacket(tx, row);
-    const itemRows = await lockPacketFulfillmentRows(tx, packet);
     const [attempt] = await tx.select().from(supplierPacketAttempt)
       .where(and(eq(supplierPacketAttempt.id, input.attemptId), eq(supplierPacketAttempt.packetId, input.packetId)))
       .for("update").limit(1);
     if (!attempt || attempt.type !== "MANUAL_SEND" || attempt.state !== "SENDING") {
       throw new Error("Pending manual handoff reservation unavailable");
+    }
+    const row = await lockPacketRowAndItems(tx, input.packetId);
+    await requirePacketAssignment(tx, input.packetId, actor);
+    if (row.supersededAt || row.holdReason) throw new Error("Packet is no longer eligible for handoff");
+    const packet = await loadCurrentPacket(tx, row);
+    if (await isRecipientReconsentRetry(tx, input.packetId)) {
+      throw new Error("Manual handoff is unavailable for a recipient-consent recovery; use the Resend action");
+    }
+    const itemRows = await lockPacketFulfillmentRows(tx, packet);
+    if (attempt.recipient.trim().toLowerCase() !== row.recipient.trim().toLowerCase()) {
+      throw new Error("Manual handoff reservation recipient does not match this packet version");
     }
     if (!mayStartManualPacketHandoff(itemRows, Boolean(attempt.resendReason))) throw new Error("Packet items are no longer eligible for handoff");
     const sentAt = parseExplicitInstant(input.sentAt);
@@ -1070,16 +1097,15 @@ export async function recordManualSupplierHandoff(headers: Headers, input: { pac
         ...(item.handedOffAt ? { handedOffAt: item.handedOffAt.toISOString() } : {}),
         ...(item.workStartedAt ? { workStartedAt: item.workStartedAt.toISOString() } : {}),
       }, sentAt.toISOString());
-      await tx.update(orderItemFulfillment).set({
-        handedOffAt: new Date(cutoff.handedOffAt!),
-        customerStatus: item.state === "HANDOFF_PENDING" ? "PREPARING" : "IN_PROGRESS",
-        updatedAt: new Date(cutoff.updatedAt),
-      }).where(eq(orderItemFulfillment.orderItemId, item.orderItemId));
+      await tx.update(orderItemFulfillment).set({ handedOffAt: new Date(cutoff.handedOffAt!), updatedAt: new Date(cutoff.updatedAt) })
+        .where(eq(orderItemFulfillment.orderItemId, item.orderItemId));
       await appendAuditEvent(tx, { organizationId: row.organizationId, actorUserId: actor.userId,
         action: "SUPPLIER_HANDOFF_CUTOFF_SET", targetType: "CUSTOMER_ORDER_ITEM", targetId: item.orderItemId,
         reasonCode: "MANUAL_HANDOFF_RECORDED", metadata: { packetId: row.id, attemptId: attempt.id,
           handedOffAt: cutoff.handedOffAt, result: item.handedOffAt ? "EXISTING_CUTOFF_PRESERVED" : "CANCELLATION_LOCKED" } });
     }
+    await markItemsHandedOff(tx, { itemIds: packet.items.map((item) => item.orderItemId), actorId: actor.userId,
+      actorRole, at: sentAt, reason: "MANUAL_HANDOFF_RECORDED" });
     await appendAuditEvent(tx, { actorUserId: actor.userId, action: "SUPPLIER_PACKET_MANUAL_HANDOFF_RECORDED", targetType: "SUPPLIER_PACKET", targetId: input.packetId, metadata: {
       version: row.version, itemCount: packet.items.length, evidenceId: evidenceAudit?.id ?? null,
       evidenceKind: evidenceAudit?.kind ?? null, evidenceBytes: evidenceAudit?.bytes ?? null,

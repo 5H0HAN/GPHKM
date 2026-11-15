@@ -3,13 +3,22 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   customerSafeFulfillmentProjection,
+  customerOrderStages,
+  customerStageSummary,
   contentReviewReasonOptions,
+  customerStatusForFulfillmentTransition,
+  fulfillmentReasonCodeForTransition,
+  fulfillmentStateLabel,
+  fulfillmentTransitionGuidance,
   fulfillmentFollowUpUpdate,
   fulfillmentTransitionChoices,
   customerStatusForMilestone,
   isFulfillmentOverdue,
   mayAssignFulfillment,
   mayReadFulfillmentContent,
+  maximumNextUpdateDate,
+  minimumNextUpdateDate,
+  nextUpdateDateInputValue,
   validateNextUpdate,
   validatePublicationUrl,
 } from "../src/modules/fulfillment/console.ts";
@@ -35,6 +44,34 @@ test("customer milestone projection allowlists only customer-safe fields", () =>
   });
   assert.equal(customerStatusForMilestone("COMPLETE_RESOLVED", "CANCELED_REFUNDED"), "RESOLVED");
   assert.equal(customerStatusForMilestone("COMPLETE_RESOLVED", "COMPLETED"), "COMPLETE");
+  assert.equal(customerStatusForMilestone("ORDER_RECEIVED", "CONFIRMED"), "ORDER_RECEIVED");
+  assert.equal(customerStatusForMilestone("CONTENT_REVIEW", "CONTENT_PREPARATION"), "CONTENT_REVIEW");
+  assert.equal(customerStatusForMilestone("PREPARING_YOUR_PLACEMENT", "HANDOFF_PENDING"), "PREPARING");
+  assert.equal(customerStatusForMilestone("PUBLICATION_IN_PROGRESS", "IN_FULFILLMENT"), "IN_PROGRESS");
+  assert.equal(customerStatusForMilestone("LINK_VERIFICATION", "EVIDENCE_REVIEW"), "LINK_VERIFICATION");
+  assert.equal(customerStatusForFulfillmentTransition("PREPARING_YOUR_PLACEMENT", "ON_HOLD", "CONTENT_REVIEW"), "CONTENT_REVIEW");
+  assert.equal(customerStatusForFulfillmentTransition("PREPARING_YOUR_PLACEMENT", "ON_HOLD", "ORDER_RECEIVED"), "ORDER_RECEIVED");
+});
+
+test("customer order stages share one ordered label set and keep resolved separate from complete", () => {
+  assert.deepEqual(customerOrderStages, [
+    ["ORDER_RECEIVED", "Order received"],
+    ["CONTENT_REVIEW", "Content review"],
+    ["PREPARING", "Preparing your placement"],
+    ["IN_PROGRESS", "Publication in progress"],
+    ["LINK_VERIFICATION", "Link verification"],
+    ["COMPLETE", "Complete"],
+  ]);
+  for (const [index, [status, label]] of customerOrderStages.entries()) {
+    assert.deepEqual(customerStageSummary(status), {
+      index, label, stageNumber: index + 1, totalStages: 6, resolved: false,
+    });
+  }
+  assert.deepEqual(customerStageSummary("RESOLVED"), {
+    index: -1, label: "Resolved", stageNumber: null, totalStages: 6, resolved: true,
+  });
+  assert.equal(customerStageSummary("UNRECOGNIZED").stageNumber, null);
+  assert.equal(customerStageSummary("UNRECOGNIZED").label, "Status unavailable");
 });
 
 test("manual publication evidence URL and next-update date reject unsafe or malformed input", () => {
@@ -56,14 +93,134 @@ test("overdue staff follow-ups exclude missing dates and terminal items", () => 
   assert.equal(isFulfillmentOverdue(new Date("2026-10-29T12:00:01.000Z"), "IN_FULFILLMENT", now), false);
 });
 
-test("fulfillment detail distinguishes auth failures, unavailable items, and unexpected loader errors", () => {
+test("fulfillment detail distinguishes unavailable items from recoverable post-action read errors", () => {
   const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/[itemId]/page.tsx", import.meta.url), "utf8");
   const loader = page.slice(page.indexOf("try { result = await getFulfillmentItem"), page.indexOf("const contentChanges"));
-  assert.match(loader, /error\.message === "Unauthorized"\) redirect\("\/staff\/sign-in"\)/);
-  assert.match(loader, /error\.message === "Forbidden"\) redirect\("\/staff"\)/);
+  assert.match(loader, /error\.message === "Forbidden"\) return/);
   assert.match(loader, /error\.message === "Item unavailable"\) notFound\(\)/);
-  assert.match(loader, /throw error/);
+  assert.match(loader, /logSafeFailure\("fulfillment_item_load_failed"/);
+  assert.match(loader, /Your previous action may already have completed/);
+  assert.doesNotMatch(loader, /redirect\("\/staff(?:\/sign-in)?"\)/);
   assert.doesNotMatch(loader, /catch \{ notFound\(\)/);
+});
+
+test("packet detail keeps unexpected post-action read failures retryable without hiding authorization boundaries", () => {
+  const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/[packetId]/page.tsx", import.meta.url), "utf8");
+  const loader = page.slice(page.indexOf("try { data = await getSupplierPacket"), page.indexOf("const { packet, attempts"));
+  assert.match(loader, /error\.message === "Unauthorized"\) redirect\("\/staff\/sign-in"\)/,
+    "an expired or missing staff session follows the normal sign-in path instead of being logged as a packet failure");
+  assert.match(loader, /\["Forbidden", "Packet unavailable"\]\.includes\(error\.message\)\) notFound\(\)/);
+  assert.match(loader, /logSafeFailure\("supplier_packet_preview_failed"/);
+  assert.match(loader, /Your previous action may already have completed/);
+  assert.doesNotMatch(loader, /catch \{[^}]*notFound\(\)/);
+});
+
+test("historical supplier packets remain reviewable when live order eligibility changes", async () => {
+  const service = readFileSync(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
+  const detail = service.slice(service.indexOf("export async function getSupplierPacket"), service.indexOf("export async function recordSupplierAcknowledgement"));
+  const current = service.slice(service.indexOf("async function loadCurrentPacket"), service.indexOf("function resendConfig"));
+  const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/[packetId]/page.tsx", import.meta.url), "utf8");
+  assert.match(detail, /catch \(error\)[\s\S]*error instanceof StaleSupplierPacketSnapshotError[\s\S]*packet = jsonPacket\(row\.packet\)[\s\S]*staleSnapshot = true/);
+  assert.match(detail, /if \(!\(error instanceof StaleSupplierPacketSnapshotError\)\) throw error/,
+    "database and operational errors still fail visibly instead of being mislabeled as stale history");
+  assert.match(current, /resolution\?\.error\) throw new StaleSupplierPacketSnapshotError/);
+  assert.match(current, /Packet item is no longer eligible for a new handoff/);
+  assert.match(current, /if \(!article\) throw new StaleSupplierPacketSnapshotError/);
+  assert.match(page, /Historical supplier packet[\s\S]*saved contents remain available for review and reconciliation/);
+});
+
+test("packet resend UI enforces its required reason and warns before duplicating an accepted send", () => {
+  const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/[packetId]/page.tsx", import.meta.url), "utf8");
+  const actions = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/actions.ts", import.meta.url), "utf8");
+  assert.match(page, /const latestProviderAttempt = attempts\.find\(\(attempt\) => attempt\.type === "SEND"\)/);
+  assert.match(page, /const priorSendExists = attempts\.some/);
+  assert.match(page, /Reason for resending \(required\)[\s\S]*required=\{priorSendExists\}/);
+  assert.match(actions, /error\.message === "A prior send exists; an audited deliberate resend reason is required" \? "resend-reason"/);
+  assert.match(page, /latest\.error === "resend-reason"[\s\S]*Before sending again, check its delivery status/);
+  assert.match(page, /A previous send was accepted by the provider\. Check its delivery status before trying again/);
+  assert.match(page, /Check Resend delivery status or the reconciliation queue before deciding whether to resend/);
+  assert.match(page, /The provider may still deliver its copy, so a duplicate is possible\. GPHKM keeps both attempts in history/);
+  assert.match(page, /Start manual email handoff/);
+});
+
+test("manual-send confirmation errors preserve the reservation and explain safe recovery", () => {
+  const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/[packetId]/page.tsx", import.meta.url), "utf8");
+  const field = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/device-time-field.tsx", import.meta.url), "utf8");
+  const route = readFileSync(new URL("../src/app/api/staff/fulfillment/packets/[packetId]/manual/route.ts", import.meta.url), "utf8");
+  assert.match(page, /latest\.error === "manual" \? <p[\s\S]*GPHKM could not record the manual send, and its reservation is still open/);
+  assert.match(page, /Do not send this packet again while the outcome is unclear/);
+  assert.match(page, /Refresh and check Attempt history before taking another action/);
+  assert.match(field, /Use the actual time the email was sent/);
+  assert.match(field, /after the reservation began/);
+  assert.match(page, /Use a reference from the sent message, such as its Message-ID\. Do not invent one\./);
+  assert.match(page, /latest\.error === "manual-time"/);
+  assert.match(page, /latest\.error === "manual-recipient"/);
+  assert.match(page, /latest\.error === "manual-evidence"/);
+  assert.match(route, /function manualFailureResult\(error: unknown\)/);
+  assert.match(route, /case "Enter the actual sent time with its timezone after beginning the handoff": return "manual-time"/);
+  assert.match(route, /default: return "manual"/);
+  assert.doesNotMatch(route, /return redirectToPacket\(packetId, `error=\$\{error\.message\}`\)/);
+});
+
+test("recording an actual manual send advances progress and keeps receipt acknowledgement separate", () => {
+  const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/[packetId]/page.tsx", import.meta.url), "utf8");
+  const field = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/device-time-field.tsx", import.meta.url), "utf8");
+  const actions = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/actions.ts", import.meta.url), "utf8");
+  const service = readFileSync(new URL("../src/server/fulfillment/packets.ts", import.meta.url), "utf8");
+  assert.match(field, /Use current device time/);
+  assert.match(field, /deviceLocalIsoTimestamp\(new Date\(\)\)/);
+  assert.match(field, /this device’s local time and timezone/);
+  assert.match(page, /Recording the actual send moves eligible placements to Publication in Progress/);
+  assert.match(page, /provider-confirmed delivery or a recorded actual manual send moves eligible placements to Publication in Progress/);
+  assert.match(page, /Record supplier receipt/);
+  assert.match(page, /name="confirmSupplierReceipt" required/);
+  assert.match(actions, /get\(form, "confirmSupplierReceipt"\) !== "on"[\s\S]*error=ack-confirm/);
+  assert.match(service, /confirmSupplierReceipt: boolean/);
+  assert.match(service, /input\.confirmSupplierReceipt !== true/);
+  assert.match(service, /confirmManualSupplierReceipt\([\s\S]*state: progress\.state, customerStatus: progress\.customerStatus/);
+  assert.match(page, /latest\.acknowledged \? <section[\s\S]*Supplier receipt is recorded/);
+  assert.match(actions, /acknowledged=1#supplier-acknowledgement/);
+});
+
+test("assignment result stays in the current fulfillment queue view and confirms success", () => {
+  const actions = readFileSync(new URL("../src/app/staff/(console)/fulfillment/actions.ts", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/page.tsx", import.meta.url), "utf8");
+  assert.match(actions, /fulfillmentQueueRedirectTarget\(field\(form, "page"\), field\(form, "view"\), "updated"\)/);
+  assert.match(actions, /fulfillmentQueueRedirectTarget\(field\(form, "page"\), field\(form, "view"\), "assignment-failed"\)/);
+  assert.match(page, /name="page" value=\{pagination\.page\}/);
+  assert.match(page, /name="view" value=\{view\}/);
+  assert.match(page, /Assignment saved\. The queue below shows the latest assignment\./);
+  assert.match(page, /<RedirectingForm action=\{assignFulfillmentAction\}/);
+  const redirectingForm = readFileSync(new URL("../src/app/staff/(console)/fulfillment/redirecting-form.tsx", import.meta.url), "utf8");
+  assert.match(redirectingForm, /isSafeStaffNavigationTarget\(result\.redirectTo\)/);
+  assert.match(redirectingForm, /window\.location\.assign\(result\.redirectTo\)/);
+  assert.match(redirectingForm, /role="status">Saving/);
+  assert.match(redirectingForm, /Your action may already have completed/);
+  assert.match(redirectingForm, /if \(submittingRef\.current\) return/);
+});
+
+test("staff page and domain checks reuse one request-scoped actor while enforcing each permission", () => {
+  const auth = readFileSync(new URL("../src/server/auth/staff.ts", import.meta.url), "utf8");
+  assert.match(auth, /const getStaffActorForRequest = cache\(async \(headers: Headers\)/);
+  assert.match(auth, /const actor = await getStaffActorForRequest\(headers\);[\s\S]*!hasStaffPermission\(role, permission\)/);
+  assert.match(auth, /assertStaffPermission\(role, permission\)/);
+});
+
+test("post-save fulfillment and packet actions use a full staff-page navigation", () => {
+  const fulfillmentActions = readFileSync(new URL("../src/app/staff/(console)/fulfillment/actions.ts", import.meta.url), "utf8");
+  const packetActions = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/actions.ts", import.meta.url), "utf8");
+  const fulfillmentPage = readFileSync(new URL("../src/app/staff/(console)/fulfillment/[itemId]/page.tsx", import.meta.url), "utf8");
+  const packetPage = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/[packetId]/page.tsx", import.meta.url), "utf8");
+  const preparePage = readFileSync(new URL("../src/app/staff/(console)/fulfillment/packets/new/page.tsx", import.meta.url), "utf8");
+  const workflowActions = readFileSync(new URL("../src/app/staff/(console)/fulfillment/workflow-actions.tsx", import.meta.url), "utf8");
+  assert.match(fulfillmentActions, /updateFulfillmentAction\(form: FormData\): Promise<\{ redirectTo: string \}>/);
+  assert.match(fulfillmentActions, /updateFulfillmentFollowUpAction\(form: FormData\): Promise<\{ redirectTo: string \}>/);
+  assert.match(packetActions, /preparePacketsAction\(form: FormData\): Promise<\{ redirectTo: string \}>/);
+  assert.match(packetActions, /sendSupplierPacketAction\(form: FormData\): Promise<\{ redirectTo: string \}>/);
+  assert.match(workflowActions, /<RedirectingForm action=\{updateFulfillmentAction\}/);
+  assert.match(fulfillmentPage, /<RedirectingForm action=\{updateFulfillmentFollowUpAction\}/);
+  assert.match(packetPage, /<RedirectingForm action=\{sendSupplierPacketAction\}/);
+  assert.match(preparePage, /<RedirectingForm action=\{preparePacketsAction\}/);
 });
 
 
@@ -104,10 +261,10 @@ test("the assigned fulfillment detail shows the latest consented instructions", 
 test("fulfillment action errors stay on the item page with a recovery message", () => {
   const actions = readFileSync(new URL("../src/app/staff/(console)/fulfillment/actions.ts", import.meta.url), "utf8");
   const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/[itemId]/page.tsx", import.meta.url), "utf8");
-  assert.match(actions, /error\.message === "Prepare the supplier packet before entering handoff preparation"[\s\S]*error=packet-required/);
-  assert.match(actions, /error\.message === "Confirm supplier delivery before starting placement work"[\s\S]*error=delivery-required/);
+  assert.match(actions, /error\.message === "Prepare the supplier packet before entering handoff preparation"[\s\S]*fulfillmentItemRedirectTarget\(itemId, "packet-required"\)/);
+  assert.match(actions, /error\.message === "Confirm provider delivery or record the actual manual send before starting placement work"[\s\S]*fulfillmentItemRedirectTarget\(itemId, "delivery-required"\)/);
   assert.match(page, /query\.error === "packet-required"[\s\S]*Prepare the supplier packet/);
-  assert.match(page, /query\.error === "delivery-required"[\s\S]*record the supplier’s receipt/);
+  assert.match(page, /query\.error === "delivery-required"[\s\S]*actual manual send is recorded/);
 });
 
 test("unapproved GPHKM Writing cannot be marked ready or handed to placement", () => {
@@ -132,4 +289,65 @@ test("follow-up command authenticates, locks the item, applies the validated dat
   assert.match(command, /FULFILLMENT_FOLLOW_UP_CHANGED/);
   assert.match(command, /reasonCode: input.reasonCode/);
   assert.doesNotMatch(command, /transitionItem|customerStatus:|state: input/);
+});
+
+test("fulfillment progress reasons are derived from validated workflow steps", () => {
+  assert.equal(fulfillmentReasonCodeForTransition("CONTENT_PREPARATION", "AWAITING_CUSTOMER_APPROVAL"), "CUSTOMER_ACTION_NEEDED");
+  assert.equal(fulfillmentReasonCodeForTransition("READY_FOR_HANDOFF", "IN_FULFILLMENT"), "FULFILLMENT_STARTED");
+  assert.equal(fulfillmentReasonCodeForTransition("ON_HOLD", "CONTENT_PREPARATION"), "RESUMED_WORK");
+  assert.equal(fulfillmentReasonCodeForTransition("IN_FULFILLMENT", "ON_HOLD"), "PAUSED_FOR_REVIEW");
+  assert.equal(fulfillmentReasonCodeForTransition("IN_FULFILLMENT", "ON_HOLD", "CONTENT_RIGHTS_UNCONFIRMED"), "CONTENT_RIGHTS_UNCONFIRMED");
+  assert.throws(() => fulfillmentReasonCodeForTransition("IN_FULFILLMENT", "ON_HOLD", "CUSTOMER_ACTION_NEEDED"), /valid reason/);
+  assert.throws(() => fulfillmentReasonCodeForTransition("CONFIRMED", "COMPLETED"), /valid next step/);
+});
+
+test("staff progress choices explain the scenario and use plain labels", () => {
+  assert.equal(fulfillmentStateLabel("HANDOFF_PENDING"), "Waiting for supplier delivery");
+  assert.equal(fulfillmentStateLabel("ON_HOLD"), "Paused for review");
+  assert.match(fulfillmentTransitionGuidance("CONFIRMED", "CONTENT_PREPARATION"), /Order received to Content review/);
+  assert.match(fulfillmentTransitionGuidance("CONTENT_PREPARATION", "AWAITING_CUSTOMER_APPROVAL"), /draft is ready for customer approval/);
+  assert.match(fulfillmentTransitionGuidance("READY_FOR_HANDOFF", "IN_FULFILLMENT"), /Preparing to Publication in Progress/);
+  assert.match(fulfillmentTransitionGuidance("HANDOFF_PENDING", "IN_FULFILLMENT"), /provider delivery is confirmed or staff records the actual manual send/);
+  assert.match(fulfillmentTransitionGuidance("ON_HOLD", "IN_FULFILLMENT"), /saved when the placement was paused/);
+});
+
+test("customer update date controls stay valid around noon UTC and within the server limit", () => {
+  const beforeNoon = new Date("2026-10-28T11:59:59.999Z");
+  const atNoon = new Date("2026-10-28T12:00:00.000Z");
+  assert.equal(minimumNextUpdateDate(beforeNoon), "2026-10-28");
+  assert.equal(minimumNextUpdateDate(atNoon), "2026-10-29");
+  assert.equal(maximumNextUpdateDate(new Date("2026-10-28T08:00:00.000Z")), "2027-10-28");
+  assert.equal(maximumNextUpdateDate(new Date("2026-10-28T13:00:00.000Z")), "2027-10-29");
+  assert.equal(nextUpdateDateInputValue(new Date("2026-10-29T12:00:00.000Z"), "2026-10-28", "2027-10-29"), "2026-10-29");
+  assert.equal(nextUpdateDateInputValue(new Date("2026-10-27T12:00:00.000Z"), "2026-10-28", "2027-10-29"), "2026-10-28");
+  assert.equal(nextUpdateDateInputValue(new Date("2028-01-01T12:00:00.000Z"), "2026-10-28", "2027-10-29"), "2026-10-28");
+});
+
+test("fulfillment detail separates customer dates, progress, supplier issues, and handoff waits", () => {
+  const page = readFileSync(new URL("../src/app/staff/(console)/fulfillment/[itemId]/page.tsx", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../src/app/staff/(console)/fulfillment/workflow-actions.tsx", import.meta.url), "utf8");
+  assert.match(page, /Schedule the next customer update/);
+  assert.match(page, /does not send a message or change placement progress/);
+  assert.match(page, /Change placement progress/);
+  assert.match(page, /If the supplier reports a problem/);
+  assert.match(page, /Customer-facing placement progress/);
+  assert.match(page, /Customer placement stage/);
+  assert.match(page, /Stage \$\{customerStage\.stageNumber\} of \$\{customerStage\.totalStages\}/);
+  assert.match(page, /provider delivery is confirmed or staff records the actual manual send/);
+  assert.match(page, /Start link verification becomes available/);
+  assert.match(page, /there is no generic stage override/);
+  assert.match(page, /Advance the customer stage/);
+  assert.match(page, /A manual send is recorded and the customer is now at Publication in Progress/);
+  assert.match(page, /This opens the packet page\. The customer’s stage changes after delivery is confirmed or an actual manual send is recorded there\./);
+  assert.match(page, /<a className=\{styles\.open\} href=\{`\/staff\/fulfillment\/packets\/\$\{encodeURIComponent\(result\.currentPacket\.id\)\}#manual-mail-handoff`\}>Open packet handoff<\/a>/);
+  assert.match(page, /Choose the confirmed situation/);
+  assert.match(page, /result\.hasOpenSupplierOutcome/);
+  assert.match(page, /awaitingSupplier \? /);
+  assert.match(workflow, /fulfillmentTransitionGuidance\(state, currentStep\.value\)/);
+  assert.match(workflow, /Next available action/);
+  assert.match(workflow, /\{currentStep\.label\} and save update date/);
+  assert.match(workflow, /Pause this placement for review/);
+  assert.match(workflow, /max=\{maximumDate\}/);
+  assert.doesNotMatch(page, /Follow-up reason<select/);
+  assert.doesNotMatch(page, /Update reason<select/);
 });

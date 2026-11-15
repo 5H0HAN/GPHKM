@@ -2321,21 +2321,31 @@ try {
      values ($1, $2, $3, $4, 'PDF', $5, 10, repeat('b',64), $6)`,
     [manualEvidenceId, manualPacketId, manualPacketAttemptId, randomUUID(), `handoff-${manualPacketAttemptId}.pdf`, adminA],
   );
-  await migration.query(
-    `insert into supplier_packet_acknowledgement (attempt_id, packet_id, recorded_by_user_id, acknowledged_at, reference)
-     values ($1, $2, $3, now(), 'manual acknowledgement smoke')`,
-    [manualPacketAttemptId, manualPacketId, adminA],
-  );
   await migration.query("RESET ROLE");
   await migration.query(
     `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS', handed_off_at = now(), work_started_at = now()
      where order_item_id = $1`, [orderItemFixture],
   );
+  const manualProgress = await migration.query<{ state: string; customer_status: string }>(
+    "select state, customer_status from order_item_fulfillment where order_item_id = $1", [orderItemFixture],
+  );
+  assert.deepEqual(manualProgress.rows[0], { state: "IN_FULFILLMENT", customer_status: "IN_PROGRESS" },
+    "recorded manual send advances the customer stage without requiring a second receipt action");
   await migration.query("SET LOCAL ROLE gphkm_runtime");
   const finalizedManualAttempt = await migration.query<{ state: string }>(
     "select state from supplier_packet_attempt where id = $1", [manualPacketAttemptId],
   );
-  assert.equal(finalizedManualAttempt.rows[0]?.state, "MANUAL_SENT", "manual send, evidence, acknowledgement, and placement transition persist under the runtime role");
+  assert.equal(finalizedManualAttempt.rows[0]?.state, "MANUAL_SENT", "manual send and evidence persist under the runtime role");
+  await migration.query(
+    `insert into supplier_packet_acknowledgement (attempt_id, packet_id, recorded_by_user_id, acknowledged_at, reference)
+     values ($1, $2, $3, now(), 'manual acknowledgement smoke')`,
+    [manualPacketAttemptId, manualPacketId, adminA],
+  );
+  const afterManualAcknowledgement = await migration.query<{ state: string; customer_status: string }>(
+    "select state, customer_status from order_item_fulfillment where order_item_id = $1", [orderItemFixture],
+  );
+  assert.deepEqual(afterManualAcknowledgement.rows[0], { state: "IN_FULFILLMENT", customer_status: "IN_PROGRESS" },
+    "supplier receipt acknowledgement remains separate from the already advanced customer stage");
   await migration.query("RESET ROLE");
 
   phase = "checking Finance gross-profit projection and field boundary";
@@ -3343,7 +3353,7 @@ try {
   await resendWebhook.connect();
   const actualResendRole = await resendWebhook.query<{ user: string }>("select current_user as user");
   assert.equal(actualResendRole.rows[0]?.user, "gphkm_resend_webhook", "RESEND_WEBHOOK_DATABASE_URL must authenticate as the isolated Resend role");
-  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, exact-consent checkout and wallet finalization with stale/missing legacy-consent rejection, atomic two-item debit and idempotent replay, scoped batch item reads and Support placement counts, private per-user Overview dismissals, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence/acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, public-domain and URL-revision metric invalidation, and denied direct wallet writes.");
+  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, exact-consent checkout and wallet finalization with stale/missing legacy-consent rejection, atomic two-item debit and idempotent replay, scoped batch item reads and Support placement counts, private per-user Overview dismissals, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence with stage advancement and separate receipt acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, public-domain and URL-revision metric invalidation, and denied direct wallet writes.");
 } catch (error) {
   console.error(`Local RLS smoke failed while ${phase}; any open synthetic-data transaction will be rolled back.`);
   if (error instanceof Error) console.error(error.message);

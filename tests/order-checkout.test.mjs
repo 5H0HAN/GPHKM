@@ -148,13 +148,13 @@ test("customer milestone history is an explicit public allowlist", () => {
   assert.deepEqual(result.items[0].milestoneHistory, [{
     status: "IN_PROGRESS", nextUpdateAt: "2026-10-31T00:00:00.000Z", occurredAt: "2026-10-29T00:00:00.000Z",
   }]);
-  const page = readFileSync(new URL("../src/app/customer/orders/page.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../src/app/customer/orders/orders-view.tsx", import.meta.url), "utf8");
   assert.match(page, /aria-label="Placement update history"/);
   assert.match(page, /\[\.\.\.item\.milestoneHistory\]\.reverse\(\)/);
 });
 
 test("customer Orders view renders each item's projected dates and publication links with safe new-tab attributes", () => {
-  const page = readFileSync(new URL("../src/app/customer/orders/page.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../src/app/customer/orders/orders-view.tsx", import.meta.url), "utf8");
   assert.match(page, /const lastUpdatedAt = item\.lastUpdatedAt \?\? order\.createdAt/);
   assert.match(page, /<span>Last updated<\/span><time dateTime=\{lastUpdatedAt\}/);
   assert.match(page, /<span>Next update<\/span>\{item\.nextUpdateAt \? <time dateTime=\{item\.nextUpdateAt\}/);
@@ -192,9 +192,9 @@ test("order count and rows share organization and Member scope with a stable bou
   assert.match(paged, /const scope = \[eq\(customerOrder.organizationId, organizationId\)\]/);
   assert.match(paged, /if \(role === "MEMBER"\) scope.push\(eq\(customerOrder.actorUserId, actor.userId\)\)/);
   assert.match(paged, /count\(\*\)::integer.*from\(customerOrder\).where\(and\(\.\.\.scope\)\)/);
-  assert.match(paged, /orderBy\(desc\(customerOrder.createdAt\), desc\(customerOrder.id\)\).limit\(pagination.limit\).offset\(pagination.offset\)/);
-  const page = readFileSync(new URL("../src/app/customer/orders/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /getMyOrdersPage\(await headers\(\), organizationId, params.page\)/);
+  assert.match(paged, /orderBy\(\.\.\.ordering\)\.limit\(pagination\.limit\)\.offset\(pagination\.offset\)/);
+  const page = readFileSync(new URL("../src/app/customer/orders/orders-view.tsx", import.meta.url), "utf8");
+  assert.match(page, /getMyOrdersPage\(await headers\(\), organizationId, params.page, view\)/);
   assert.match(page, /organizationId=\$\{encodeURIComponent\(organizationId\)\}&page=\$\{target\}/);
   assert.match(page, /Page \{page\} of \{totalPages\}/);
   assert.match(page, /\{page > 1 \? <Link href=\{pageHref\(page - 1\)\}>← Newer orders<\/Link> : <span \/>\}/);

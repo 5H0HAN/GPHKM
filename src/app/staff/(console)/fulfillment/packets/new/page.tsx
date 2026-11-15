@@ -6,6 +6,7 @@ import { listPacketCandidates } from "@/server/fulfillment/packets";
 import { logSafeFailure } from "@/server/observability/safe-log";
 import { preparePacketsAction, requestRecipientReconsentAction } from "../actions";
 import styles from "../packets.module.css";
+import { RedirectingForm } from "../../redirecting-form";
 
 export const dynamic = "force-dynamic";
 export default async function NewPacketPage({ searchParams }: { searchParams: Promise<{ orderId?: string; error?: string; consentRequested?: string }> }) {
@@ -15,7 +16,7 @@ export default async function NewPacketPage({ searchParams }: { searchParams: Pr
   try {
     rows = await listPacketCandidates(await headers(), query.orderId);
   } catch (error) {
-    if (error instanceof Error && ["Unauthorized", "Forbidden", "Order unavailable"].includes(error.message)) notFound();
+    if (error instanceof Error && ["Forbidden", "Order unavailable"].includes(error.message)) notFound();
     const requestId = randomUUID();
     logSafeFailure("supplier_packet_candidates_load_failed", error, requestId);
     return <main className={styles.page}>
@@ -33,9 +34,9 @@ export default async function NewPacketPage({ searchParams }: { searchParams: Pr
     <header className={styles.head}><div><p className={styles.eyebrow}>SUPPLIER HANDOFF</p><h1>Prepare packets</h1><p className={styles.muted}>Select only ready, assigned items. GPHKM groups selected items by fulfillment partner and creates a separate immutable packet for each.</p></div><Link className={styles.link} href="/staff/fulfillment">Back to fulfillment</Link></header>
     {query.error ? <p className={styles.warning} role="alert">{query.error === "recipient-consent"
       ? "The orderer approval request could not be recorded. Refresh and confirm the delivery review is still eligible."
-      : "The selected items could not be prepared. Check their assignment, consent, article readiness, and status."}</p> : null}
+      : "We couldn’t confirm whether packet preparation completed. Review the current item and packet status before submitting again."}</p> : null}
     {query.consentRequested ? <p className={styles.warning} role="status">The orderer can now review the unchanged placement details and approve sharing them with the current fulfillment contact. Ask the person who placed this order to open Customer → Orders. No packet was sent, and the order remains Preparing.</p> : null}
-    <form action={preparePacketsAction} className={styles.panel}>
+    <RedirectingForm action={preparePacketsAction} className={styles.panel}>
       <input type="hidden" name="orderId" value={query.orderId} />
       <p className={styles.muted}>{eligibleCount} of {rows.length} items are ready for a supplier packet. Items need an Admin assignment, customer consent, and publication-ready content.</p>
       <div className={styles.items}>{rows.map((row) => <label className={styles.item} key={row.orderItemId}>
@@ -44,7 +45,7 @@ export default async function NewPacketPage({ searchParams }: { searchParams: Pr
         </span>
       </label>)}</div>
       <button className={styles.submit} type="submit" disabled={eligibleCount === 0}>Prepare selected supplier packets</button>
-    </form>
+    </RedirectingForm>
     {rows.filter((row) => row.requestReconsent).map((row) => <section className={styles.panel} key={`reconsent-${row.orderItemId}`}>
       <h2>Orderer approval needed · {row.listingTitle}</h2>
       <p className={styles.muted}>The previous send was confirmed not delivered. GPHKM will keep the original cutoff and Preparing status. The orderer must review the exact unchanged placement content before a replacement can be prepared.</p>

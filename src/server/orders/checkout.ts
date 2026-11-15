@@ -1,6 +1,6 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { organization, walletAccount } from "@/db/schema";
 import { listing } from "@/db/catalog-schema";
 import { customerOrder, customerOrderItem, customerOrderItemMilestone, orderItemFulfillment, orderItemWriting } from "@/db/order-schema";
@@ -208,7 +208,7 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
 }
 
 export async function getMyOrders(headers: Headers, organizationId: string, limit = 50) {
-  return (await getMyOrdersPage(headers, organizationId, 1, limit)).orders;
+  return (await getMyOrdersPage(headers, organizationId, 1, "all", limit)).orders;
 }
 
 export async function getCustomerOrderHomeSummary(headers: Headers, organizationId: string) {
@@ -255,18 +255,63 @@ export async function getCustomerOrderHomeSummary(headers: Headers, organization
   });
 }
 
-export async function getMyOrdersPage(headers: Headers, organizationId: string, requestedPage: unknown = 1, pageSize = CUSTOMER_ORDERS_PAGE_SIZE) {
+export type CustomerOrdersView = "all" | "current" | "history";
+
+export async function getMyOrdersPage(
+  headers: Headers,
+  organizationId: string,
+  requestedPage: unknown = 1,
+  view: CustomerOrdersView = "all",
+  pageSize = CUSTOMER_ORDERS_PAGE_SIZE,
+) {
   const actor = await requireVerifiedCustomer(headers);
   return withOrganizationContext(headers, organizationId, async (tx, role) => {
     // A customer request must not inherit a staff RLS policy if the same user
     // also has staff authority. Members see only orders they submitted.
     const scope = [eq(customerOrder.organizationId, organizationId)];
     if (role === "MEMBER") scope.push(eq(customerOrder.actorUserId, actor.userId));
+
+    // Apply the lifecycle filter before both count and pagination so records do
+    // not disappear from a page while still affecting its page count. Missing
+    // fulfillment rows fail safe into Current orders until they are repaired.
+    const hasActivePlacement = sql`exists (
+      select 1
+      from public.customer_order_item as item
+      left join public.order_item_fulfillment as fulfillment
+        on fulfillment.order_item_id = item.id
+      where item.order_id = ${customerOrder.id}
+        and (fulfillment.order_item_id is null or fulfillment.customer_status not in ('COMPLETE', 'RESOLVED'))
+    )`;
+    const hasRecentlyFinishedPlacement = sql`exists (
+      select 1
+      from public.customer_order_item as item
+      inner join public.order_item_fulfillment as fulfillment
+        on fulfillment.order_item_id = item.id
+      where item.order_id = ${customerOrder.id}
+        and fulfillment.customer_status in ('COMPLETE', 'RESOLVED')
+        and coalesce(
+          (
+            select milestone.occurred_at
+            from public.customer_order_item_milestone as milestone
+            where milestone.order_item_id = item.id
+              and milestone.status = fulfillment.customer_status
+            order by milestone.occurred_at desc, milestone.id desc
+            limit 1
+          ),
+          fulfillment.updated_at
+        ) >= CURRENT_TIMESTAMP - INTERVAL '48 hours'
+    )`;
+    if (view === "current") scope.push(or(hasActivePlacement, hasRecentlyFinishedPlacement)!);
+    if (view === "history") scope.push(sql`not (${hasActivePlacement}) and not (${hasRecentlyFinishedPlacement})`);
+
     const [count] = await tx.select({ total: sql<number>`count(*)::integer` }).from(customerOrder).where(and(...scope));
     const pagination = customerOrderPagination(requestedPage, count.total, Math.min(pageSize, CUSTOMER_ORDERS_PAGE_SIZE));
+    const ordering = view === "current"
+      ? [desc(hasActivePlacement), desc(customerOrder.createdAt), desc(customerOrder.id)]
+      : [desc(customerOrder.createdAt), desc(customerOrder.id)];
     const rows = await tx.select().from(customerOrder)
       .where(and(...scope))
-      .orderBy(desc(customerOrder.createdAt), desc(customerOrder.id)).limit(pagination.limit).offset(pagination.offset);
+      .orderBy(...ordering).limit(pagination.limit).offset(pagination.offset);
     const ids = rows.map((row) => row.id);
     if (!ids.length) return { ...pagination, orders: [] };
     const items = await tx.select().from(customerOrderItem)

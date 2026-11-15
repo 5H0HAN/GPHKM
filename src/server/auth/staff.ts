@@ -1,5 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
+import { cache } from "react";
 import { and, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { staffAccount } from "@/db/schema";
@@ -16,16 +17,16 @@ export type StaffActor = {
   role: StaffRole;
 };
 
-export async function requireStaffAccess(headers: Headers, permission: StaffPermission): Promise<StaffActor> {
+const getStaffActorForRequest = cache(async (headers: Headers): Promise<StaffActor> => {
   const requestId = randomUUID();
   const skipLocalMfaProof = localStaffMfaDisabled(process.env);
   if (resolveAuthSurface(headers, process.env) !== "staff") {
-    logSafeEvent("staff_authorization_denied", requestId, { permission, surface: "wrong_surface", reasonCode: "WRONG_AUTH_SURFACE" });
+    logSafeEvent("staff_authorization_denied", requestId, { surface: "wrong_surface", reasonCode: "WRONG_AUTH_SURFACE" });
     throw new Error("Unauthorized");
   }
   const authenticated = await getAuthForSurface("staff").api.getSession({ headers });
   if (!authenticated) {
-    logSafeEvent("staff_authorization_denied", requestId, { permission, surface: "staff", reasonCode: "NO_VERIFIED_SESSION" });
+    logSafeEvent("staff_authorization_denied", requestId, { surface: "staff", reasonCode: "NO_VERIFIED_SESSION" });
     throw new Error("Unauthorized");
   }
 
@@ -49,16 +50,20 @@ export async function requireStaffAccess(headers: Headers, permission: StaffPerm
 
   if (!staff || !verifiedSession) {
     logSafeEvent("staff_authorization_denied", requestId, {
-      actorId: authenticated.user.id, permission, surface: "staff",
+      actorId: authenticated.user.id, surface: "staff",
       reasonCode: !staff ? "STAFF_INACTIVE_OR_UNPROVISIONED" : "STAFF_MFA_UNVERIFIED",
     });
     throw new Error("Forbidden");
   }
-  const role = staff.role as StaffRole;
+  return { userId: authenticated.user.id, sessionId: authenticated.session.id, role: staff.role as StaffRole };
+});
+
+export async function requireStaffAccess(headers: Headers, permission: StaffPermission): Promise<StaffActor> {
+  const actor = await getStaffActorForRequest(headers);
+  const role = actor.role;
   if (!hasStaffPermission(role, permission)) {
-    logSafeEvent("staff_authorization_denied", requestId, { actorId: authenticated.user.id, permission, surface: "staff", reasonCode: "ROLE_PERMISSION_DENIED" });
+    logSafeEvent("staff_authorization_denied", randomUUID(), { actorId: actor.userId, permission, surface: "staff", reasonCode: "ROLE_PERMISSION_DENIED" });
     assertStaffPermission(role, permission);
   }
-
-  return { userId: authenticated.user.id, sessionId: authenticated.session.id, role };
+  return actor;
 }

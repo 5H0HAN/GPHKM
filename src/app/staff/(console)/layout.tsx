@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { logSafeFailure } from "@/server/observability/safe-log";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { hasStaffPermission, type StaffPermission } from "@/server/identity/policy";
 import styles from "./console.module.css";
@@ -30,7 +32,19 @@ export default async function ConsoleLayout({ children }: Readonly<{ children: R
   const requestHeaders = await headers();
   let actor;
   try { actor = await requireStaffAccess(requestHeaders, "audit.read"); }
-  catch { redirect("/staff/sign-in"); }
+  catch (error) {
+    if (error instanceof Error && ["Unauthorized", "Forbidden"].includes(error.message)) redirect("/staff/sign-in");
+    const requestId = randomUUID();
+    logSafeFailure("staff_console_access_check_failed", error, requestId, { permission: "audit.read" });
+    return <div className={styles.frame}>
+      <main className={styles.main} id="staff-main">
+        <h1>Staff workspace temporarily unavailable</h1>
+        <p role="alert">We couldn’t verify staff access just now. A previous action may already have completed; reload and check its status before trying it again.</p>
+        <p>If the problem continues, share reference {requestId} with your system administrator.</p>
+        <Link href="/staff">Retry</Link>
+      </main>
+    </div>;
+  }
   const appearance = await readAppearancePreference(actor.userId);
   const visibleNavigation = navigation.filter((item) => hasStaffPermission(actor.role, item.permission));
   const navigationGroups = [...new Set(visibleNavigation.map((item) => item.group))].map((group) => ({
