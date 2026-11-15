@@ -1656,14 +1656,22 @@ try {
   await handoff.query("begin");
   await handoff.query("set local role gphkm_runtime");
   await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
-  testPhase = "reject generation-3 work before matching receipt";
-  await expectSupplierHandoffRejected(handoff.query(
+  testPhase = "start generation-3 work after current-route manual send";
+  await handoff.query(
     `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS',
        handed_off_at = coalesce(handed_off_at, clock_timestamp()), work_started_at = coalesce(work_started_at, clock_timestamp()), updated_at = clock_timestamp()
      where order_item_id = $1`, [routeItemId],
-  ));
-  await handoff.query("rollback");
-  testPhase = "record current generation-3 supplier receipt";
+  );
+  await handoff.query("commit");
+  testPhase = "verify manual send advances the current route without supplier acknowledgement";
+  const freshRouteWork = await setup.query<{ state: string; route_generation: number }>(
+    `select f.state, route.route_generation from order_item_fulfillment f
+       join order_item_fulfillment_supplier route on route.order_item_id = f.order_item_id where f.order_item_id = $1`, [routeItemId],
+  );
+  assert.deepEqual(freshRouteWork.rows[0], { state: "IN_FULFILLMENT", route_generation: 3 },
+    "a recorded generation-3 manual send advances customer progress without waiting for a second receipt action");
+
+  testPhase = "record current generation-3 supplier receipt separately";
   await handoff.query("begin");
   await handoff.query("set local role gphkm_runtime");
   await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', '', true)", [targetAdminId]);
@@ -1672,19 +1680,12 @@ try {
      values ($1, $2, $3, clock_timestamp(), 'synthetic current route receipt')`,
     [routeFreshAPacketId, routeFreshAAttemptId, targetAdminId],
   );
-  testPhase = "start generation-3 supplier-A work after matching receipt";
-  await handoff.query(
-    `update order_item_fulfillment set state = 'IN_FULFILLMENT', customer_status = 'IN_PROGRESS',
-       handed_off_at = coalesce(handed_off_at, clock_timestamp()), work_started_at = coalesce(work_started_at, clock_timestamp()), updated_at = clock_timestamp()
-     where order_item_id = $1`, [routeItemId],
-  );
   await handoff.query("commit");
-  const freshRouteWork = await setup.query<{ state: string; route_generation: number }>(
-    `select f.state, route.route_generation from order_item_fulfillment f
-       join order_item_fulfillment_supplier route on route.order_item_id = f.order_item_id where f.order_item_id = $1`, [routeItemId],
+  const afterReceipt = await setup.query<{ state: string; customer_status: string }>(
+    "select state, customer_status from order_item_fulfillment where order_item_id = $1", [routeItemId],
   );
-  assert.deepEqual(freshRouteWork.rows[0], { state: "IN_FULFILLMENT", route_generation: 3 },
-    "fresh generation-3 A evidence permits work start after stale generation-1 A evidence was rejected");
+  assert.deepEqual(afterReceipt.rows[0], { state: "IN_FULFILLMENT", customer_status: "IN_PROGRESS" },
+    "later receipt acknowledgement is recorded separately without changing customer progress");
 
   // The earlier case is terminal, so this later supplier failure opens a new
   // order conversation. The current route is A, but the synthetic offer below
