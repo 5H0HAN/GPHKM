@@ -9,13 +9,108 @@ const milestones = {
   COMPLETE_RESOLVED: "COMPLETE",
 } as const;
 
-export const contentReviewReasonOptions = [
-  { value: "CONTENT_ILLEGAL_ABUSIVE", label: "Potentially illegal or abusive content" },
-  { value: "CONTENT_PHISHING_MALWARE", label: "Phishing or malware concern" },
-  { value: "CONTENT_RIGHTS_UNCONFIRMED", label: "Content or link rights need confirmation" },
-  { value: "CONTENT_LISTING_REQUIREMENT", label: "Listing requirement needs correction" },
-  { value: "CONTENT_SENSITIVE_TOPIC", label: "Sensitive topic needs review" },
+export const customerOrderStages = [
+  ["ORDER_RECEIVED", "Order received"],
+  ["CONTENT_REVIEW", "Content review"],
+  ["PREPARING", "Preparing your placement"],
+  ["IN_PROGRESS", "Publication in progress"],
+  ["LINK_VERIFICATION", "Link verification"],
+  ["COMPLETE", "Complete"],
 ] as const;
+
+export function customerStageSummary(status: string) {
+  const index = customerOrderStages.findIndex(([value]) => value === status);
+  const resolved = status === "RESOLVED";
+  return {
+    index,
+    label: resolved ? "Resolved" : index >= 0 ? customerOrderStages[index][1] : "Status unavailable",
+    stageNumber: index >= 0 ? index + 1 : null,
+    totalStages: customerOrderStages.length,
+    resolved,
+  };
+}
+
+export const contentReviewReasonOptions = [
+  { value: "CONTENT_ILLEGAL_ABUSIVE", label: "Potentially illegal or abusive content", description: "Pause while an Admin reviews a possible policy or safety issue." },
+  { value: "CONTENT_PHISHING_MALWARE", label: "Possible phishing or malware", description: "Pause if the content or destination may be unsafe." },
+  { value: "CONTENT_RIGHTS_UNCONFIRMED", label: "Content or link rights need confirmation", description: "Pause until the customer confirms they have the required rights." },
+  { value: "CONTENT_LISTING_REQUIREMENT", label: "Listing requirements need correction", description: "Pause when the content does not meet this placement's requirements." },
+  { value: "CONTENT_SENSITIVE_TOPIC", label: "Sensitive topic needs review", description: "Pause for a review against the listing terms." },
+] as const;
+
+const contentReviewReasonCodes = new Set<string>(contentReviewReasonOptions.map(({ value }) => value));
+
+export function fulfillmentReasonCodeForTransition(from: string, to: string, holdReasonCode?: string): string {
+  if (to === "ON_HOLD") {
+    const reason = holdReasonCode || "PAUSED_FOR_REVIEW";
+    if (reason === "PAUSED_FOR_REVIEW" || contentReviewReasonCodes.has(reason)) return reason;
+    throw new Error("Choose a valid reason for pausing this placement");
+  }
+  if (from === "ON_HOLD") return "RESUMED_WORK";
+
+  const reasons: Record<string, string> = {
+    CONTENT_PREPARATION: "CONTENT_REVIEW",
+    AWAITING_CUSTOMER_APPROVAL: "CUSTOMER_ACTION_NEEDED",
+    READY_FOR_HANDOFF: "CONTENT_APPROVED",
+    IN_FULFILLMENT: "FULFILLMENT_STARTED",
+    PUBLICATION_PENDING: "PUBLICATION_UPDATE",
+    EVIDENCE_REVIEW: "EVIDENCE_RECORDED",
+  };
+  const reason = reasons[to];
+  if (!reason) throw new Error("Choose a valid next step");
+  return reason;
+}
+
+export function fulfillmentTransitionGuidance(from: string, to: string): string {
+  if (from === "ON_HOLD") return "Choose this to continue from the step saved when the placement was paused. The customer stage stays where it is until the work step changes it.";
+  if (to === "CONTENT_PREPARATION") {
+    return from === "AWAITING_CUSTOMER_APPROVAL"
+      ? "Use this after the customer asks for a revision. The customer remains at Content review while the article is updated."
+      : "Use this when an Admin begins reviewing the article and placement requirements. This moves the customer from Order received to Content review.";
+  }
+  if (to === "AWAITING_CUSTOMER_APPROVAL") return "Use this when a draft is ready for customer approval. They remain at Content review until the placement is ready to begin.";
+  if (to === "READY_FOR_HANDOFF") return "Use this after content is approved and ready for placement. This moves the customer to Preparing. For a partner placement, prepare its packet next.";
+  if (to === "IN_FULFILLMENT") return "This moves the customer from Preparing to Publication in Progress. For a supplier packet, use it only after provider delivery is confirmed or staff records the actual manual send.";
+  if (to === "PUBLICATION_PENDING") return "Use this when placement work is finished and the live page is ready to verify. The customer moves to Link verification.";
+  if (to === "EVIDENCE_REVIEW") return "Use this when you are ready to check the publication details. The customer remains at Link verification until a verified live URL is recorded.";
+  return "Choose this only when the previous verification needs another review.";
+}
+
+export function fulfillmentStateLabel(state: string): string {
+  const labels: Record<string, string> = {
+    CONFIRMED: "Order received",
+    CONTENT_PREPARATION: "Reviewing content",
+    AWAITING_CUSTOMER_APPROVAL: "Waiting for customer approval",
+    READY_FOR_HANDOFF: "Ready to prepare placement",
+    HANDOFF_PENDING: "Waiting for supplier delivery",
+    IN_FULFILLMENT: "Placement work underway",
+    PUBLICATION_PENDING: "Ready to verify the live page",
+    EVIDENCE_REVIEW: "Checking publication evidence",
+    ON_HOLD: "Paused for review",
+    CANCELLATION_REQUESTED: "Cancellation request under review",
+    CANCELED_REFUNDED: "Canceled and refunded",
+    COMPLETED: "Complete",
+  };
+  return labels[state] ?? "Status unavailable";
+}
+
+export function minimumNextUpdateDate(now = new Date()): string {
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const todayAtValidationTime = new Date(today.getTime() + 12 * 60 * 60 * 1000);
+  if (todayAtValidationTime.getTime() <= now.getTime()) today.setUTCDate(today.getUTCDate() + 1);
+  return today.toISOString().slice(0, 10);
+}
+
+export function maximumNextUpdateDate(now = new Date()): string {
+  const latest = new Date(now.getTime() + 366 * 24 * 60 * 60 * 1000);
+  if (latest.getUTCHours() < 12) latest.setUTCDate(latest.getUTCDate() - 1);
+  return latest.toISOString().slice(0, 10);
+}
+
+export function nextUpdateDateInputValue(current: Date | null, minimum: string, maximum: string): string {
+  const currentValue = current?.toISOString().slice(0, 10);
+  return currentValue && currentValue >= minimum && currentValue <= maximum ? currentValue : minimum;
+}
 
 export function mayReadFulfillmentContent(input: { role: StaffRole; userId: string; assignedAdminId: string | null }): boolean {
   return input.role === "SUPER_ADMIN" || (input.role === "ADMIN" && input.assignedAdminId === input.userId);
@@ -29,6 +124,15 @@ export function customerStatusForMilestone(milestone: keyof typeof milestones, s
   if (state === "CANCELED_REFUNDED") return "RESOLVED";
   if (state === "COMPLETED") return "COMPLETE";
   return milestones[milestone];
+}
+
+export function customerStatusForFulfillmentTransition(
+  milestone: keyof typeof milestones,
+  state: string,
+  currentCustomerStatus: string,
+): string {
+  if (state === "ON_HOLD") return currentCustomerStatus;
+  return customerStatusForMilestone(milestone, state);
 }
 
 export function validatePublicationUrl(value: unknown): string {

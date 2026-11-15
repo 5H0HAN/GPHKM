@@ -5,49 +5,64 @@ import { redirect } from "next/navigation";
 import { assignFulfillmentItem, recordPublicationEvidence, saveWritingDraft, updateFulfillmentFollowUp, updateFulfillmentState } from "@/server/fulfillment/admin";
 import { recoverSupplierFailure, recordSupplierFailure } from "@/server/fulfillment/supplier-outcomes";
 import { createEquivalentOffer } from "@/server/fulfillment/equivalent-offers";
+import { fulfillmentItemRedirectTarget, fulfillmentQueueRedirectTarget, isFulfillmentItemId } from "./navigation";
 
 function field(form: FormData, name: string): string {
   const value = form.get(name);
   return typeof value === "string" ? value.trim() : "";
 }
 
-export async function assignFulfillmentAction(form: FormData) {
+export async function assignFulfillmentAction(form: FormData): Promise<{ redirectTo: string }> {
   const itemId = field(form, "itemId");
   const assignedAdminId = field(form, "assignedAdminId") || null;
   try { await assignFulfillmentItem(await headers(), itemId, assignedAdminId); }
-  catch { redirect("/staff/fulfillment?error=assignment-failed"); }
-  redirect("/staff/fulfillment?updated=1");
+  catch { return { redirectTo: fulfillmentQueueRedirectTarget(field(form, "page"), field(form, "view"), "assignment-failed") }; }
+  return { redirectTo: fulfillmentQueueRedirectTarget(field(form, "page"), field(form, "view"), "updated") };
 }
 
-export async function updateFulfillmentAction(form: FormData) {
+export async function updateFulfillmentAction(form: FormData): Promise<{ redirectTo: string }> {
   const itemId = field(form, "itemId");
+  if (!isFulfillmentItemId(itemId)) return { redirectTo: "/staff/fulfillment?invalid-item=1" };
+  const to = field(form, "to");
   try {
     await updateFulfillmentState(await headers(), {
       itemId,
-      to: field(form, "to"),
-      reasonCode: field(form, "reasonCode"),
+      to,
+      holdReasonCode: to === "ON_HOLD" ? field(form, "holdReasonCode") : undefined,
       nextUpdateAt: field(form, "nextUpdateAt"),
     });
   } catch (error) {
+    if (error instanceof Error && ["Choose a next-update date", "Next-update time must be in the next year"].includes(error.message)) {
+      return { redirectTo: fulfillmentItemRedirectTarget(itemId, "next-update-date") };
+    }
+    if (error instanceof Error && error.message === "Choose a valid reason for pausing this placement") {
+      return { redirectTo: fulfillmentItemRedirectTarget(itemId, "hold-reason") };
+    }
     if (error instanceof Error && error.message === "Prepare the supplier packet before entering handoff preparation") {
-      redirect(`/staff/fulfillment/${itemId}?error=packet-required`);
+      return { redirectTo: fulfillmentItemRedirectTarget(itemId, "packet-required") };
     }
-    if (error instanceof Error && error.message === "Confirm supplier delivery before starting placement work") {
-      redirect(`/staff/fulfillment/${itemId}?error=delivery-required`);
+    if (error instanceof Error && error.message === "Confirm provider delivery or record the actual manual send before starting placement work") {
+      return { redirectTo: fulfillmentItemRedirectTarget(itemId, "delivery-required") };
     }
-    redirect(`/staff/fulfillment/${itemId}?error=update-failed`);
+    return { redirectTo: fulfillmentItemRedirectTarget(itemId, "update-failed") };
   }
-  redirect(`/staff/fulfillment/${itemId}?updated=1`);
+  return { redirectTo: fulfillmentItemRedirectTarget(itemId, "updated") };
 }
 
-export async function updateFulfillmentFollowUpAction(form: FormData) {
+export async function updateFulfillmentFollowUpAction(form: FormData): Promise<{ redirectTo: string }> {
   const itemId = field(form, "itemId");
+  if (!isFulfillmentItemId(itemId)) return { redirectTo: "/staff/fulfillment?invalid-item=1" };
   try {
     await updateFulfillmentFollowUp(await headers(), {
       itemId, nextUpdateAt: field(form, "nextUpdateAt"), reasonCode: field(form, "reasonCode"),
     });
-  } catch { redirect(`/staff/fulfillment/${itemId}?error=follow-up-failed`); }
-  redirect(`/staff/fulfillment/${itemId}?updated=1`);
+  } catch (error) {
+    if (error instanceof Error && ["Choose a next-update date", "Next-update time must be in the next year"].includes(error.message)) {
+      return { redirectTo: fulfillmentItemRedirectTarget(itemId, "next-update-date") };
+    }
+    return { redirectTo: fulfillmentItemRedirectTarget(itemId, "follow-up-failed") };
+  }
+  return { redirectTo: fulfillmentItemRedirectTarget(itemId, "follow-up-updated") };
 }
 
 export async function recordPublicationEvidenceAction(form: FormData) {
