@@ -68,3 +68,53 @@
 .header a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (max-width: 800px) { .detailGrid { grid-template-columns: 1fr; } .row { grid-template-columns: 1fr; gap: 14px; } }
 @media (max-width: 620px) { .header { flex-direction: column; } .headerCounts { justify-content: flex-start; } .facts div { grid-template-columns: 105px minmax(0,1fr); } }
+.nextStepPanel h3 { margin: 16px 0 6px; font-size: 15px; }
+.nextStepPanel .open { margin-top: 4px; }
+.currentStatus { display: grid; gap: 5px; padding: 12px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.currentStatus strong { color: var(--text-primary); font-size: 15px; font-weight: 650; }
+.currentStatus a { width: fit-content; margin-top: 3px; color: var(--text-primary); }
+.customerUpdates, .supplierIssue { margin-top: 14px; }
+.customerUpdates > p, .supplierIssue > p, .nextStepPanel > p { max-width: 850px; font-size: 15px; }
+.updateColumns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.updateCard { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: 0; background: var(--surface-2); }
+.updateCard h3 { margin: 0 0 8px; font-size: 15px; font-weight: 650; }
+.updateCard > p { color: var(--text-secondary); font-size: 15px; line-height: 1.55; }
+.updateCard .form .helpText, .supplierIssue .form .helpText { color: var(--text-secondary); font-size: 15px; line-height: 1.5; }
+.updateCard .form button, .supplierIssue .form button { font-size: 15px; }
+.updateCard .form > select, .updateCard .form > input[type="date"] { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-1); color: var(--text-primary); font: inherit; }
+.workflowAction { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+.workflowAction h3 { margin: 0 0 7px; }
+.workflowAction > p { margin: 0 0 12px; }
+.selectedStep { margin: 0; padding: 10px 11px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-primary); font-size: 15px; font-weight: 600; }
+.scenarioHelp { margin: 0; padding: 10px 11px; border: 1px solid var(--border); border-radius: 0; background: var(--surface-1); color: var(--text-secondary); font-size: 15px; line-height: 1.5; }
+.pauseAction { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.pauseAction summary { display: flex; min-height: 44px; align-items: center; color: var(--text-primary); font-size: 15px; font-weight: 600; cursor: pointer; }
+.pauseAction summary::before { content: "+"; display: inline-grid; width: 22px; height: 22px; place-items: center; margin-right: 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-secondary); }
+.pauseAction[open] summary::before { content: "−"; }
+.pauseAction > p { margin: 6px 0 12px; color: var(--text-secondary); font-size: 15px; line-height: 1.55; }
+.pauseAction select { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-1); color: var(--text-primary); font: inherit; }
+.supplierIssue .form { max-width: 680px; margin-top: 16px; }
+.supplierIssue .form select { box-sizing: border-box; width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-1); color: var(--text-primary); font: inherit; }
+.supplierIssue .evidence { margin-top: 10px; }
+.supplierIssue .recovery .form { margin-top: 4px; }
+.pauseAction summary:focus-visible, .supplierIssue a:focus-visible, .currentStatus a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.stagePanel { margin-bottom: 14px; }
+.stageHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+.stageHeader h2 { margin-bottom: 6px; }
+.stageHeader p { max-width: 620px; margin: 0; }
+.stageHeader .currentStatus { flex: 0 1 310px; }
+.customerStageTrack { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.customerStageTrack li { display: grid; align-content: start; justify-items: start; gap: 7px; min-width: 0; min-height: 104px; padding: 10px 8px; border-top: 2px solid var(--border); color: var(--text-secondary); }
+.customerStageTrack li[data-stage-state="reached"] { border-top-color: var(--success); }
+.customerStageTrack li[data-stage-state="current"] { border-top-color: var(--accent); background: var(--surface-2); color: var(--text-primary); }
+.customerStageTrack li strong { font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+.stageNumber { display: grid; width: 26px; height: 26px; place-items: center; border: 1px solid var(--border); border-radius: 50%; color: var(--text-secondary); font-size: 12px; font-weight: 650; }
+.customerStageTrack li[data-stage-state="reached"] .stageNumber { border-color: var(--success); color: var(--success); }
+.customerStageTrack li[data-stage-state="current"] .stageNumber { border-color: var(--accent); color: var(--text-primary); }
+.stageState { color: var(--text-muted); font-size: 12px; }
+.customerStageTrack li[data-stage-state="current"] .stageState { color: var(--accent); font-weight: 650; }
+.stageGuidance, .stageResolved { margin: 14px 0 0 !important; font-size: 15px !important; line-height: 1.55 !important; }
+.stageResolved { padding: 12px; border: 1px solid var(--border); background: var(--surface-2); }
+@media (max-width: 800px) { .updateColumns { grid-template-columns: 1fr; } }
+@media (max-width: 800px) { .stageHeader { flex-direction: column; } .stageHeader .currentStatus { flex-basis: auto; width: 100%; box-sizing: border-box; } .customerStageTrack { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .customerStageTrack { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

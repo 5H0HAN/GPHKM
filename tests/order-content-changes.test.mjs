@@ -63,7 +63,7 @@ test("service does not update the purchased order snapshot and returns explicit 
 
 test("customer order content uses the newest-first request and consented-version projection", () => {
   const service = readFileSync(new URL("../src/server/orders/content-changes.ts", import.meta.url), "utf8");
-  const page = readFileSync(new URL("../src/app/customer/orders/page.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../src/app/customer/orders/orders-view.tsx", import.meta.url), "utf8");
   assert.match(service, /orderBy\(desc\(orderItemContentChangeRequest\.requestNumber\)\)/);
   assert.match(page, /const latestChange = changes\[0\]/);
   assert.match(page, /changes\.find\(\(change\) => change\.status === "CONSENTED"\)/);
@@ -72,7 +72,7 @@ test("customer order content uses the newest-first request and consented-version
 
 test("customer approved-content batch uses individually bound request IDs", () => {
   const service = readFileSync(new URL("../src/server/orders/content-changes.ts", import.meta.url), "utf8");
-  const page = readFileSync(new URL("../src/app/customer/orders/page.tsx", import.meta.url), "utf8");
+  const page = readFileSync(new URL("../src/app/customer/orders/orders-view.tsx", import.meta.url), "utf8");
   const form = readFileSync(new URL("../src/app/customer/orders/content-change-form.tsx", import.meta.url), "utf8");
   const customerCss = readFileSync(new URL("../src/app/customer/customer.module.css", import.meta.url), "utf8");
   assert.ok(service.includes("where request.id in (${sql.join(requestIds.map((requestId) => sql`${requestId}`), sql`, `)})"));

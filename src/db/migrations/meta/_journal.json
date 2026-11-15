@@ -1345,6 +1345,20 @@
       "when": 1794244449733,
       "tag": "0191_require_content_policy_at_checkout",
       "breakpoints": true
+    },
+    {
+      "idx": 192,
+      "version": "7",
+      "when": 1794356382000,
+      "tag": "0192_manual_send_advances_customer_stage",
+      "breakpoints": true
+    },
+    {
+      "idx": 193,
+      "version": "7",
+      "when": 1794758996322,
+      "tag": "0193_allow_pending_supplier_manual_fallback",
+      "breakpoints": true
     }
   ]
 }

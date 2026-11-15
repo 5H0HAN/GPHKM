@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, isNull, lte, notInArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { customerOrder, customerOrderItem, orderItemFulfillment, orderItemFulfillmentSupplier, orderItemWriting, publicationEvidence } from "@/db/order-schema";
+import { supplierPacket, supplierPacketAttempt, supplierPacketItem } from "@/db/packet-schema";
 import { orderItemContentChangeEvent, orderItemContentVersion } from "@/db/change-request-schema";
 import { staffAccount, user } from "@/db/schema";
 import { supplier, supplierContact } from "@/db/catalog-schema";
 import { customerMilestone, transitionItem, type ItemState } from "@/modules/fulfillment/workflow";
-import { contentReviewReasonOptions, customerStatusForMilestone, fulfillmentFollowUpUpdate, mayAssignFulfillment, mayReadFulfillmentContent, validateNextUpdate, validatePublicationUrl } from "@/modules/fulfillment/console";
+import { contentReviewReasonOptions, customerStatusForFulfillmentTransition, fulfillmentFollowUpUpdate, fulfillmentReasonCodeForTransition, mayAssignFulfillment, mayReadFulfillmentContent, validateNextUpdate, validatePublicationUrl } from "@/modules/fulfillment/console";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { appendAuditEvent } from "@/server/audit/append";
 import { nextWritingState, validateWritingText } from "@/modules/orders/writing";
@@ -55,10 +56,7 @@ async function currentSupplierHandoffEvidence(tx: Parameters<Parameters<typeof d
        and (
          (attempt.type = 'SEND' and attempt.state = 'DELIVERED' and attempt.delivered_at is not null)
          or (attempt.type in ('MANUAL_SENT','MANUAL_SEND') and attempt.state = 'MANUAL_SENT'
-           and attempt.sent_at is not null and exists (
-             select 1 from public.supplier_packet_acknowledgement acknowledgement
-              where acknowledgement.packet_id = packet.id and acknowledgement.attempt_id = attempt.id
-           ))
+           and attempt.sent_at is not null)
        )
   ) as confirmed
     from public.order_item_fulfillment_supplier route
@@ -150,11 +148,28 @@ export async function getFulfillmentItem(headers: Headers, itemId: string) {
       .innerJoin(supplier, eq(supplier.id, orderItemFulfillmentSupplier.supplierId))
       .leftJoin(supplierContact, and(eq(supplierContact.supplierId, supplier.id), eq(supplierContact.isPrimary, true)))
       .where(eq(orderItemFulfillmentSupplier.orderItemId, itemId)).limit(1);
+    const [currentPacketRow] = supplierRow?.id ? await tx.select({
+      id: supplierPacket.id,
+      version: supplierPacket.version,
+      attemptType: supplierPacketAttempt.type,
+      attemptState: supplierPacketAttempt.state,
+    }).from(supplierPacketItem)
+      .innerJoin(supplierPacket, eq(supplierPacket.id, supplierPacketItem.packetId))
+      .leftJoin(supplierPacketAttempt, eq(supplierPacketAttempt.packetId, supplierPacket.id))
+      .where(and(
+        eq(supplierPacketItem.orderItemId, itemId),
+        eq(supplierPacketItem.routeGeneration, supplierRow.routeGeneration),
+        eq(supplierPacket.supplierId, supplierRow.id),
+        isNull(supplierPacket.supersededAt),
+      ))
+      .orderBy(desc(supplierPacket.version), desc(supplierPacketAttempt.createdAt))
+      .limit(1) : [];
     const handoffEvidence = fulfillment.state === "HANDOFF_PENDING"
       ? await currentSupplierHandoffEvidence(tx, itemId) : { has_supplier: Boolean(supplierRow), confirmed: false };
     const evidence = await tx.select({ id: publicationEvidence.id, liveUrl: publicationEvidence.liveUrl, verifiedAt: publicationEvidence.verifiedAt })
       .from(publicationEvidence).where(eq(publicationEvidence.orderItemId, itemId)).orderBy(desc(publicationEvidence.verifiedAt)).limit(10);
-    const outcomes = await tx.select({ id: supplierFulfillmentOutcome.id, outcome: supplierFulfillmentOutcome.outcome,
+    const outcomes = await tx.select({ id: supplierFulfillmentOutcome.id, supplierId: supplierFulfillmentOutcome.supplierId,
+      routeGeneration: supplierFulfillmentOutcome.routeGeneration, outcome: supplierFulfillmentOutcome.outcome,
       reason: supplierFulfillmentOutcome.reason, createdAt: supplierFulfillmentOutcome.createdAt,
       supportCaseId: supplierFulfillmentOutcome.supportCaseId })
       .from(supplierFulfillmentOutcome).where(eq(supplierFulfillmentOutcome.orderItemId, itemId))
@@ -190,8 +205,13 @@ export async function getFulfillmentItem(headers: Headers, itemId: string) {
       instructions: currentContent.instructions,
     } : item;
     return { fulfillment, item: effectiveItem, writing: writing ?? null, supplier: supplierRow ?? null,
+      currentPacket: currentPacketRow ? {
+        id: currentPacketRow.id, version: currentPacketRow.version,
+        attemptType: currentPacketRow.attemptType, attemptState: currentPacketRow.attemptState,
+      } : null,
       supplierHandoffConfirmed: handoffEvidence.confirmed,
-      evidence, outcomes, recoveries, canRecoverSameSupplier, canOfferEquivalent, actorRole: actor.role };
+      evidence, outcomes, hasOpenSupplierOutcome: unresolved.currentRoute > 0,
+      recoveries, canRecoverSameSupplier, canOfferEquivalent, actorRole: actor.role };
   });
 }
 
@@ -255,8 +275,8 @@ export async function updateFulfillmentFollowUp(headers: Headers, input: { itemI
   });
 }
 
-export async function updateFulfillmentState(headers: Headers, input: { itemId: string; to: string; reasonCode: string; nextUpdateAt: string }) {
-  if (!id(input.itemId) || !REASONS.has(input.reasonCode)) throw new Error("Invalid update");
+export async function updateFulfillmentState(headers: Headers, input: { itemId: string; to: string; holdReasonCode?: string; nextUpdateAt: string }) {
+  if (!id(input.itemId)) throw new Error("Invalid update");
   // Completion is only allowed through recordPublicationEvidence, which writes
   // the verified URL and state change in the same transaction.
   if (input.to === "COMPLETED") throw new Error("Record live publication evidence to complete an item");
@@ -265,6 +285,8 @@ export async function updateFulfillmentState(headers: Headers, input: { itemId: 
     const [fulfillment] = await tx.select().from(orderItemFulfillment)
       .where(eq(orderItemFulfillment.orderItemId, input.itemId)).for("update").limit(1);
     if (!fulfillment || !mayReadFulfillmentContent({ role: actor.role, userId: actor.userId, assignedAdminId: fulfillment.assignedAdminId })) throw new Error("Item unavailable");
+    const reasonCode = fulfillmentReasonCodeForTransition(fulfillment.state, input.to, input.holdReasonCode);
+    if (!REASONS.has(reasonCode)) throw new Error("Invalid update");
     if (input.to === "HANDOFF_PENDING" && fulfillment.state === "READY_FOR_HANDOFF") {
       throw new Error("Prepare the supplier packet before entering handoff preparation");
     }
@@ -274,7 +296,7 @@ export async function updateFulfillmentState(headers: Headers, input: { itemId: 
     if ((input.to as ItemState) === "IN_FULFILLMENT") {
       const handoffEvidence = await currentSupplierHandoffEvidence(tx, input.itemId);
       if (handoffEvidence.has_supplier && !handoffEvidence.confirmed) {
-        throw new Error("Confirm supplier delivery before starting placement work");
+        throw new Error("Confirm provider delivery or record the actual manual send before starting placement work");
       }
     }
     const orderItem = item.customer_order_item;
@@ -285,7 +307,7 @@ export async function updateFulfillmentState(headers: Headers, input: { itemId: 
       ? await getConsentedSupplierPacketContent(tx, input.itemId).catch(() => null) : null;
     const writingApproved = !orderItem.writingSelected || writing.some(({ state }) => state === "APPROVED_FIRST" || state === "APPROVED_FINAL")
       || (writing.some(({ state }) => state === "CUSTOMER_DECLINED_FINAL") && Boolean(consentedReplacement?.articleText));
-    if (CONTENT_REVIEW_REASONS.has(input.reasonCode) && (input.to as ItemState) !== "ON_HOLD") {
+    if (CONTENT_REVIEW_REASONS.has(reasonCode) && (input.to as ItemState) !== "ON_HOLD") {
       throw new Error("Content review reason codes can only be used when placing an item on hold");
     }
     const now = new Date();
@@ -307,11 +329,11 @@ export async function updateFulfillmentState(headers: Headers, input: { itemId: 
       actorRole: actor.role,
       assignedAdminId: fulfillment.assignedAdminId ?? undefined,
       at: now.toISOString(),
-      reason: input.reasonCode,
+      reason: reasonCode,
       eventId: randomUUID(),
     });
     const milestone = customerMilestone(result.item.state);
-    const customerStatus = customerStatusForMilestone(milestone, result.item.state);
+    const customerStatus = customerStatusForFulfillmentTransition(milestone, result.item.state, fulfillment.customerStatus);
     await tx.update(orderItemFulfillment).set({
       state: result.item.state,
       stateBeforeHold: result.item.stateBeforeHold ?? null,
@@ -327,7 +349,7 @@ export async function updateFulfillmentState(headers: Headers, input: { itemId: 
       action: "FULFILLMENT_STATE_CHANGED",
       targetType: "CUSTOMER_ORDER_ITEM",
       targetId: input.itemId,
-      reasonCode: input.reasonCode,
+      reasonCode,
       metadata: { fromState: result.event.from, toState: result.event.to, result: "UPDATED" },
     });
     return { state: result.item.state, customerStatus, nextUpdateAt };
