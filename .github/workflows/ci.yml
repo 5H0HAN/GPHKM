@@ -188,10 +188,12 @@ jobs:
             sleep 1
           done
           if [ "$ready" != true ]; then cat /tmp/gphkm-ci-next-dev.log; exit 1; fi
-          npm run db:check-auth-recovery:local
           npm run auth:bootstrap:local
           npm run db:check-session-guard:local
           npm run db:check-staff-auth:local
+          # Keep the rate-limit-heavy recovery exercise after sign-in probes so
+          # it cannot exhaust their shared disposable test budget.
+          npm run db:check-auth-recovery:local
           stop_next
           migration_password="$(sed -n 's/^POSTGRES_MIGRATION_PASSWORD=//p' .env)"
           database_password="$(sed -n 's/^GPHKM_DATABASE_PASSWORD=//p' .env)"
