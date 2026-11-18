@@ -56,7 +56,7 @@ export async function createStripeWalletTopUp(
     try {
       session = await stripe.client.checkout.sessions.create({
         integration_identifier: `gphkm-wallet-${suffix}`,
-        ui_mode: "custom",
+        ui_mode: "elements",
         mode: "payment",
         return_url: stripeWalletReturnUrl(attempt.organizationId),
         line_items: [{

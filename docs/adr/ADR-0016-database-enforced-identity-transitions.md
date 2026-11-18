@@ -4,6 +4,8 @@
 - **Date:** 2026-10-29
 - **Decision owner:** Project owner
 
+> **Superseded by [ADR-0036](ADR-0036-staff-authentication-mandatory-totp.md).** Use it for staff TOTP activation/promotion requirements and factor reset. The narrow database command and authority lock requirements remain in force.
+
 ## Context
 
 Application checks for staff activation, role changes, member promotion/removal, and invitation acceptance did not prevent a direct update through the general database runtime role. That could bypass last-Owner and last-Super-Admin checks, session revocation, or audit recording. Staff-host Google sign-in could also create an uninvited user account, even though it did not grant staff authority.
@@ -15,7 +17,7 @@ Application checks for staff activation, role changes, member promotion/removal,
 - Preserve the last active Owner and last active Super Admin. Do not permit runtime assignment of the Super Admin role.
 - Limit direct organization-member insertion to the creating user becoming the first Owner. Invitation acceptance uses its own database command, which locks the organization before the invite/member rows so it serializes with closure.
 - Recheck Owner/Super Admin authority after acquiring the locks that serialize the relevant transitions. Staff role, activation, and deactivation commands share an advisory lock, and their application callers do not pre-lock target rows.
-- Permit new staff-host OAuth user creation only when the verified email matches a current pending staff invitation. Existing users still require an active staff record and exact session MFA proof for protected actions.
+- Permit new staff-host OAuth user creation only when the verified email matches a current pending staff invitation. Existing users still require an active staff record and current permission for protected actions. At the time this decision was accepted, staff MFA was deferred; ADR-0036 supersedes that policy with mandatory TOTP and exact-session proof.
 - Source costs are not mapped from supplier imports in v1. Finance enters them separately after draft listing creation; costless listings remain provisional until reviewed.
 
 ## Consequences

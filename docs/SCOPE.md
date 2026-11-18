@@ -10,7 +10,7 @@ V1 establishes a secure catalog-to-publication loop for customer organizations a
 
 - A public, unauthenticated one-page product site with a single customer sign-in/create-account entry; it does not expose the catalog or staff sign-in.
 - Customer app and sign-in use a dedicated customer subdomain.
-- Customer sign-in with Google or verified email/password; profile and security settings, password change/reset for credential accounts, and revocable sessions. Staff authentication stays separate and password recovery is not exposed on the staff surface.
+- Customer sign-in with Google or verified email/password, profile and security settings, password change and reset for credential accounts, optional authenticator setup after adding a password, backup codes, and revocable sessions.
 - Verified signup creates an organization and first Owner; users may join multiple organizations by verified-email invitation. Owner-managed settings, members, co-Owner transfers, and funding; invitations expire after seven days and default to Member, and the last Owner must transfer ownership before leaving.
 - Optional Owner-managed billing profile with legal name, billing email, and billing address; no invoice generation, tax ID, or phone collection in v1.
 - Authenticated catalog with a 15-day organization browsing trial, top-of-page days/hours/minutes countdown, and the approved paid-access rule. The initial access term is six calendar months; the audited global policy can select six months, one year, or unrestricted access.
@@ -46,8 +46,8 @@ V1 establishes a secure catalog-to-publication loop for customer organizations a
 - Organization-scoped immutable USD wallet ledger and balance projection.
 - Stripe funding attempt/webhook verification, idempotency, dispute handling, and reconciliation.
 - Atomic multi-item wallet debit and item-level wallet refund credits.
-- Better Auth with Google sign-in, server-side authorization, focused PostgreSQL RLS, audit, secure secrets, backups, monitoring, and incident procedures.
-- Separate host-only customer and staff sessions with exact trusted origins; subdomain separation is not a substitute for RBAC, MFA, or tenant authorization.
+- Better Auth, server-side authorization, focused PostgreSQL RLS, audit, secure secrets, backups, monitoring, and incident procedures.
+- Separate host-only customer and staff sessions with exact trusted origins and server authorization. Staff use invitation-bound email/password and password reset by email, followed by mandatory TOTP or a one-time backup code. Local password-only testing requires the development/local-auth bypass. Super Admin controls activation and can promote an eligible Admin. The migration role handles emergency Super Admin recovery through an audited command. See [ADR-0036](adr/ADR-0036-staff-authentication-mandatory-totp.md).
 
 ## 3. Explicitly out of scope for v1
 

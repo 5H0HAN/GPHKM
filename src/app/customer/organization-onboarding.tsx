@@ -5,7 +5,7 @@ import styles from "./customer.module.css";
 import type { LegalDocuments } from "@/modules/legal/policy";
 import { LegalConsentCheckbox } from "@/components/legal-consent-checkbox";
 
-export function OrganizationOnboarding({ documents }: { documents: LegalDocuments }) {
+export function OrganizationOnboarding({ documents, alreadyAccepted = false }: { documents: LegalDocuments; alreadyAccepted?: boolean }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +20,7 @@ export function OrganizationOnboarding({ documents }: { documents: LegalDocument
         method: "POST",
         headers: { "content-type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ name, accepted: values.get("accepted") === "on", termsVersion: documents.termsVersion, privacyVersion: documents.privacyVersion }),
+        body: JSON.stringify({ name, accepted: alreadyAccepted || values.get("accepted") === "on", termsVersion: documents.termsVersion, privacyVersion: documents.privacyVersion }),
       });
       if (!response.ok) {
         const result = await response.json().catch(() => null) as { error?: string } | null;
@@ -41,7 +41,7 @@ export function OrganizationOnboarding({ documents }: { documents: LegalDocument
       <form onSubmit={submit}>
         <label className={styles.panelText} htmlFor="organization-name">Organization name</label>
         <input id="organization-name" name="organizationName" className={styles.textInput} autoComplete="organization" minLength={2} maxLength={120} required value={name} onChange={(event) => setName(event.target.value)} />
-        <LegalConsentCheckbox documents={documents} disabled={busy} />
+        {!alreadyAccepted && <LegalConsentCheckbox documents={documents} disabled={busy} />}
         {error && <p role="alert" className={styles.error}>{error}</p>}
         <button className={styles.panelAction} type="submit" disabled={busy}>{busy ? "Setting up…" : "Continue"}</button>
       </form>

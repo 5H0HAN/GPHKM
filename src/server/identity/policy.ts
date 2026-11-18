@@ -113,7 +113,7 @@ export function assertOwnerMayLeaveOrBeRemoved(activeOwnerCount: number, targetI
   if (targetIsOwner && activeOwnerCount <= 1 && !ownershipTransferred) throw new Error("Last organization owner must transfer ownership first");
 }
 
-export function assertStaffMayBeActivated(role: StaffRole, active: boolean, mfaEnabled: boolean): void {
-  if (active && !mfaEnabled) throw new Error("Staff MFA enrollment required before activation");
+export function assertStaffMayBeActivated(role: StaffRole, active: boolean, emailVerified: boolean): void {
+  if (active && !emailVerified) throw new Error("Verified staff email required before activation");
   if (role !== "ADMIN" && role !== "FINANCE" && role !== "SUPER_ADMIN") throw new Error("Invalid staff role");
 }

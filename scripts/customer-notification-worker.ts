@@ -1,3 +1,6 @@
+import { invitationUrl } from "../src/server/auth/link-builders.ts";
+import { publicBaseOrigin } from "../src/server/auth/url-policy.ts";
+import { authSurfaceOrigins } from "../src/server/auth/surfaces.ts";
 import { randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { assertInvitationTokenEncryptionConfigured, decryptInvitationToken } from "../src/modules/identity/invitation-crypto.ts";
@@ -55,9 +58,11 @@ const mailSettings: MailSettings | null = process.env.GPHKM_RESEND_DATA_HANDLING
   const from = required("RESEND_FROM_EMAIL");
   const webhookId = required("RESEND_WEBHOOK_ID");
   const webhookSecret = required("RESEND_WEBHOOK_SECRET");
-  const publicBase = new URL(required("GPHKM_PUBLIC_BASE_URL"));
-  const customerBase = new URL(required("CUSTOMER_APP_URL"));
-  const staffBase = new URL(required("STAFF_APP_URL"));
+  const publicBase = publicBaseOrigin(process.env);
+  if (!publicBase) throw new Error("Customer notification public ingress is missing");
+  const origins = authSurfaceOrigins(process.env);
+  const customerBase = new URL(origins.customer);
+  const staffBase = new URL(origins.staff);
   if (/[\r\n\0]/.test(from)
     || [customerBase, staffBase].some((base) => base.username !== "" || base.password !== ""
       || (base.protocol !== "https:" && base.hostname !== "localhost" && !base.hostname.endsWith(".localhost"))
@@ -199,9 +204,7 @@ async function sendInvitation(job: ClaimedInvitation) {
   } catch {
     return finishInvitation(job, "FAILED", { errorCode: "TOKEN_DECRYPT_FAILED" });
   }
-  const base = job.invitation_kind === "ORGANIZATION" ? mailSettings.customerBase : mailSettings.staffBase;
-  const route = job.invitation_kind === "ORGANIZATION" ? "/invitations/accept" : "/staff/invitations/accept";
-  const link = `${new URL(route, base).toString()}#token=${encodeURIComponent(token)}`;
+  const link = invitationUrl(process.env, job.invitation_kind, token, job.invitation_kind === "STAFF" ? job.recipient_email : undefined);
   const subject = job.invitation_kind === "ORGANIZATION" ? "You’re invited to GPHKM" : "GPHKM staff invitation";
   const audience = job.invitation_kind === "ORGANIZATION" ? `organization ${job.organization_name ?? ""}` : `GPHKM staff as ${job.staff_role ?? "staff"}`;
   const text = `You have been invited to join ${audience}.\n\nAccept the invitation using this secure link:\n${link}\n\nThis invitation expires ${new Date(job.expires_at).toISOString()}. If you were not expecting it, ignore this email.`;

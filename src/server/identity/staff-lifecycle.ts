@@ -20,10 +20,10 @@ export async function listStaffAccounts(headers: Headers) {
       userId: staffAccount.userId,
       name: user.name,
       email: user.email,
+      emailVerified: user.emailVerified,
+      totpReady: sql<boolean>`(${user.twoFactorEnabled} and exists (select 1 from public.auth_two_factor f where f.user_id = ${user.id} and f.verified))`,
       role: staffAccount.role,
       active: staffAccount.active,
-      twoFactorEnabled: user.twoFactorEnabled,
-      verifiedTotp: sql<boolean>`exists (select 1 from public.auth_two_factor f where f.user_id = ${user.id} and f.verified)`,
       createdAt: staffAccount.createdAt,
     }).from(staffAccount)
       .innerJoin(user, eq(user.id, staffAccount.userId))
@@ -53,12 +53,10 @@ export async function inviteStaff(headers: Headers, emailInput: string, role: "A
       actorUserId: actor.userId, action: "staff.invitation_expired", targetType: "staff_invitation", targetId: row.id,
       metadata: { result: "expired" },
     });
-    const [existingStaff] = await tx.select({ userId: staffAccount.userId })
-      .from(user)
-      .innerJoin(staffAccount, eq(staffAccount.userId, user.id))
-      .where(sql`lower(${user.email}) = ${email}`)
-      .limit(1);
-    if (existingStaff) throw new Error("User is already a staff account");
+    const { rows } = await tx.execute<{ allowed: boolean }>(sql`
+      select public.gphkm_staff_invitation_email_available(${email}) as allowed
+    `);
+    if (!rows[0]?.allowed) throw new Error("This email cannot be invited as staff.");
     await tx.insert(staffInvitation).values({
       id,
       email,
@@ -166,6 +164,23 @@ export async function activateStaff(headers: Headers, targetUserId: string) {
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
     await tx.execute(sql`select public.gphkm_activate_staff(${targetUserId})`);
+  });
+}
+
+export async function promoteSuperAdmin(headers: Headers, targetUserId: string) {
+  const actor = await requireStaffAccess(headers, "staff.manage");
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    await tx.execute(sql`select public.gphkm_promote_super_admin(${targetUserId}, 'SUPER_ADMIN_PROMOTION')`);
+  });
+}
+
+export async function resetStaffTotp(headers: Headers, targetUserId: string) {
+  const actor = await requireStaffAccess(headers, "staff.manage");
+  if (actor.userId === targetUserId) throw new Error("A second Super Admin must reset this authenticator");
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    await tx.execute(sql`select public.gphkm_reset_staff_totp(${targetUserId}, 'STAFF_FACTOR_RESET')`);
   });
 }
 

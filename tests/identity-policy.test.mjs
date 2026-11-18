@@ -49,8 +49,8 @@ test("profile display names are trimmed, bounded, and normalized", () => {
   assert.throws(() => normalizeDisplayName("Name\u0000Injected"), /Display name/);
 });
 
-test("staff activation is refused until MFA enrollment is complete", () => {
-  assert.throws(() => assertStaffMayBeActivated("ADMIN", true, false), /MFA enrollment required/);
+test("staff activation requires verified email", () => {
+  assert.throws(() => assertStaffMayBeActivated("ADMIN", true, false), /Verified staff email required/);
   assert.doesNotThrow(() => assertStaffMayBeActivated("FINANCE", true, true));
   assert.doesNotThrow(() => assertStaffMayBeActivated("SUPER_ADMIN", false, false));
 });

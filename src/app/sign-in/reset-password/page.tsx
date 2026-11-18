@@ -5,5 +5,5 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { referrer: "no-referrer" };
 
 export default function ResetPasswordPage() {
-  return <ResetPasswordForm />;
+  return <ResetPasswordForm surface="customer" />;
 }

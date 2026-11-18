@@ -14,6 +14,9 @@ import { readAppearancePreference } from "@/server/identity/appearance";
 import { listCustomerLegalAcceptanceHistory } from "@/server/legal/consent";
 import { firstQueryValue } from "@/modules/query-params";
 import { getAuthForSurface } from "@/server/auth";
+import { hasPasswordCredential } from "@/server/auth/identity-domain";
+import { AddPasswordForm } from "./add-password-form";
+import { TwoFactorSettings } from "./two-factor-settings";
 import { PasswordChangeForm } from "./password-change-form";
 
 export const dynamic = "force-dynamic";
@@ -28,12 +31,18 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     getCustomerNotificationEmailPreference(requestHeaders), getCustomerNewsletterPreference(requestHeaders),
     listCustomerLegalAcceptanceHistory(requestHeaders),
   ]);
-  const authAccounts = await getAuthForSurface("customer").api.listUserAccounts({ headers: requestHeaders }).catch(() => []);
-  const hasPasswordAccount = authAccounts.some((account) => account.providerId === "credential");
+  const auth = getAuthForSurface("customer");
+  const [authAccounts, hasPassword, session] = await Promise.all([
+    auth.api.listUserAccounts({ headers: requestHeaders }).catch(() => []),
+    hasPasswordCredential(workspace.customer.userId),
+    auth.api.getSession({ headers: requestHeaders }),
+  ]);
+  const twoFactorEnabled = session !== null && "twoFactorEnabled" in session.user && session.user.twoFactorEnabled === true;
   const hasGoogleAccount = authAccounts.some((account) => account.providerId === "google");
-  const signInMethods = [hasGoogleAccount ? "Google" : null, hasPasswordAccount ? "Email and password" : null].filter(Boolean).join(", ") || "Unavailable";
+  const signInMethods = twoFactorEnabled ? "Email and password with authenticator"
+    : [hasGoogleAccount ? "Google" : null, hasPassword ? "Email and password" : null].filter(Boolean).join(", ") || "Unavailable";
   let sessions: Awaited<ReturnType<typeof listCustomerSessions>> | null = null;
-  try { sessions = await listCustomerSessions(await headers()); } catch { /* Require a fresh authenticated session to review device sessions. */ }
+  try { sessions = await listCustomerSessions(requestHeaders); } catch { /* Require a fresh authenticated session to review device sessions. */ }
   const query = await searchParams;
   const organizationId = selectedOrganizationId(workspace.organizations, firstQueryValue(query.organizationId));
   const organization = workspace.organizations.find((item) => item.id === organizationId);
@@ -51,6 +60,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       </div>
       {firstQueryValue(query.updated) === "left" && <p role="status" className={settings.notice}>You have left the organization. Your other memberships remain available.</p>}
       {firstQueryValue(query.updated) === "notifications" && <p role="status" className={settings.notice}>Email notification preference saved.</p>}
+      {firstQueryValue(query.updated) === "password-added" && <p role="status" className={settings.notice}>Password added. You can sign in with email and password.</p>}
       {firstQueryValue(query.updated) === "newsletter" && <p role="status" className={settings.notice}>Newsletter preference saved.</p>}
       {firstQueryValue(query.notificationError) && <p role="alert" className={settings.notice}>Email notifications could not be saved. Refresh the page and try again.</p>}
       {firstQueryValue(query.newsletterError) && <p role="alert" className={settings.notice}>Newsletter preference could not be saved. Check that the consent notice is configured and try again.</p>}
@@ -59,16 +69,24 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <section className={styles.grid}>
         <article id="security" className={`${styles.panel} ${styles.span7}`}>
           <h2 className={styles.panelTitle}>Profile</h2>
-          <ul className={styles.list}>
+          <ul className={`${styles.list} ${settings.profileFacts}`}>
             <li className={styles.listItem}><span>Verified email</span><span>{workspace.customer.email}</span></li>
             <li className={styles.listItem}><span>Sign-in method</span><span>{signInMethods}</span></li>
           </ul>
           <ProfileNameForm initialName={workspace.customer.name} />
-          {hasPasswordAccount && <>
+          <section className={settings.securitySection} id="password">
             <h3 className={styles.panelTitle}>Password</h3>
-            <p className={styles.panelText}>Use your current password to choose a new one. Other active sessions will be signed out.</p>
-            <PasswordChangeForm />
-          </>}
+            {hasPassword ? <>
+              <p className={styles.panelText}>Use your current password to choose a new one. Other active sessions will be signed out.</p>
+              <PasswordChangeForm />
+            </> : <>
+              <p className={styles.panelText}>Add a password to sign in with email or set up an authenticator.</p>
+              <AddPasswordForm organizationId={organizationId} />
+            </>}
+          </section>
+          <section className={settings.securitySection}>
+            <TwoFactorSettings enabled={twoFactorEnabled} hasPassword={hasPassword} />
+          </section>
           {hasGoogleAccount && <>
             <p className={styles.panelText}>Your Google password and account recovery are managed by Google.</p>
             <div className={settings.links}><a href="https://myaccount.google.com/" rel="noopener noreferrer">Manage Google Account</a><a href="https://accounts.google.com/signin/recovery" rel="noopener noreferrer">Google account recovery</a></div>

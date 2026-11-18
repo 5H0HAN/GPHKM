@@ -30,7 +30,7 @@ test("customer session review exposes only safe metadata and revokes only owned 
   assert.match(probe, /NODE_ENV !== "development" \|\| !localAuthEnabled/);
   assert.match(probe, /assertLoopbackUrl\(requiredEnv\(process\.env, "CUSTOMER_APP_URL"\)/);
   assert.match(probe, /assertLoopbackUrl\(requiredEnv\(process\.env, "STAFF_APP_URL"\)/);
-  assert.match(probe, /staffSignInHtml\.includes\("STAFF WORKSPACE"\)/);
+  assert.match(probe, /staffSignInHtml\.includes\("GPHKM staff sign-in"\)/);
   assert.match(probe, /UPDATE auth_session SET created_at = now\(\) - interval '11 minutes'/);
   assert.match(probe, /stage = `\$\{path\} returned HTTP \$\{response\.status\}`/);
   assert.match(probe, /"\/customer\/catalog"[\s\S]*"\/customer\/orders"[\s\S]*"\/customer\/wallet"[\s\S]*"\/customer\/settings"/);
@@ -46,7 +46,7 @@ test("customer workspace can revoke the current session and receives an accessib
   const layout = await read("../src/app/customer/layout.tsx");
   const control = await read("../src/app/customer/customer-signout.tsx");
   assert.match(layout, /<CustomerSignOut\s*\/>/);
-  assert.match(layout, /OrganizationOnboarding documents=\{legal\.documents\}\s*\/>\s*<CustomerSignOut\s*\/>/);
+  assert.match(layout, /OrganizationOnboarding documents=\{legal\.documents\} alreadyAccepted=\{legal\.accepted\}\s*\/>\s*<CustomerSignOut\s*\/>/);
   assert.match(layout, /The current Terms and Privacy documents are not configured[\s\S]*<Link href="\/sign-in">Manage your sign-in<\/Link><CustomerSignOut\s*\/>/);
   assert.match(control, /authClient\.signOut\(\)/);
   assert.match(control, /router\.replace\("\/sign-in"\)/);

@@ -119,6 +119,42 @@ jobs:
       - run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"
+      - name: Prepare an empty customer auth database
+        shell: bash
+        run: |
+          set -euo pipefail
+          migration_password="$(sed -n 's/^POSTGRES_MIGRATION_PASSWORD=//p' .env)"
+          docker exec gphkm-ci-postgres psql --username=gphkm_migration --dbname=gphkm --set=ON_ERROR_STOP=1 \
+            --command='CREATE DATABASE gphkm_auth_email_check OWNER gphkm_migration'
+          docker exec gphkm-ci-postgres psql --username=gphkm_migration --dbname=gphkm --set=ON_ERROR_STOP=1 \
+            --command='REVOKE CONNECT ON DATABASE gphkm_auth_email_check FROM PUBLIC; GRANT CONNECT ON DATABASE gphkm_auth_email_check TO gphkm_runtime, gphkm_mfa_proof'
+          docker exec gphkm-ci-postgres psql --username=gphkm_migration --dbname=gphkm_auth_email_check --set=ON_ERROR_STOP=1 \
+            --command='GRANT USAGE ON SCHEMA public TO gphkm_runtime, gphkm_mfa_proof'
+          MIGRATION_DATABASE_URL="postgres://gphkm_migration:${migration_password}@127.0.0.1:54329/gphkm_auth_email_check" npm run db:migrate
+      - name: Verify customer verification, password reset, and Google redirect
+        shell: bash
+        run: |
+          set -euo pipefail
+          migration_password="$(sed -n 's/^POSTGRES_MIGRATION_PASSWORD=//p' .env)"
+          database_password="$(sed -n 's/^GPHKM_DATABASE_PASSWORD=//p' .env)"
+          mfa_proof_password="$(sed -n 's/^GPHKM_MFA_PROOF_PASSWORD=//p' .env)"
+          auth_db_url="postgres://gphkm_migration:${migration_password}@127.0.0.1:54329/gphkm_auth_email_check"
+          runtime_db_url="postgres://gphkm_runtime:${database_password}@127.0.0.1:54329/gphkm_auth_email_check"
+          proof_db_url="postgres://gphkm_mfa_proof:${mfa_proof_password}@127.0.0.1:54329/gphkm_auth_email_check"
+          DATABASE_URL="$runtime_db_url" MIGRATION_DATABASE_URL="$auth_db_url" MFA_PROOF_DATABASE_URL="$proof_db_url" \
+            npm run db:check-customer-auth-email:local
+      - name: Prepare disposable staff MFA database
+        shell: bash
+        run: |
+          set -euo pipefail
+          migration_password="$(sed -n 's/^POSTGRES_MIGRATION_PASSWORD=//p' .env)"
+          docker exec gphkm-ci-postgres psql --username=gphkm_migration --dbname=gphkm --set=ON_ERROR_STOP=1 \
+            --command='CREATE DATABASE gphkm_staff_mfa_check OWNER gphkm_migration'
+          docker exec gphkm-ci-postgres psql --username=gphkm_migration --dbname=gphkm --set=ON_ERROR_STOP=1 \
+            --command='REVOKE CONNECT ON DATABASE gphkm_staff_mfa_check FROM PUBLIC; GRANT CONNECT ON DATABASE gphkm_staff_mfa_check TO gphkm_runtime, gphkm_mfa_proof'
+          docker exec gphkm-ci-postgres psql --username=gphkm_migration --dbname=gphkm_staff_mfa_check --set=ON_ERROR_STOP=1 \
+            --command='GRANT USAGE ON SCHEMA public TO gphkm_runtime, gphkm_mfa_proof'
+          MIGRATION_DATABASE_URL="postgres://gphkm_migration:${migration_password}@127.0.0.1:54329/gphkm_staff_mfa_check" npm run db:migrate
       - name: Configure isolated local auth fixtures
         shell: bash
         run: |
@@ -128,8 +164,9 @@ jobs:
           customer_password="$(openssl rand -hex 32)"
           sed -i \
             -e 's|^GPHKM_LOCAL_AUTH_ENABLED=.*|GPHKM_LOCAL_AUTH_ENABLED=true|' \
-            -e 's|^CUSTOMER_APP_URL=.*|CUSTOMER_APP_URL=http://customer.localhost:3000|' \
+            -e 's|^CUSTOMER_APP_URL=.*|CUSTOMER_APP_URL=http://localhost:3000|' \
             -e 's|^STAFF_APP_URL=.*|STAFF_APP_URL=http://staff.localhost:3000|' \
+            -e 's|^GPHKM_LOCAL_MFA_DISABLED=.*|GPHKM_LOCAL_MFA_DISABLED=true|' \
             -e 's|^GOOGLE_CLIENT_ID=.*|GOOGLE_CLIENT_ID=|' \
             -e 's|^GOOGLE_CLIENT_SECRET=.*|GOOGLE_CLIENT_SECRET=|' \
             -e "s|^BOOTSTRAP_SUPER_ADMIN_EMAIL=.*|BOOTSTRAP_SUPER_ADMIN_EMAIL=admin-${fixture_suffix}@gphkm.test|" \
@@ -137,21 +174,40 @@ jobs:
             -e "s|^BOOTSTRAP_CUSTOMER_EMAIL=.*|BOOTSTRAP_CUSTOMER_EMAIL=customer-${fixture_suffix}@gphkm.test|" \
             -e "s|^BOOTSTRAP_CUSTOMER_PASSWORD=.*|BOOTSTRAP_CUSTOMER_PASSWORD=${customer_password}|" \
             .env
-          npm run auth:bootstrap:local
-      - name: Verify stale-session revocation over HTTP
+      - name: Verify auth recovery and staff MFA over HTTP
         shell: bash
         run: |
           set -euo pipefail
-          ./node_modules/.bin/next dev --hostname 127.0.0.1 > /tmp/gphkm-ci-next-dev.log 2>&1 &
+          GPHKM_LOCAL_MFA_DISABLED=true ./node_modules/.bin/next dev --hostname 127.0.0.1 --port 3000 > /tmp/gphkm-ci-next-dev.log 2>&1 &
           next_pid=$!
-          trap 'kill "$next_pid" 2>/dev/null || true; wait "$next_pid" 2>/dev/null || true' EXIT
+          stop_next() { kill "$next_pid" 2>/dev/null || true; wait "$next_pid" 2>/dev/null || true; }
+          trap 'stop_next' EXIT
           ready=false
           for attempt in $(seq 1 60); do
             if curl --fail --silent http://127.0.0.1:3000/api/health >/dev/null; then ready=true; break; fi
             sleep 1
           done
           if [ "$ready" != true ]; then cat /tmp/gphkm-ci-next-dev.log; exit 1; fi
+          npm run db:check-auth-recovery:local
+          npm run auth:bootstrap:local
           npm run db:check-session-guard:local
+          npm run db:check-staff-auth:local
+          stop_next
+          migration_password="$(sed -n 's/^POSTGRES_MIGRATION_PASSWORD=//p' .env)"
+          database_password="$(sed -n 's/^GPHKM_DATABASE_PASSWORD=//p' .env)"
+          mfa_proof_password="$(sed -n 's/^GPHKM_MFA_PROOF_PASSWORD=//p' .env)"
+          export DATABASE_URL="postgres://gphkm_runtime:${database_password}@127.0.0.1:54329/gphkm_staff_mfa_check"
+          export MIGRATION_DATABASE_URL="postgres://gphkm_migration:${migration_password}@127.0.0.1:54329/gphkm_staff_mfa_check"
+          export MFA_PROOF_DATABASE_URL="postgres://gphkm_mfa_proof:${mfa_proof_password}@127.0.0.1:54329/gphkm_staff_mfa_check"
+          export CUSTOMER_APP_URL=http://localhost:3001 STAFF_APP_URL=http://staff.localhost:3001 GPHKM_LOCAL_MFA_DISABLED=false
+          ./node_modules/.bin/next dev --hostname 127.0.0.1 --port 3001 > /tmp/gphkm-ci-next-mfa.log 2>&1 &
+          next_pid=$!
+          ready=false
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:3001/api/health >/dev/null; then ready=true; break; fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then cat /tmp/gphkm-ci-next-mfa.log; exit 1; fi
           npm run db:check-staff-mfa:local
       - name: Remove ephemeral PostgreSQL
         if: always()

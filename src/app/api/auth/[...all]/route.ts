@@ -18,7 +18,7 @@ async function handle(request: Request) {
   if (surface !== "staff") return response;
   try { return await recordStaffMfaProof(request, response); }
   catch {
-    // Do not send a session cookie if its server-side staff MFA proof could not be recorded.
+    // Do not return session cookies when the restricted proof write fails.
     return new Response("Authentication could not be completed", { status: 503, headers: { "Cache-Control": "no-store" } });
   }
 }

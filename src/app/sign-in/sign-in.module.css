@@ -84,10 +84,11 @@
 .error { color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 6px; padding: 12px; font-size: 14px; line-height: 1.5; }
 .link { display: inline-block; color: var(--text-secondary); margin-top: 20px; text-underline-offset: 4px; }
 .authLinks { display:flex; flex-wrap:wrap; gap:12px 20px; margin-top:18px; }
-.textButton { min-height:44px; padding:8px 0; border:0; background:transparent; color:var(--text-secondary); font:inherit; text-decoration:underline; text-underline-offset:4px; cursor:pointer; }
+.textButton, .authLink { min-height:44px; padding:8px 0; border:0; background:transparent; color:var(--text-secondary); font:inherit; text-decoration:underline; text-underline-offset:4px; cursor:pointer; }
+.authLink { display: inline-flex; align-items: center; }
 .textButton:disabled { color:var(--text-muted); cursor:not-allowed; text-decoration:none; }
 .success { margin:16px 0 0; padding:12px; border:1px solid var(--border); border-radius:6px; color:var(--text-primary); background:var(--surface-2); font-size:14px; line-height:1.5; overflow-wrap:anywhere; }
-.textButton:focus-visible,.link:focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
+.textButton:focus-visible,.authLink:focus-visible,.link:focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
 .footer { margin-top: 24px; color: var(--text-muted); font-size: 13px; }
 
 @media (max-width: 480px) {

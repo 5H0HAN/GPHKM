@@ -10,11 +10,11 @@ function configuration() {
   return { apiKey, from };
 }
 
-export function customerAuthEmailAvailable() {
+export function authEmailAvailable() {
   return configuration() !== null;
 }
 
-export async function sendCustomerAuthEmail(input: { to: string; subject: string; text: string }) {
+export async function sendAuthEmail(input: { to: string; subject: string; text: string }) {
   const config = configuration();
   if (!config || !EMAIL_RE.test(input.to) || /[\r\n\0]/.test(input.to) || input.text.length > 20_000) {
     throw new Error("Customer authentication email is unavailable");
@@ -29,8 +29,8 @@ export async function sendCustomerAuthEmail(input: { to: string; subject: string
   if (!response.ok) throw new Error("Customer authentication email delivery failed");
 }
 
-export function sendCustomerAuthEmailInBackground(input: { to: string; subject: string; text: string }) {
-  void sendCustomerAuthEmail(input).catch(() => {
+export function sendAuthEmailInBackground(input: { to: string; subject: string; text: string }) {
+  void sendAuthEmail(input).catch(() => {
     // Never log email addresses, tokens, message bodies, or provider secrets.
     console.error(JSON.stringify({ event: "customer_auth_email_failed" }));
   });

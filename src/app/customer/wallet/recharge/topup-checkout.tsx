@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { loadStripe } from "@stripe/stripe-js";
-import { CheckoutElementsProvider, PaymentElement, useCheckoutElements } from "@stripe/react-stripe-js/checkout";
+import { CheckoutElementsProvider, ContactDetailsElement, PaymentElement, useCheckoutElements } from "@stripe/react-stripe-js/checkout";
 import styles from "./topup-checkout.module.css";
 import customerStyles from "../../customer.module.css";
 
@@ -33,6 +33,7 @@ function PaymentForm({ onSubmitted }: { onSubmitted: () => void }) {
 
   return (
     <form onSubmit={submit} className={styles.form}>
+      <ContactDetailsElement />
       <PaymentElement />
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
       <button className={styles.button} type="submit" disabled={!result.checkout.canConfirm || pending}>

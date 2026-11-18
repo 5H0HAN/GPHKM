@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { authClient } from "@/auth/client";
+import { staffAuthClient } from "@/auth/staff-client";
 import styles from "./console.module.css";
 
-export function StaffSignOut() {
+export function StaffSignOut({ buttonClassName = styles.signOut }: { buttonClassName?: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
@@ -15,7 +15,7 @@ export function StaffSignOut() {
     setBusy(true);
     setError(false);
     try {
-      const result = await authClient.signOut();
+      const result = await staffAuthClient.signOut();
       if (result.error) throw new Error("Sign-out failed");
       router.replace("/staff/sign-in");
       router.refresh();
@@ -27,7 +27,7 @@ export function StaffSignOut() {
   }
 
   return <>
-    <button className={styles.signOut} type="button" onClick={signOut} disabled={busy}>
+    <button className={buttonClassName} type="button" onClick={signOut} disabled={busy}>
       {busy ? "Signing out…" : "Sign out"}
     </button>
     {error && <span role="alert" className={styles.signOutError}>Sign-out failed. Check your connection and try again.</span>}

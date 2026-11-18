@@ -42,7 +42,7 @@ export function PasswordChangeForm() {
     }
   }
 
-  return <form onSubmit={submit} className={styles.passwordForm} aria-busy={busy}>
+  return <form method="post" onSubmit={submit} className={styles.passwordForm} aria-busy={busy}>
     <label htmlFor="currentPassword">Current password
       <input id="currentPassword" name="currentPassword" type="password" autoComplete="current-password" minLength={16} maxLength={128} required disabled={busy} />
     </label>

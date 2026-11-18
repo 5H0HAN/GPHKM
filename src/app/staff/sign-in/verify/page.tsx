@@ -1,20 +1,20 @@
-import SignInForm from "../../../sign-in/sign-in-form";
-import Link from "next/link";
-import styles from "../sign-in.module.css";
+import type { Metadata } from "next";
+import SignInForm from "@/app/sign-in/sign-in-form";
+import { authEmailAvailable } from "@/server/auth/email-delivery";
 
 export const dynamic = "force-dynamic";
+export const metadata: Metadata = { referrer: "no-referrer" };
 
-export default function StaffMfaVerifyPage() {
-  return (
-    <main className={styles.page}>
-      <a className={styles.skipLink} href="#staff-verify-title">Skip to verification form</a>
-      <Link className={styles.brand} href="/">GPHKM <span>STAFF</span></Link>
-      <section className={styles.panel} aria-labelledby="staff-verify-title">
-        <p className={styles.eyebrow}>STAFF WORKSPACE</p>
-        <div id="staff-verify-title" className={styles.form} tabIndex={-1}>
-          <SignInForm session={null} localEnabled={false} googleEnabled={false} verify returnTo="/staff" surface="staff" />
-        </div>
-      </section>
-    </main>
-  );
+export default function VerifyStaffSignInPage() {
+  return <SignInForm
+    session={null}
+    localEnabled={false}
+    emailPasswordEnabled={false}
+    emailSignupEnabled={false}
+    googleEnabled={false}
+    passwordResetEnabled={authEmailAvailable()}
+    verify
+    returnTo="/staff/sign-in"
+    surface="staff"
+  />;
 }

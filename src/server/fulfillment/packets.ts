@@ -1,4 +1,5 @@
 import "server-only";
+import { isRoutablePublicBase } from "@/server/auth/url-policy";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, exists, inArray, isNotNull, lt, notExists, sql } from "drizzle-orm";
 import { db } from "@/db";
@@ -827,9 +828,8 @@ function resendConfig() {
   if (!apiKey || !from || !webhookId || !webhookSecret || !publicBase || !dataApproved || /[\r\n\0]/.test(from)) return null;
   const address = /<([^<>]+)>/.exec(from)?.[1] ?? from;
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) return null;
-  let base: URL;
-  try { base = new URL(publicBase); } catch { return null; }
-  if (base.protocol !== "https:" && base.hostname !== "localhost") return null;
+  if (!isRoutablePublicBase(publicBase, process.env)) return null;
+  const base = new URL(publicBase);
   return { apiKey, from, senderDomain: address.slice(address.lastIndexOf("@") + 1).toLowerCase(), webhookId, webhookSecret, webhookUrl: new URL("/api/webhooks/resend", base).toString() };
 }
 

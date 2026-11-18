@@ -22,8 +22,8 @@ export function getStripeRuntime(env: Record<string, string | undefined> = proce
   if (!key) return null;
   const mode = /^(?:sk|rk)_live_/.test(key) ? "live" : /^(?:sk|rk)_test_/.test(key) ? "test" : null;
   if (!mode) throw new Error("Stripe key type is not recognized");
-  if (mode === "live" && !key.startsWith("rk_live_")) {
-    throw new Error("Live Stripe integrations require a restricted API key");
+  if (!key.startsWith("rk_")) {
+    throw new Error("Stripe wallet integrations require a restricted API key");
   }
   return {
     client: new Stripe(key, {

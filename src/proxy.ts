@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { authSurfaceForHost, authSurfaceOrigins } from "@/server/auth/surfaces";
+import { isPublicIngressHost, publicBaseOrigin } from "@/server/auth/url-policy";
 import { buildContentSecurityPolicy } from "@/modules/security/content-security-policy";
 
 function pageResponse(request: NextRequest, surface: "customer" | "staff", destination?: URL) {
@@ -27,6 +28,7 @@ export function proxy(request: NextRequest) {
   let origins: { customer: string; staff: string };
   try {
     origins = authSurfaceOrigins(process.env);
+    publicBaseOrigin(process.env);
   } catch {
     if (process.env.NODE_ENV === "production") {
       return new NextResponse("Application host configuration is unavailable", { status: 503 });
@@ -44,6 +46,9 @@ export function proxy(request: NextRequest) {
 
   const host = request.headers.get("host");
   const surface = host ? authSurfaceForHost(host, origins) : null;
+  if (!surface && host && isPublicIngressHost(host, process.env) && request.nextUrl.pathname.startsWith("/api/")) {
+    return NextResponse.next();
+  }
   if (!surface) {
     if (process.env.NODE_ENV === "production") return new NextResponse("Not found", { status: 404 });
 
@@ -70,7 +75,8 @@ export function proxy(request: NextRequest) {
   }
 
   if (surface === "customer") {
-    if (pathname.startsWith("/sign-in") || pathname === "/invitations/accept" || pathname.startsWith("/customer")) return pageResponse(request, surface);
+    if (pathname.startsWith("/sign-in") || pathname === "/invitations/accept" || pathname.startsWith("/customer") ||
+      pathname === "/legal/terms" || pathname === "/legal/privacy") return pageResponse(request, surface);
     const target = request.nextUrl.clone();
     target.pathname = pathname === "/" ? "/customer" : `/customer${pathname}`;
     return pageResponse(request, surface, target);

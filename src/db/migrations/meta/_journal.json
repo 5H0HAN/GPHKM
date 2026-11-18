@@ -1359,6 +1359,34 @@
       "when": 1794758996322,
       "tag": "0193_allow_pending_supplier_manual_fallback",
       "breakpoints": true
+    },
+    {
+      "idx": 194,
+      "version": "7",
+      "when": 1794931200000,
+      "tag": "0194_staff_password_auth_deferred_mfa",
+      "breakpoints": true
+    },
+    {
+      "idx": 195,
+      "version": "7",
+      "when": 1794936000000,
+      "tag": "0195_staff_auth_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 196,
+      "version": "7",
+      "when": 1794936060000,
+      "tag": "0196_staff_password_only_authority",
+      "breakpoints": true
+    },
+    {
+      "idx": 197,
+      "version": "7",
+      "when": 1794936120000,
+      "tag": "0197_require_staff_totp",
+      "breakpoints": true
     }
   ]
 }

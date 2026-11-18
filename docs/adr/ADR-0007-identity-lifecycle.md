@@ -4,6 +4,8 @@
 - **Date:** 2026-10-28
 - **Decision owners:** Product / Security / Operations
 
+> **Superseded by [ADR-0036](ADR-0036-staff-authentication-mandatory-totp.md).** Use it for current staff authentication and recovery. This record still governs customer lifecycle, invitation roles, bootstrap, and closure.
+
 ## Context
 
 GPHKM has organization-owned wallets and orders, multiple customer roles, and separate staff authority. Signup, invitation, ownership transfer, and staff provisioning must be defined before building authorization.

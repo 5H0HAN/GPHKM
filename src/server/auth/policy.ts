@@ -42,9 +42,37 @@ export function localStaffMfaDisabled(env: Environment): boolean {
     throw new Error("GPHKM_LOCAL_MFA_DISABLED must be true or false");
   }
   if (flag === "true" && (env.NODE_ENV !== "development" || !localAuthEnabled(env))) {
-    throw new Error("Local staff MFA may be disabled only with development-only local authentication");
+    throw new Error("The staff MFA bypass requires development-only local authentication");
   }
   return flag === "true";
+}
+
+export function requiredMfaProofDatabaseUrl(env: Environment): string {
+  const value = requiredEnv(env, "MFA_PROOF_DATABASE_URL");
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error("MFA_PROOF_DATABASE_URL must be a valid PostgreSQL URL"); }
+  if (!["postgres:", "postgresql:"].includes(url.protocol) || decodeURIComponent(url.username) !== "gphkm_mfa_proof") {
+    throw new Error("MFA_PROOF_DATABASE_URL must use the restricted gphkm_mfa_proof database role");
+  }
+  if (value === env.DATABASE_URL) throw new Error("MFA_PROOF_DATABASE_URL must not use the application runtime connection");
+  return value;
+}
+
+export function customerEmailSignupEnabled(env: Environment): boolean {
+  const flag = env.GPHKM_LOCAL_CUSTOMER_EMAIL_SIGNUP_ENABLED;
+  if (flag !== undefined && flag !== "true" && flag !== "false") {
+    throw new Error("GPHKM_LOCAL_CUSTOMER_EMAIL_SIGNUP_ENABLED must be true or false");
+  }
+  if (flag === "true" && (env.NODE_ENV !== "development" || !localAuthEnabled(env))) {
+    throw new Error("Local customer email signup requires development-only local authentication");
+  }
+  return env.NODE_ENV !== "development" || flag === "true";
+}
+
+const CUSTOMER_MFA_SESSION_PATHS = new Set(["/sign-in/email", "/two-factor/verify-totp", "/two-factor/verify-backup-code", "/two-factor/disable", "/change-password"]);
+
+export function customerSessionCreationAllowed(path: string | undefined, twoFactorEnabled: boolean): boolean {
+  return !twoFactorEnabled || Boolean(path && CUSTOMER_MFA_SESSION_PATHS.has(path));
 }
 
 export function authTrustedProxyCidrs(env: Environment): string[] {
@@ -95,8 +123,8 @@ export function bootstrapSettings(env: Environment) {
   if (password.length < 16 || password.length > 128) throw new Error("Bootstrap password must contain 16–128 characters");
   const customerEmail = requiredEnv(env, "BOOTSTRAP_CUSTOMER_EMAIL").trim().toLowerCase();
   const customerPassword = requiredEnv(env, "BOOTSTRAP_CUSTOMER_PASSWORD");
-  if (!/^[^\s@]+@[^\s@]+\.test$/.test(email) || !/^[^\s@]+@[^\s@]+\.test$/.test(customerEmail)) {
-    throw new Error("Local bootstrap identities must use reserved .test email domains");
+  if (!/^[^\s@]+@[^\s@]+\.test$/.test(email) || (!/^[^\s@]+@[^\s@]+\.test$/.test(customerEmail) && customerEmail !== "client@guestpost.local")) {
+    throw new Error("Local bootstrap staff must use a reserved .test email; customer must use .test or client@guestpost.local");
   }
   if (email === customerEmail) throw new Error("Staff and customer must have separate identities");
   if (customerPassword.length < 16 || customerPassword.length > 128) {

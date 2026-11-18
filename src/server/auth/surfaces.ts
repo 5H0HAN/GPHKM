@@ -1,3 +1,5 @@
+import { assertNoLegacyAuthUrlVariables } from "./url-policy.ts";
+
 type Environment = Record<string, string | undefined>;
 export type AuthSurface = "customer" | "staff";
 
@@ -20,6 +22,7 @@ function configuredOrigin(env: Environment, key: string): URL {
 }
 
 export function authSurfaceOrigins(env: Environment): { customer: string; staff: string } {
+  assertNoLegacyAuthUrlVariables(env);
   const customer = configuredOrigin(env, "CUSTOMER_APP_URL");
   const staff = configuredOrigin(env, "STAFF_APP_URL");
   if (customer.origin === staff.origin || customer.hostname === staff.hostname) {

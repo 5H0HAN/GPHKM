@@ -3,84 +3,71 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { staffAuthClient } from "@/auth/staff-client";
+import type { SignInSession } from "@/server/auth/sign-in-session";
+import { StaffSignOut } from "../(console)/staff-signout";
 import SignInForm from "../../sign-in/sign-in-form";
+import { TotpEnrollmentForm } from "@/components/identity/totp-enrollment-form";
+import { BackupCodesPanel } from "@/components/identity/totp-secret-panel";
 import styles from "./sign-in.module.css";
 
-export function StaffSignIn({ session, localEnabled, localMfaDisabled, googleEnabled }: {
-  session: { email: string; twoFactorEnabled: boolean } | null;
+export function StaffSignIn({ session, staff, localEnabled, localMfaBypassed, passwordResetEnabled }: {
+  session: SignInSession;
+  staff: { active: boolean; twoFactorEnabled: boolean } | null;
   localEnabled: boolean;
-  localMfaDisabled: boolean;
-  googleEnabled: boolean;
+  localMfaBypassed: boolean;
+  passwordResetEnabled: boolean;
 }) {
-  if (session && !session.twoFactorEnabled) return <StaffMfaSetup />;
-  if (session) return <>
-    <h1>Staff verification required</h1>
-    <p className={styles.note}>Use your authenticator to verify this staff session.</p>
-    <Link href="/staff/sign-in/verify" className={styles.link}>Continue to verification</Link>
-  </>;
-  return <SignInForm localEnabled={localEnabled} localMfaDisabled={localMfaDisabled} googleEnabled={googleEnabled} returnTo="/staff" surface="staff" />;
-}
-
-function StaffMfaSetup() {
   const router = useRouter();
-  const [password, setPassword] = useState("");
-  const [code, setCode] = useState("");
-  const [setup, setSetup] = useState<{ uri: string; backupCodes: string[] } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [backupCodes, setBackupCodes] = useState<string[] | null>(null);
+  if (!session) return <SignInForm
+    localEnabled={localEnabled}
+    emailPasswordEnabled
+    emailSignupEnabled={false}
+    googleEnabled={false}
+    passwordResetEnabled={passwordResetEnabled}
+    returnTo="/staff/sign-in"
+    surface="staff"
+  />;
 
-  async function begin() {
-    setBusy(true);
-    setError("");
-    try {
-      const result = await staffAuthClient.twoFactor.enable({ method: "totp", password, issuer: "GPHKM Staff" });
-      if (result.error || result.data?.method !== "totp" || !result.data.totpURI || !result.data.backupCodes) {
-        setError("Authenticator setup could not start. Check your password and try again.");
-        return;
-      }
-      setSetup({ uri: result.data.totpURI, backupCodes: result.data.backupCodes });
-      setPassword("");
-    } catch {
-      setError("Authenticator setup could not start. Try again.");
-    } finally {
-      setBusy(false);
-    }
-  }
+  if (!staff) return <>
+    <h1>Finish accepting your invitation</h1>
+    <p className={styles.note}>Open the link in your latest staff invitation email to continue.</p>
+    <StaffSignOut buttonClassName={styles.secondary} />
+  </>;
 
-  async function verify() {
-    if (!/^[0-9]{6}$/.test(code)) { setError("Enter the current six-digit authenticator code."); return; }
-    setBusy(true);
-    setError("");
-    try {
-      const result = await staffAuthClient.twoFactor.verifyTotp({ code, trustDevice: false });
-      if (result.error) { setError("That code could not be verified. Try the current code from your authenticator app."); return; }
-      setSetup(null);
-      router.replace("/staff");
-      router.refresh();
-    } catch {
-      setError("Verification could not be completed. Try again.");
-    } finally {
-      setBusy(false);
-    }
-  }
+  if (!localMfaBypassed && !staff.twoFactorEnabled) return backupCodes ? <>
+    <h1>Save your staff recovery codes</h1>
+    <BackupCodesPanel codes={backupCodes} showHeading={false} />
+    <div className={styles.actions}>
+      <button className={styles.secondary} type="button" onClick={() => { setBackupCodes(null); router.refresh(); }}>Done</button>
+    </div>
+  </> : <>
+    <h1>Set up staff sign-in verification</h1>
+    <p className={styles.note}>Scan the authenticator QR code and verify a code. Staff access stays blocked until setup is complete.</p>
+    <TotpEnrollmentForm surface="staff" onVerified={setBackupCodes} />
+    <StaffSignOut buttonClassName={styles.secondary} />
+  </>;
 
-  return <section className={styles.mfa} aria-labelledby="mfa-title">
-    <h1 id="mfa-title">Set up staff verification</h1>
-    <p className={styles.note}>Staff access requires an authenticator app. Keep your recovery codes somewhere private; they are shown only during setup.</p>
-    {error ? <p role="alert" className={styles.error}>{error}</p> : null}
-    {!setup ? <div className={styles.form}>
-      <label htmlFor="staff-password">Confirm your password</label>
-      <input id="staff-password" name="staffPassword" type="password" autoComplete="current-password" maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} />
-      <button className={styles.primary} type="button" disabled={busy || password.length < 1} onClick={begin}>{busy ? "Preparing…" : "Set up authenticator"}</button>
-    </div> : <div className={styles.form}>
-      <p>In your authenticator app, add an account using this setup URI:</p>
-      <textarea aria-label="Authenticator setup URI" readOnly rows={3} value={setup.uri} />
-      <h2>Recovery codes</h2>
-      <ul className={styles.codes}>{setup.backupCodes.map((item) => <li key={item}><code>{item}</code></li>)}</ul>
-      <label htmlFor="staff-totp-code">Enter the current six-digit code</label>
-      <input id="staff-totp-code" name="staffTotpCode" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} />
-      <button className={styles.primary} type="button" disabled={busy || code.length !== 6} onClick={verify}>{busy ? "Verifying…" : "Verify and continue"}</button>
-    </div>}
-  </section>;
+  if (!staff.active) return backupCodes ? <>
+    <h1>Save your staff recovery codes</h1>
+    <BackupCodesPanel codes={backupCodes} showHeading={false} />
+    <div className={styles.actions}>
+      <button className={styles.secondary} type="button" onClick={() => { setBackupCodes(null); router.refresh(); }}>Done</button>
+    </div>
+  </> : <>
+    <h1>Awaiting Super Admin activation</h1>
+    <p className={styles.note}>{localMfaBypassed
+      ? "A Super Admin must activate your account before you can open the staff workspace."
+      : "Your account has a verified email and authenticator. A Super Admin must activate it before you can open the staff workspace."}</p>
+    <StaffSignOut buttonClassName={styles.secondary} />
+  </>;
+
+  return <>
+    <h1>Staff access active</h1>
+    <p className={styles.note}>Your staff session is ready.</p>
+    <div className={styles.actions}>
+      <Link href="/staff" className={styles.secondary}>Open staff workspace</Link>
+      <StaffSignOut buttonClassName={styles.secondary} />
+    </div>
+  </>;
 }
