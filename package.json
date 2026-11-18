@@ -18,9 +18,13 @@
     "db:check-supplier-failure-migration:local": "node --env-file=.env scripts/check-supplier-failure-migration-local.ts",
     "db:check-supplier-recovery:local": "node --env-file=.env scripts/check-supplier-recovery-local.ts",
     "db:check-recipient-reconsent:local": "node --env-file=.env scripts/check-recipient-reconsent-local.ts",
+    "db:check-staff-auth:local": "NODE_ENV=development GPHKM_LOCAL_MFA_DISABLED=true node --env-file=.env scripts/check-staff-auth-local.ts",
+    "db:check-staff-mfa:local": "NODE_ENV=development GPHKM_LOCAL_MFA_DISABLED=false node --conditions=react-server --env-file=.env --import tsx scripts/check-staff-mfa-local.mts",
+    "db:check-customer-auth-email:local": "NODE_ENV=development GPHKM_AUTH_EMAIL_CHECK_ISOLATED_DB=true node --conditions=react-server --env-file=.env scripts/check-customer-auth-email-local.mts",
+    "db:check-auth-recovery:local": "NODE_ENV=development node --env-file=.env scripts/check-auth-recovery-local.ts",
     "db:check-session-guard:local": "NODE_ENV=development node --env-file=.env scripts/check-customer-session-revocation-local.ts",
-    "db:check-staff-mfa:local": "NODE_ENV=development node --env-file=.env scripts/check-staff-mfa-local.ts",
     "auth:bootstrap:local": "NODE_ENV=development node --env-file=.env scripts/bootstrap-local-admin.ts",
+    "auth:seed-local-staff-mfa": "NODE_ENV=development GPHKM_LOCAL_MFA_DISABLED=true node --env-file=.env scripts/seed-local-staff-mfa.ts",
     "worker:provision-local": "node --env-file=.env scripts/provision-local-notification-worker.ts",
     "roles:provision-local": "node --env-file=.env scripts/provision-local-restricted-roles.ts",
     "worker": "node --conditions=react-server --env-file=.env scripts/customer-notification-worker.ts",
@@ -36,6 +40,7 @@
     "next": "16.4.6",
     "pdf-lib": "1.17.1",
     "pg": "8.23.1",
+    "qrcode.react": "4.2.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "read-excel-file": "9.3.12",
@@ -51,12 +56,12 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "drizzle-kit": "0.31.11",
-    "eslint": "10.14.0",
+    "eslint": "10.15.0",
     "eslint-plugin-react-a11y": "2.6.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "tsx": "4.23.15",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.72.1"
+    "typescript-eslint": "8.73.0"
   },
   "overrides": {
     "esbuild": ">=0.25.0"

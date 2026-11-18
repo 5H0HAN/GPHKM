@@ -13,7 +13,7 @@ test("staff navigation announces the active route without widening role permissi
   assert.match(nav, /aria-label="Staff workspace"/);
   assert.match(layout, /hasStaffPermission\(actor\.role, item\.permission\)/);
   assert.match(styles, /\.navLink\[aria-current="page"\]/);
-  assert.match(signOut, /authClient\.signOut\(\)/);
+  assert.match(signOut, /staffAuthClient\.signOut\(\)/);
   assert.match(signOut, /if \(result\.error\)/);
   assert.match(signOut, /role="alert"/);
 });

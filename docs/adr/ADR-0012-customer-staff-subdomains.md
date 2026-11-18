@@ -4,9 +4,11 @@
 - **Date:** 2026-10-28
 - **Decision owners:** Product / Engineering / Security
 
+> **Superseded in part by [ADR-0018](ADR-0018-customer-email-password-auth.md) and [ADR-0036](ADR-0036-staff-authentication-mandatory-totp.md).** They define customer recovery and staff authentication details. The separate host, canonical origin, and deployment topology decision below still applies.
+
 ## Context
 
-Customers and staff use different parts of GPHKM and have different authorization boundaries. A shared login surface risks confusing customers and staff about where to sign in. Serving staff operations from a dedicated subdomain also creates a clear entry boundary for staff-specific sign-in and MFA.
+Customers and staff use different parts of GPHKM and have different authorization boundaries. A shared login surface risks confusing customers and staff about where to sign in. Serving staff operations from a dedicated subdomain creates a clear entry boundary for staff sign-in and controlled provisioning.
 
 ## Decision
 
@@ -15,7 +17,7 @@ Customers and staff use different parts of GPHKM and have different authorizatio
 - Keep one codebase, PostgreSQL database, and shared domain modules as the default. The Next.js proxy can route both configured hosts in one process, but this capability does not decide whether production uses one deployment or two deployments of the same codebase; that remains open under O-06.
 - Keep Better Auth session cookies host-only. Leave cross-subdomain cookies disabled; do not widen cookie scope to the parent domain for shared login.
 - Configure exact trusted origins and explicit OAuth callback URLs for each environment. Do not trust wildcard subdomains or client-controlled forwarded-host values.
-- Enforce organization membership, staff role, staff MFA, item assignment, and permissions server-side on every protected operation. The hostname is not authorization.
+- Enforce organization membership, active staff role, item assignment, and permissions server-side on every protected operation. The hostname is not authorization. The interim 0194 rollout used invitation-bound staff passwords without Google or TOTP.
 
 ## Consequences
 

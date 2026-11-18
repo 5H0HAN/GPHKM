@@ -24,3 +24,14 @@
 .passwordError { color: var(--error); }
 .passwordMessage { color: var(--success); }
 @media (max-width: 700px) { .member { grid-template-columns: 1fr; gap: 10px; } }
+.securitySection { margin-block: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.securityCopy { margin: 6px 0 12px; color: var(--text-secondary); font-size: 14px; line-height: 1.55; }
+.securityCopy a { text-underline-offset: 3px; }
+.securityActions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.securityActions button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-2); color: var(--text-primary); font: inherit; cursor: pointer; }
+.securityActions button:disabled { opacity: .6; cursor: wait; }
+.profileFacts li > span:first-child { flex: 0 0 auto; }
+.profileFacts li > span:last-child { min-width: 0; overflow-wrap: anywhere; text-align: end; }
+@media (max-width: 980px) {
+  .securitySection[id], .securitySection h3 { scroll-margin-block-start: 150px; }
+}

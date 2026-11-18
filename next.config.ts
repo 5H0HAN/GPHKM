@@ -27,10 +27,10 @@ const nextConfig: NextConfig = {
           { key: "X-Robots-Tag", value: "noindex, nofollow" },
         ],
       })),
-      {
-        source: "/sign-in/reset-password",
+      ...["/sign-in/reset-password", "/staff/sign-in/reset-password"].map((source) => ({
+        source,
         headers: [{ key: "Referrer-Policy", value: "no-referrer" }],
-      },
+      })),
     ];
   },
 };

@@ -10,7 +10,7 @@ test("live Stripe checkout remains closed until both launch flags are enabled", 
   const liveKey = ["sk", "live", "placeholder"].join("_");
   const restrictedLiveKey = ["rk", "live", "placeholder"].join("_");
   assert.equal(getStripeRuntime({ STRIPE_SECRET_KEY: "" }), null);
-  assert.equal(getStripeRuntime({ STRIPE_SECRET_KEY: testKey }).mode, "test");
+  assert.throws(() => getStripeRuntime({ STRIPE_SECRET_KEY: testKey }), /restricted API key/);
   assert.equal(getStripeRuntime({ STRIPE_SECRET_KEY: restrictedTestKey }).mode, "test");
   assert.throws(() => getStripeRuntime({ STRIPE_SECRET_KEY: liveKey }), /restricted API key/);
   const liveRuntime = getStripeRuntime({ STRIPE_SECRET_KEY: restrictedLiveKey });
@@ -26,7 +26,7 @@ test("live Stripe checkout remains closed until both launch flags are enabled", 
     STRIPE_WEBHOOK_SECRET: ["whsec", "placeholder"].join("_"),
     STRIPE_WEBHOOK_DATABASE_URL: "postgresql://gphkm_webhook@localhost/gphkm",
   };
-  assert.equal(isStripeWalletCheckoutAvailable({ ...webhookConfig, STRIPE_SECRET_KEY: testKey, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_live_placeholder" }), false);
+  assert.equal(isStripeWalletCheckoutAvailable({ ...webhookConfig, STRIPE_SECRET_KEY: restrictedTestKey, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_live_placeholder" }), false);
   const liveConfig = { ...webhookConfig, STRIPE_SECRET_KEY: restrictedLiveKey, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_live_placeholder" };
   assert.equal(isStripeWalletCheckoutAvailable(liveConfig), false);
   assert.equal(isStripeWalletCheckoutAvailable({ ...liveConfig, GPHKM_REAL_MONEY_ENABLED: "true", GPHKM_LAUNCH_GATES_VERIFIED: "true" }), true);
@@ -35,7 +35,7 @@ test("live Stripe checkout remains closed until both launch flags are enabled", 
 
 test("test funding requires webhook signing and database configuration before creating attempts", () => {
   const testConfig = {
-    STRIPE_SECRET_KEY: ["sk", "test", "placeholder"].join("_"),
+    STRIPE_SECRET_KEY: ["rk", "test", "placeholder"].join("_"),
     NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_test_placeholder",
     STRIPE_WEBHOOK_SECRET: ["whsec", "placeholder"].join("_"),
     STRIPE_WEBHOOK_DATABASE_URL: "postgresql://gphkm_webhook@localhost/gphkm",
@@ -66,7 +66,7 @@ test("test funding requires webhook signing and database configuration before cr
   `], {
     cwd: new URL("../", import.meta.url),
     env: {
-      ...process.env, ...testConfig, NODE_ENV: "test", CUSTOMER_APP_URL: "http://customer.localhost:3000",
+      ...process.env, ...testConfig, NODE_ENV: "test", CUSTOMER_APP_URL: "http://localhost:3000",
       STAFF_APP_URL: "http://staff.localhost:3000", DATABASE_URL: "postgresql://gphkm_runtime@localhost:1/gphkm",
     },
     encoding: "utf8",
@@ -76,7 +76,7 @@ test("test funding requires webhook signing and database configuration before cr
 });
 
 test("Stripe API requests have a bounded timeout and retry budget", () => {
-  const runtime = getStripeRuntime({ STRIPE_SECRET_KEY: ["sk", "test", "placeholder"].join("_") });
+  const runtime = getStripeRuntime({ STRIPE_SECRET_KEY: ["rk", "test", "placeholder"].join("_") });
   assert.equal(runtime.client.getApiField("timeout"), 15_000);
   assert.equal(runtime.client.getMaxNetworkRetries(), 1);
 });
@@ -101,8 +101,11 @@ test("recharge returns to the authorized payment organization and describes the 
   const page = await readFile(new URL("../src/app/customer/wallet/recharge/page.tsx", import.meta.url), "utf8");
   const checkout = await readFile(new URL("../src/app/customer/wallet/recharge/topup-checkout.tsx", import.meta.url), "utf8");
   assert.match(topups, /return_url: stripeWalletReturnUrl\(attempt\.organizationId\)/);
+  assert.match(topups, /ui_mode: "elements"/);
+  assert.doesNotMatch(topups, /ui_mode: "custom"/);
   assert.match(page, /typeof params\.session_id === "string" && requestedOrganizationId === organizationId/);
   assert.match(checkout, /await result\.checkout\.confirm\(\)/);
+  assert.match(checkout, /ContactDetailsElement/);
   assert.match(checkout, /meets the current minimum grants marketplace access for the current policy term/);
   assert.doesNotMatch(checkout, /six.month|at least[^<]*50/i);
 });

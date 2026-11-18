@@ -21,12 +21,25 @@ test("legal configuration fails closed for missing versions/URLs and unsafe docu
 });
 
 test("HTTP document URLs are restricted to loopback development", () => {
-  assert.equal(currentLegalDocuments({ ...configured, NODE_ENV: "development", GPHKM_TERMS_URL: "http://customer.localhost:3000/terms/v1" }).termsUrl, "http://customer.localhost:3000/terms/v1");
+  assert.equal(currentLegalDocuments({ ...configured, NODE_ENV: "development", GPHKM_TERMS_URL: "http://localhost:3000/terms/v1" }).termsUrl, "http://localhost:3000/terms/v1");
   for (const env of [
     { ...configured, GPHKM_TERMS_URL: "http://localhost:3000/terms/v1" },
     { ...configured, NODE_ENV: "test", GPHKM_TERMS_URL: "http://localhost:3000/terms/v1" },
     { ...configured, NODE_ENV: "development", GPHKM_TERMS_URL: "http://localhost.evil.test/terms" },
   ]) assert.throws(() => currentLegalDocuments(env), LegalConfigurationError);
+});
+
+test("signup policy links resolve publicly in development and remain unpublished outside it", () => {
+  const terms = readFileSync(new URL("../src/app/legal/terms/page.tsx", import.meta.url), "utf8");
+  const privacy = readFileSync(new URL("../src/app/legal/privacy/page.tsx", import.meta.url), "utf8");
+  const placeholder = readFileSync(new URL("../src/app/legal/local-legal-placeholder.tsx", import.meta.url), "utf8");
+  const proxy = readFileSync(new URL("../src/proxy.ts", import.meta.url), "utf8");
+  assert.match(terms, /LocalLegalPlaceholder title="Terms of Service"/);
+  assert.match(privacy, /LocalLegalPlaceholder title="Privacy Policy"/);
+  assert.match(proxy, /pathname === "\/legal\/terms" \|\| pathname === "\/legal\/privacy"/);
+  assert.match(placeholder, /process\.env\.NODE_ENV !== "development"/);
+  assert.match(placeholder, /not GPHKM’s approved/);
+  assert.match(placeholder, /Replace it with approved text/);
 });
 
 test("acceptance requires an explicit checked boolean and both exact current versions", () => {
@@ -62,7 +75,37 @@ test("legal evidence is append-only and common customer commands cannot skip the
   assert.ok(lifecycle.indexOf("recordLegalAcceptance(tx, actorUserId, legalAcceptance)") < lifecycle.indexOf("tx.insert(organization)"));
   assert.match(lifecycle, /requireCurrentLegalAcceptance\(tx, actor\.user\.id\)/);
   const auth = readFileSync(new URL("../src/server/auth/index.ts", import.meta.url), "utf8");
-  assert.match(auth, /surface === "customer" && context\.path === "\/sign-in\/social"/);
+  assert.match(auth, /surface === "customer" && context\.path === "\/sign-in\/social" && asRecord\(context\.body\)\.requestSignUp === true/);
+  assert.match(auth, /addOAuthServerContext\(\{ \[CUSTOMER_LEGAL_OAUTH_CONTEXT\]: accepted \}\)/);
+  assert.match(auth, /disableImplicitSignUp: true/);
+  assert.match(auth, /registrationAcceptanceForContext\(context\)/);
+  assert.match(auth, /await recordLegalAcceptance\(tx, newUser\.id, accepted\)/);
+  const signup = readFileSync(new URL("../src/app/sign-in/sign-in-form.tsx", import.meta.url), "utf8");
+  assert.match(signup, /LegalConsentCheckbox documents=\{legalDocuments\}/);
+  assert.match(signup, /legalConsent: \{ accepted: true, termsVersion: legalDocuments\.termsVersion, privacyVersion: legalDocuments\.privacyVersion \}/);
+  assert.match(signup, /name="confirmPassword"/);
+  assert.match(signup, /password !== String\(values\.get\("confirmPassword"\)\)[\s\S]*Passwords do not match\.[\s\S]*return;/);
+  assert.ok(signup.indexOf("password !== String(values.get(\"confirmPassword\"))") < signup.indexOf('client.$fetch("/sign-up/email"'));
+  assert.match(signup, /requestSignUp: signingUp/);
+  assert.match(signup, /reportValidity\(\)/);
+});
+
+test("onboarding requires explicit consent when post-signup evidence is absent", () => {
+  const auth = readFileSync(new URL("../src/server/auth/index.ts", import.meta.url), "utf8");
+  const afterCreate = auth.slice(auth.indexOf("after: async (newUser, context)"), auth.indexOf("session: { create"));
+  assert.match(afterCreate, /await recordLegalAcceptance\(tx, newUser\.id, accepted\)/);
+
+  const layout = readFileSync(new URL("../src/app/customer/layout.tsx", import.meta.url), "utf8");
+  assert.match(layout, /OrganizationOnboarding documents=\{legal\.documents\} alreadyAccepted=\{legal\.accepted\}/);
+  const onboarding = readFileSync(new URL("../src/app/customer/organization-onboarding.tsx", import.meta.url), "utf8");
+  assert.match(onboarding, /!alreadyAccepted && <LegalConsentCheckbox documents=\{documents\} disabled=\{busy\} \/>/);
+  assert.match(onboarding, /accepted: alreadyAccepted \|\| values\.get\("accepted"\) === "on"/);
+
+  const lifecycle = readFileSync(new URL("../src/server/identity/organization-lifecycle.ts", import.meta.url), "utf8");
+  assert.match(lifecycle, /if \(!authSession\?\.user\.emailVerified\) throw new Error\("Unauthorized"\)/);
+  assert.ok(lifecycle.indexOf("await recordLegalAcceptance(tx, actorUserId, legalAcceptance)") < lifecycle.indexOf("tx.insert(organization).values"));
+  const context = readFileSync(new URL("../src/server/identity/customer-context.ts", import.meta.url), "utf8");
+  assert.match(context, /if \(requireLegalAcceptance\) await requireCurrentLegalAcceptance\(tx, actor\.userId\)/);
 });
 
 test("customer settings expose only the signed-in user's version and acceptance-time history", () => {
@@ -86,6 +129,7 @@ test("a new legal version prompts without replacing the signed-in customer works
   const context = readFileSync(new URL("../src/server/identity/customer-context.ts", import.meta.url), "utf8");
   assert.match(context, /if \(requireLegalAcceptance\) await requireCurrentLegalAcceptance\(tx, actor\.userId\)/);
   assert.match(context, /export function withProtectedOrganizationContext/);
+  assert.match(layout, /OrganizationOnboarding documents=\{legal\.documents\} alreadyAccepted=\{legal\.accepted\}/);
   const order = readFileSync(new URL("../src/server/orders/checkout.ts", import.meta.url), "utf8");
   const topup = readFileSync(new URL("../src/server/wallet/topups.ts", import.meta.url), "utf8");
   assert.match(order, /withProtectedOrganizationContext\(headers, organizationId/);

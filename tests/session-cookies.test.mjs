@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mergeSessionCookies } from "../src/server/auth/session-cookies.ts";
 
-test("MFA proof uses the newly returned session cookie and drops expired challenge cookies", () => {
+test("cookie merge uses the newly returned session cookie and drops expired challenge cookies", () => {
   assert.equal(
     mergeSessionCookies("__Secure-session=old; two_factor=challenge; theme=dark", [
       "__Secure-session=new; Path=/; HttpOnly; Secure; SameSite=Lax",

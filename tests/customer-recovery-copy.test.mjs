@@ -7,7 +7,9 @@ test("customer Settings separates Google recovery from GPHKM password changes", 
   assert.match(page, /Your Google password and account recovery are managed by Google/);
   assert.match(page, /https:\/\/myaccount\.google\.com\//);
   assert.match(page, /https:\/\/accounts\.google\.com\/signin\/recovery/);
-  assert.match(page, /hasPasswordAccount/);
+  assert.match(page, /hasPasswordCredential\(workspace\.customer\.userId\)/);
+  assert.match(page, /<AddPasswordForm organizationId=\{organizationId\} \/>/);
+  assert.match(page, /<TwoFactorSettings enabled=\{twoFactorEnabled\} hasPassword=\{hasPassword\}/);
   assert.match(page, /<PasswordChangeForm \/>/);
   assert.match(page, /hasGoogleAccount/);
 });

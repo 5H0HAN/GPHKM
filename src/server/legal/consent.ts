@@ -1,44 +1,13 @@
 import "server-only";
-import { randomUUID } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { customerLegalAcceptance } from "@/db/legal-schema";
-import { appendAuditEvent, type DbTransaction } from "@/server/audit/append";
+import { acceptedLegalVersions, recordLegalAcceptance } from "@/server/legal/acceptance";
 import { getAuthForSurface } from "@/server/auth";
 import { resolveAuthSurface } from "@/server/auth/surfaces";
-import { assertExplicitLegalAcceptance, currentLegalDocuments, LegalAcceptanceRequiredError, matchesCurrentLegalAcceptance, type LegalAcceptanceInput, type LegalDocuments } from "@/modules/legal/policy";
+import { currentLegalDocuments, matchesCurrentLegalAcceptance, type LegalAcceptanceInput } from "@/modules/legal/policy";
 
-async function acceptedVersions(tx: DbTransaction, userId: string, documents: LegalDocuments) {
-  const [row] = await tx.select({ termsVersion: customerLegalAcceptance.termsVersion, privacyVersion: customerLegalAcceptance.privacyVersion,
-    termsUrl: customerLegalAcceptance.termsUrl, privacyUrl: customerLegalAcceptance.privacyUrl })
-    .from(customerLegalAcceptance).where(and(eq(customerLegalAcceptance.userId, userId),
-      eq(customerLegalAcceptance.termsVersion, documents.termsVersion), eq(customerLegalAcceptance.privacyVersion, documents.privacyVersion))).limit(1);
-  return row;
-}
-
-export async function requireCurrentLegalAcceptance(tx: DbTransaction, userId: string): Promise<void> {
-  const documents = currentLegalDocuments(process.env);
-  if (!matchesCurrentLegalAcceptance(await acceptedVersions(tx, userId, documents), documents)) throw new LegalAcceptanceRequiredError();
-}
-
-export async function recordLegalAcceptance(tx: DbTransaction, userId: string, input: LegalAcceptanceInput): Promise<void> {
-  const documents = currentLegalDocuments(process.env);
-  assertExplicitLegalAcceptance(input, documents);
-  const prior = await acceptedVersions(tx, userId, documents);
-  if (prior) {
-    if (!matchesCurrentLegalAcceptance(prior, documents)) throw new LegalAcceptanceRequiredError(); // Changed documents require a new version ID.
-    return;
-  }
-  const [created] = await tx.insert(customerLegalAcceptance).values({ id: randomUUID(), userId, actorUserId: userId, ...documents })
-    .onConflictDoNothing({ target: [customerLegalAcceptance.userId, customerLegalAcceptance.termsVersion, customerLegalAcceptance.privacyVersion] })
-    .returning({ id: customerLegalAcceptance.id });
-  if (!created) {
-    if (!matchesCurrentLegalAcceptance(await acceptedVersions(tx, userId, documents), documents)) throw new LegalAcceptanceRequiredError();
-    return;
-  }
-  await appendAuditEvent(tx, { actorUserId: userId, action: "CUSTOMER_LEGAL_ACCEPTANCE_RECORDED", targetType: "CUSTOMER_LEGAL_ACCEPTANCE", targetId: created.id,
-    metadata: { result: "ACCEPTED" } });
-}
+export { recordLegalAcceptance, requireCurrentLegalAcceptance } from "@/server/legal/acceptance";
 
 async function legalActor(headers: Headers) {
   if (resolveAuthSurface(headers, process.env) !== "customer") throw new Error("Unauthorized");
@@ -52,7 +21,7 @@ export async function getCustomerLegalState(headers: Headers) {
   const documents = currentLegalDocuments(process.env);
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${userId}, true)`);
-    const accepted = matchesCurrentLegalAcceptance(await acceptedVersions(tx, userId, documents), documents);
+    const accepted = matchesCurrentLegalAcceptance(await acceptedLegalVersions(tx, userId, documents), documents);
     return { documents, accepted };
   });
 }

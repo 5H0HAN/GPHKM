@@ -36,7 +36,7 @@ try {
   await client.query("INSERT INTO access_policy (id, minimum_minor, duration, version, updated_by) VALUES (1, 5000, 'SIX_MONTHS', 1, $1) ON CONFLICT (id) DO NOTHING", [staffId]);
   await client.query("INSERT INTO staff_bootstrap (id, user_id, action) VALUES (1, $1, 'LOCAL_TEST_IDENTITIES_CREATED')", [staffId]);
   await client.query("COMMIT");
-  console.log("Local customer and Super Admin fixtures created. Staff access requires enrolled MFA and a verified staff session.");
+  console.log("Local customer and Super Admin fixtures created. Staff access requires email/password sign-in and an active staff account.");
 } catch (error) {
   await client.query("ROLLBACK").catch(() => undefined);
   if (error instanceof Error && error.message === "Initial staff bootstrap has already been used") {

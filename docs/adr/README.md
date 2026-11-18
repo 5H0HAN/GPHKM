@@ -16,7 +16,7 @@ ADRs capture material choices and their consequences. Product behavior details r
 - [ADR-0012: Separate customer and staff subdomains](ADR-0012-customer-staff-subdomains.md)
 - [ADR-0013: Versioned customer Terms and Privacy acceptance](ADR-0013-versioned-customer-legal-consent.md)
 - [ADR-0014: Keep wallet restrictions until Stripe loss is fully recovered](ADR-0014-uncovered-stripe-loss-restriction.md)
-- [ADR-0015: Isolate webhook and staff MFA database capabilities](ADR-0015-isolated-provider-and-mfa-database-roles.md)
+- [ADR-0015: Isolate provider database capabilities and staff MFA proof](ADR-0015-isolated-provider-and-mfa-database-roles.md)
 - [ADR-0016: Enforce identity transitions in PostgreSQL](ADR-0016-database-enforced-identity-transitions.md)
 - [ADR-0017: Record supplier payments as transfer events](ADR-0017-supplier-transfer-events.md)
 - [ADR-0018: Customer email/password authentication and reset](ADR-0018-customer-email-password-auth.md)
@@ -37,3 +37,4 @@ ADRs capture material choices and their consequences. Product behavior details r
 - [ADR-0033: Keep checkout recipient consent in a private immutable snapshot](ADR-0033-immutable-supplier-recipient-consent.md)
 - [ADR-0034: Allow an audited manual fallback while provider delivery is pending](ADR-0034-audited-manual-fallback-for-pending-supplier-email.md)
 - [ADR-0035: Advance placement after a recorded manual supplier send](ADR-0035-advance-after-recorded-manual-send.md)
+- [ADR-0036: Staff password authentication, mandatory TOTP, and Super Admin recovery](ADR-0036-staff-authentication-mandatory-totp.md)

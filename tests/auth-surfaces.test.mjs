@@ -34,10 +34,11 @@ test("customer and staff app origins are exact, distinct, and secure in producti
 test("local app origins allow localhost hosts but reject wildcard and shared origins", () => {
   const origins = authSurfaceOrigins({
     NODE_ENV: "development",
-    CUSTOMER_APP_URL: "http://customer.localhost:3000",
+    CUSTOMER_APP_URL: "http://localhost:3000",
     STAFF_APP_URL: "http://staff.localhost:3000",
   });
-  assert.equal(authSurfaceForHost("customer.localhost:3000", origins), "customer");
+  assert.equal(authSurfaceForHost("localhost:3000", origins), "customer");
+  assert.equal(authSurfaceForHost("staff.localhost:3000", origins), "staff");
   assert.throws(() => authSurfaceOrigins({
     NODE_ENV: "development",
     CUSTOMER_APP_URL: "http://localhost:3000",
@@ -82,7 +83,7 @@ test("sign-in pages use a server-checked session projection instead of a pending
   const customerContext = await readFile(new URL("../src/server/identity/customer-context.ts", import.meta.url), "utf8");
   const customerPage = await readFile(new URL("../src/app/sign-in/page.tsx", import.meta.url), "utf8");
   const staffPage = await readFile(new URL("../src/app/staff/sign-in/page.tsx", import.meta.url), "utf8");
-  const invitation = await readFile(new URL("../src/components/identity/invitation-acceptance.tsx", import.meta.url), "utf8");
+  const invitation = await readFile(new URL("../src/app/staff/invitations/accept/staff-invitation-acceptance.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(customer, /client\.useSession\(/);
   assert.doesNotMatch(staff, /staffAuthClient\.useSession\(/);
   assert.match(session, /resolveAuthSurface\(requestHeaders, process\.env\) !== surface/);
@@ -90,12 +91,48 @@ test("sign-in pages use a server-checked session projection instead of a pending
   assert.match(identityDomain, /set_config\('app\.user_id'/);
   assert.match(identityDomain, /from\(staffAccount\)/);
   assert.match(customerContext, /STAFF_IDENTITY_NOT_CUSTOMER/);
-  assert.match(session, /email: authenticated\.user\.email/);
-  assert.match(session, /const twoFactorEnabled = authenticated && "twoFactorEnabled" in authenticated\.user && authenticated\.user\.twoFactorEnabled === true/);
-  assert.match(session, /twoFactorEnabled: twoFactorEnabled === true/);
+  assert.match(session, /email: user\.email/);
   assert.match(customerPage, /getSignInSession\("customer"\)/);
-  assert.match(staffPage, /getSignInSession\("staff"\)/);
-  assert.match(staff, /if \(session && !session\.twoFactorEnabled\) return <StaffMfaSetup \/>/);
+  assert.match(customerPage, /emailSignupEnabled=\{customerEmailSignupEnabled\(process\.env\)/);
+  assert.match(staffPage, /getStaffSignInState\(requestHeaders\)/);
+  assert.match(session, /hasPendingStaffInvitation\(user\.email\)/);
+  assert.match(staff, /emailPasswordEnabled[\s\S]*?googleEnabled=\{false\}/);
+  assert.match(staff, /TotpEnrollmentForm|authenticator|backup code/i);
+  assert.match(customer, /minLength=\{mode === "sign-up" \? 16 : undefined\}/);
+  assert.match(customer, /name="confirmPassword"[\s\S]*?minLength=\{16\}/);
   assert.doesNotMatch(invitation, /useSession\(/);
-  assert.match(invitation, /disabled=\{busy \|\| accepted\}/);
+  assert.match(invitation, /staffAuthClient\.signUp\.email\(/);
+  assert.match(invitation, /"x-gphkm-staff-invitation-token": token/);
+});
+
+test("auth URL policy rejects legacy origins and validates public ingress", async () => {
+  const { assertNoLegacyAuthUrlVariables, isRoutablePublicBase } = await import("../src/server/auth/url-policy.ts");
+  for (const key of ["APP_URL", "STAFF_URL", "CUSTOMER_URL", "BETTER_AUTH_URL"]) {
+    assert.throws(() => assertNoLegacyAuthUrlVariables({ [key]: "https://legacy.example" }));
+  }
+  assert.equal(isRoutablePublicBase("https://hooks.example", { NODE_ENV: "production" }), true);
+  assert.equal(isRoutablePublicBase("http://localhost:3000", { NODE_ENV: "development" }), true);
+  for (const url of ["https://user:pass@example.com", "https://example.com/path", "https://example.com?q=1", "https://example.com/#x", "https://*.example.com", "http://example.com"]) {
+    assert.equal(isRoutablePublicBase(url, { NODE_ENV: "production" }), false);
+  }
+});
+
+test("customer MFA session creation uses a default-deny path allowlist", async () => {
+  const { customerSessionCreationAllowed } = await import("../src/server/auth/policy.ts");
+  for (const path of ["/sign-in/email", "/two-factor/verify-totp", "/two-factor/verify-backup-code", "/two-factor/disable", "/change-password"]) {
+    assert.equal(customerSessionCreationAllowed(path, true), true);
+  }
+  for (const path of ["/sign-in/social", "/callback/google", "/sign-up/email", "/set-password", undefined]) {
+    assert.equal(customerSessionCreationAllowed(path, true), false);
+    assert.equal(customerSessionCreationAllowed(path, false), true);
+  }
+});
+
+test("reset and invitation links always use the appropriate app origin", async () => {
+  const { resetPasswordUrl, invitationUrl } = await import("../src/server/auth/link-builders.ts");
+  const env = { NODE_ENV: "production", CUSTOMER_APP_URL: "https://customer.example.com", STAFF_APP_URL: "https://staff.example.com", GPHKM_PUBLIC_BASE_URL: "https://hooks.example.com" };
+  assert.equal(resetPasswordUrl(env, "customer", "test-token"), "https://customer.example.com/sign-in/reset-password#token=test-token");
+  assert.equal(resetPasswordUrl(env, "staff", "test-token"), "https://staff.example.com/staff/sign-in/reset-password#token=test-token");
+  assert.equal(invitationUrl(env, "STAFF", "token", "staff@example.com"), "https://staff.example.com/staff/invitations/accept#token=token&email=staff%40example.com");
+  assert.equal(invitationUrl(env, "ORGANIZATION", "token"), "https://customer.example.com/invitations/accept#token=token");
 });

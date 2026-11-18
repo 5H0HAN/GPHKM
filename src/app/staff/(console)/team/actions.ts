@@ -3,7 +3,7 @@
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { activateStaff, changeStaffRole, deactivateStaff, inviteStaff, revokeStaffInvitation } from "@/server/identity/staff-lifecycle";
+import { activateStaff, changeStaffRole, deactivateStaff, inviteStaff, promoteSuperAdmin, resetStaffTotp, revokeStaffInvitation } from "@/server/identity/staff-lifecycle";
 
 function field(form: FormData, key: string) {
   const value = form.get(key);
@@ -62,4 +62,18 @@ export async function revokeStaffInvitationAction(form: FormData) {
   catch { redirect("/staff/team?error=invitation"); }
   revalidatePath("/staff/team");
   redirect("/staff/team?updated=invitation");
+}
+
+export async function promoteSuperAdminAction(form: FormData) {
+  try { confirm(form); await promoteSuperAdmin(await headers(), field(form, "userId")); }
+  catch { redirect("/staff/team?error=action-failed"); }
+  revalidatePath("/staff/team");
+  redirect("/staff/team?updated=promoted");
+}
+
+export async function resetStaffTotpAction(form: FormData) {
+  try { confirm(form); await resetStaffTotp(await headers(), field(form, "userId")); }
+  catch { redirect("/staff/team?error=action-failed"); }
+  revalidatePath("/staff/team");
+  redirect("/staff/team?updated=totpReset");
 }

@@ -5,7 +5,7 @@
 
 ## 1. Design direction
 
-Use one Next.js codebase and PostgreSQL, with distinct customer and staff/admin entry points on separate subdomains. The two subdomains have separate login pages and host-only browser sessions. Use Better Auth with Google or verified email/password for customers; staff sign-in/provisioning remains separately controlled. Subdomain separation is not an authorization boundary. PostgreSQL is the system of record for organization data, access grants, wallet ledger, orders, audit, and workflow state.
+Use one Next.js codebase and PostgreSQL, with distinct customer and staff/admin entry points on separate subdomains. The two subdomains have separate login pages and host-only browser sessions. Use Better Auth with Google or verified email/password for customers; staff use invitation-bound email/password followed by mandatory TOTP or a one-time backup code, with exact-session proof required for protected access. Password-only staff access is limited to the explicit development/local-auth bypass. Customers may enroll TOTP once they have a password. Subdomain separation is not an authorization boundary. PostgreSQL is the system of record for organization data, access grants, wallet ledger, orders, audit, and workflow state. See [ADR-0036](adr/ADR-0036-staff-authentication-mandatory-totp.md).
 
 The app server owns authorization and business commands. PostgreSQL constraints and focused row-level security provide a second tenant boundary. Customer and staff projections are explicit and separate. Keep one codebase and shared domain modules by default; whether both hostnames use one deployment or separate deployments remains open. Do not start with a separate API service or microservices.
 
@@ -31,7 +31,7 @@ Drizzle/Drizzle Kit and local Docker PostgreSQL are accepted for initial develop
 
 Stripe is the only enabled payment provider for v1. Keep a small provider boundary so PayPal can be added after the Stripe flow is proven; do not build future provider adapters or a generalized capability framework now.
 
-Use exact approved origins for each environment. Keep Better Auth cross-subdomain cookies disabled so the browser holds host-only sessions; do not use a parent-domain cookie to make login appear shared. Customer and staff sign-in must be routed to their own hostname, while server-side organization membership, staff role, MFA, assignment, and permission checks remain mandatory on every protected request. Hostnames, OAuth callback URLs, and whether the deployment is shared are tracked in O-06.
+Use `CUSTOMER_APP_URL` and `STAFF_APP_URL` for the exact browser origins. Better Auth instances use separate cookie names, host-only cookies, and their own trusted origin. Build invitation links, reset links, and the customer Google callback on the applicable origin. Use `GPHKM_PUBLIC_BASE_URL` for provider webhook and readiness ingress. Recheck organization membership or active staff role, assignment, and permissions on protected requests. Staff production sessions require a verified TOTP factor and exact-session proof; password-only testing is development-only. Exact production hostnames and deployment topology are tracked in O-06.
 
 ## 3. Server-side modules
 

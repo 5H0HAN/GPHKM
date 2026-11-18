@@ -1,17 +1,24 @@
 import "server-only";
+import { createHash, randomUUID } from "node:crypto";
 import { betterAuth } from "better-auth";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import { APIError, addOAuthServerContext, createAuthMiddleware, getOAuthState } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { normalizeDisplayName } from "@/server/identity/policy";
-import { assertLoopbackUrl, authTrustedProxyCidrs, hasStrongAuthSecret, localAuthEnabled, localStaffMfaDisabled, requiredEnv } from "./policy";
+import { assertLoopbackUrl, authTrustedProxyCidrs, customerEmailSignupEnabled, customerSessionCreationAllowed, hasStrongAuthSecret, localAuthEnabled, localStaffMfaDisabled, requiredEnv, requiredMfaProofDatabaseUrl } from "./policy";
 import { authSurfaceOrigins, type AuthSurface } from "./surfaces";
-import { currentLegalDocuments } from "@/modules/legal/policy";
-import { customerAuthEmailAvailable, sendCustomerAuthEmailInBackground } from "./email-delivery";
+import { assertExplicitLegalAcceptance, currentLegalDocuments, LegalAcceptanceRequiredError, type LegalAcceptanceInput } from "@/modules/legal/policy";
+import { recordLegalAcceptance } from "@/server/legal/acceptance";
+import { authEmailAvailable, sendAuthEmailInBackground } from "./email-delivery";
 import { isCustomerAccountSuspended } from "@/server/identity/customer-access";
+import { hashInvitationSecret } from "@/server/identity/invitation-token";
+import { hasPendingStaffInvitation, resetTokenAllowedForSurface } from "./identity-domain";
+import { resetPasswordUrl } from "./urls";
+import { appendAuditEvent } from "@/server/audit/append";
+import { logSafeEvent } from "@/server/observability/safe-log";
 
 const CUSTOMER_SESSION_REVOCATION_PATHS = new Set([
   "/revoke-session",
@@ -19,11 +26,64 @@ const CUSTOMER_SESSION_REVOCATION_PATHS = new Set([
   "/revoke-sessions",
 ]);
 const CUSTOMER_SESSION_FRESH_AGE_MS = 10 * 60 * 1000;
+const CUSTOMER_LEGAL_OAUTH_CONTEXT = "gphkmCustomerLegalConsent";
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function legalAcceptanceFrom(value: unknown): LegalAcceptanceInput | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  return { accepted: input.accepted, termsVersion: input.termsVersion, privacyVersion: input.privacyVersion };
+}
+
+function requireCustomerRegistrationAcceptance(input: LegalAcceptanceInput | null): LegalAcceptanceInput {
+  let documents;
+  try { documents = currentLegalDocuments(process.env); }
+  catch { throw APIError.from("SERVICE_UNAVAILABLE", { code: "CUSTOMER_REGISTRATION_UNAVAILABLE", message: "Customer registration is temporarily unavailable" }); }
+  try { assertExplicitLegalAcceptance(input ?? { accepted: undefined, termsVersion: undefined, privacyVersion: undefined }, documents); }
+  catch (error) {
+    if (error instanceof LegalAcceptanceRequiredError) {
+      throw APIError.from("BAD_REQUEST", { code: "LEGAL_ACCEPTANCE_REQUIRED", message: "Accept the current Terms and Privacy Policy before creating an account" });
+    }
+    throw error;
+  }
+  return input!;
+}
+
+async function requireCurrentStaffInvitation(emailValue: unknown, tokenValue: unknown): Promise<void> {
+  const email = typeof emailValue === "string" ? emailValue.trim().toLowerCase() : "";
+  const token = typeof tokenValue === "string" ? tokenValue : "";
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !/^[A-Za-z0-9_-]{40,64}$/.test(token)) {
+    throw APIError.from("FORBIDDEN", { code: "STAFF_INVITATION_REQUIRED", message: "Staff registration requires a current invitation" });
+  }
+  const result = await db.execute(sql`select public.gphkm_staff_invitation_matches(${email}, ${hashInvitationSecret(token)}) as allowed`);
+  const allowed = (result as unknown as { rows: Array<{ allowed: boolean }> }).rows[0]?.allowed;
+  if (!allowed) {
+    throw APIError.from("FORBIDDEN", { code: "STAFF_INVITATION_REQUIRED", message: "Staff registration requires a current invitation" });
+  }
+}
+
+async function registrationAcceptanceForContext(context: { path?: string; body?: unknown } | null): Promise<LegalAcceptanceInput | null> {
+  if (!context) return null;
+  if (context.path === "/sign-up/email") return legalAcceptanceFrom(asRecord(context.body).legalConsent);
+  if (context.path === "/sign-in/social") return legalAcceptanceFrom(asRecord(asRecord(context.body).additionalData).legalConsent);
+  if (context.path?.startsWith("/callback/")) {
+    const state = await getOAuthState();
+    return legalAcceptanceFrom(asRecord(state?.serverContext)[CUSTOMER_LEGAL_OAUTH_CONTEXT]);
+  }
+  return null;
+}
 
 function createAuth(surface: AuthSurface) {
+  if (process.env.BETTER_AUTH_TRUSTED_ORIGINS?.trim()) throw new Error("BETTER_AUTH_TRUSTED_ORIGINS is not supported; configure the exact surface origins");
+  if (process.env.BETTER_AUTH_SECRETS?.trim()) throw new Error("BETTER_AUTH_SECRETS is not supported; configure BETTER_AUTH_SECRET");
   const local = localAuthEnabled(process.env);
-  const publicCustomerCredentials = surface === "customer" && process.env.NODE_ENV !== "development" && customerAuthEmailAvailable();
-  const localMfaDisabled = surface === "staff" && localStaffMfaDisabled(process.env);
+  const staffMfaBypassed = surface === "staff" && localStaffMfaDisabled(process.env);
+  if (surface === "staff" && !staffMfaBypassed) requiredMfaProofDatabaseUrl(process.env);
+  const publicCustomerCredentials = surface === "customer" && customerEmailSignupEnabled(process.env) && authEmailAvailable();
+  const resetIdentifier = (identifier: string) => createHash("sha256").update(`gphkm:${surface}:${identifier}`).digest("hex");
   const origins = authSurfaceOrigins(process.env);
   const baseURL = origins[surface];
   let url: URL;
@@ -50,45 +110,52 @@ function createAuth(surface: AuthSurface) {
   // Separate buckets prevent customer traffic from exhausting staff sign-in
   // limits (and vice versa), while both remain durable in PostgreSQL.
   const authSchema = { ...schema, rateLimit: surface === "staff" ? schema.staffRateLimit : schema.rateLimit };
-  const staffTwoFactorManagementPaths = new Set([
-    "/two-factor/enable",
-    "/two-factor/generate-backup-codes",
-  ]);
   return betterAuth({
     appName: "GPHKM",
     secret,
     baseURL,
     trustedOrigins: [url.origin],
     database: drizzleAdapter(db, { provider: "pg", schema: authSchema, transaction: true }),
+    verification: { storeIdentifier: { default: "plain", overrides: { "reset-password:": { hash: async (identifier) => resetIdentifier(identifier) } } } },
+    logger: { level: "error", log: () => { console.error(JSON.stringify({ event: "auth_library_error" })); } },
     emailAndPassword: {
-      enabled: local || surface === "customer",
-      disableSignUp: surface === "staff" || !publicCustomerCredentials,
-      requireEmailVerification: true,
+      enabled: true,
+      disableSignUp: surface === "staff" ? false : !publicCustomerCredentials,
+      requireEmailVerification: surface === "customer",
       minPasswordLength: 16,
       revokeSessionsOnPasswordReset: true,
-      sendResetPassword: surface === "customer" ? async ({ user, token }) => {
-        const resetUrl = new URL("/sign-in/reset-password", baseURL);
-        resetUrl.hash = new URLSearchParams({ token }).toString();
-        sendCustomerAuthEmailInBackground({ to: user.email, subject: "Reset your GPHKM password", text: `Use this one-time link to reset your GPHKM password:\n\n${resetUrl.toString()}\n\nIf you did not request this, ignore this email. The link expires automatically.` });
-      } : undefined,
+      sendResetPassword: async ({ user, token }) => {
+        if (!await resetTokenAllowedForSurface(user.id, surface)) return;
+        const link = resetPasswordUrl(process.env, surface, token);
+        sendAuthEmailInBackground({ to: user.email, subject: surface === "staff" ? "Reset your GPHKM staff password" : "Reset your GPHKM password", text: `Use this one-time link to reset your GPHKM password:\n\n${link}\n\nIf you did not request this, ignore this email. The link expires automatically.` });
+      },
+      onPasswordReset: async ({ user }) => {
+        await db.update(schema.user).set({ emailVerified: true }).where(eq(schema.user.id, user.id));
+        try {
+          await db.transaction(async (tx) => {
+            await tx.execute(sql`select set_config('app.user_id', ${user.id}, true)`);
+            await appendAuditEvent(tx, { actorUserId: user.id, action: "auth.password_reset_completed", targetType: "auth_user", targetId: user.id, metadata: { result: surface } });
+          });
+        } catch { logSafeEvent("auth_password_reset_audit_failed", randomUUID(), { surface }); }
+      },
     },
-    emailVerification: surface === "customer" ? {
+    emailVerification: {
       sendOnSignUp: publicCustomerCredentials,
       sendOnSignIn: publicCustomerCredentials,
       autoSignInAfterVerification: true,
       sendVerificationEmail: async ({ user, url }) => {
-        sendCustomerAuthEmailInBackground({ to: user.email, subject: "Verify your GPHKM email", text: `Verify your email address to continue setting up your GPHKM account:\n\n${url}\n\nIf you did not create this account, ignore this email.` });
+        const subject = surface === "staff" ? "Verify your GPHKM staff email" : "Verify your GPHKM email";
+        const purpose = surface === "staff" ? "accepting your staff invitation" : "setting up your GPHKM account";
+        sendAuthEmailInBackground({ to: user.email, subject, text: `Verify your email address before ${purpose}:\n\n${url}\n\nIf you did not create this account, ignore this email.` });
       },
-    } : undefined,
-    socialProviders: googleId && googleSecret ? { google: { clientId: googleId, clientSecret: googleSecret } } : {},
+    },
+    socialProviders: surface === "customer" && googleId && googleSecret ? { google: { clientId: googleId, clientSecret: googleSecret, disableImplicitSignUp: true } } : {},
     account: { accountLinking: { enabled: false } },
     session: { freshAge: 10 * 60, cookieCache: { enabled: false } },
     rateLimit: { enabled: true, storage: "database", modelName: "rateLimit" },
-    advanced: { ipAddress: { ipAddressHeaders: ["x-forwarded-for"], trustedProxies } },
-    // Staff must verify MFA every session; trusted-device bypass is deliberately expired immediately.
-    plugins: localMfaDisabled ? [] : [twoFactor({ issuer: "GPHKM", trustDeviceMaxAge: 0 })],
-    // No public credential provisioning, password recovery email transport, or MFA removal in this slice.
-    disabledPaths: ["/two-factor/disable", "/delete-user", "/change-email", "/set-password", ...(surface === "staff" ? ["/request-password-reset", "/reset-password"] : [])],
+    advanced: { cookiePrefix: surface === "staff" ? "gphkm-staff" : "gphkm-customer", ipAddress: { ipAddressHeaders: ["x-forwarded-for"], trustedProxies }, crossSubDomainCookies: { enabled: false }, defaultCookieAttributes: { httpOnly: true, sameSite: "lax", secure: url.protocol === "https:", path: "/" } },
+    plugins: surface === "customer" || !staffMfaBypassed ? [twoFactor({ issuer: surface === "staff" ? "GPHKM Staff" : "GPHKM", trustDeviceMaxAge: 0, allowPasswordless: false, backupCodeOptions: { amount: 10, length: 10, storeBackupCodes: "encrypted" } })] : [],
+    disabledPaths: ["/delete-user", "/change-email", "/two-factor/get-totp-uri", "/two-factor/send-otp", "/two-factor/verify-otp", ...(surface === "staff" ? ["/set-password", "/change-password", "/two-factor/disable"] : [])],
     hooks: {
       before: createAuthMiddleware(async (context) => {
         if (surface === "customer" && CUSTOMER_SESSION_REVOCATION_PATHS.has(context.path)) {
@@ -108,33 +175,28 @@ function createAuth(surface: AuthSurface) {
             throw APIError.from("FORBIDDEN", { code: "SESSION_NOT_FRESH", message: "Sign in again before changing active sessions" });
           }
         }
-        if (surface === "staff" && staffTwoFactorManagementPaths.has(context.path)) {
-          const request = context.request;
-          if (!request) {
-            throw APIError.from("UNAUTHORIZED", { code: "STAFF_ACCOUNT_REQUIRED", message: "Staff account unavailable" });
-          }
-          const authenticated = await getAuthForSurface("staff").api.getSession({ headers: request.headers });
-          if (!authenticated) {
-            throw APIError.from("UNAUTHORIZED", { code: "STAFF_ACCOUNT_REQUIRED", message: "Staff account unavailable" });
-          }
-          const [staff] = await db.transaction(async (tx) => {
-            await tx.execute(sql`select set_config('app.user_id', ${authenticated.user.id}, true)`);
-            return tx.select({ userId: schema.staffAccount.userId })
-              .from(schema.staffAccount)
-              .where(eq(schema.staffAccount.userId, authenticated.user.id))
-              .limit(1);
-          });
-          if (!staff) {
-            throw APIError.from("FORBIDDEN", { code: "STAFF_ACCOUNT_REQUIRED", message: "Staff account unavailable" });
-          }
-        }
-        if (surface === "customer" && context.path === "/sign-in/social") {
-          try { currentLegalDocuments(process.env); }
-          catch { throw APIError.from("SERVICE_UNAVAILABLE", { code: "CUSTOMER_REGISTRATION_UNAVAILABLE", message: "Customer registration is temporarily unavailable" }); }
-        }
         if (surface === "customer" && context.path === "/sign-up/email") {
-          try { currentLegalDocuments(process.env); }
-          catch { throw APIError.from("SERVICE_UNAVAILABLE", { code: "CUSTOMER_REGISTRATION_UNAVAILABLE", message: "Customer registration is temporarily unavailable" }); }
+          requireCustomerRegistrationAcceptance(legalAcceptanceFrom(asRecord(context.body).legalConsent));
+        }
+        if (surface === "staff" && context.path === "/sign-up/email") {
+          const body = asRecord(context.body);
+          await requireCurrentStaffInvitation(body.email, (context.headers ?? context.request?.headers)?.get("x-gphkm-staff-invitation-token"));
+          try {
+            body.name = normalizeDisplayName(typeof body.name === "string" ? body.name : "");
+          } catch {
+            throw APIError.from("BAD_REQUEST", { code: "STAFF_NAME_INVALID", message: "Enter a valid name" });
+          }
+        }
+        if (context.path === "/reset-password") {
+          const token = asRecord(context.body).token;
+          if (typeof token !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(token)) throw APIError.from("BAD_REQUEST", { code: "INVALID_TOKEN", message: "Invalid or expired reset link" });
+          const [record] = await db.select({ userId: schema.verification.value, expiresAt: schema.verification.expiresAt }).from(schema.verification).where(eq(schema.verification.identifier, resetIdentifier(`reset-password:${token}`))).limit(1);
+          if (!record || record.expiresAt.getTime() <= Date.now() || !await resetTokenAllowedForSurface(record.userId, surface)) throw APIError.from("BAD_REQUEST", { code: "INVALID_TOKEN", message: "Invalid or expired reset link" });
+        }
+        if (context.path.startsWith("/two-factor/") && asRecord(context.body).trustDevice === true) throw APIError.from("BAD_REQUEST", { code: "TRUSTED_DEVICE_DISABLED", message: "Trusted devices are unavailable" });
+        if (surface === "customer" && context.path === "/sign-in/social" && asRecord(context.body).requestSignUp === true) {
+          const accepted = requireCustomerRegistrationAcceptance(legalAcceptanceFrom(asRecord(asRecord(context.body).additionalData).legalConsent));
+          await addOAuthServerContext({ [CUSTOMER_LEGAL_OAUTH_CONTEXT]: accepted });
         }
         if (context.path === "/update-user") {
           const body = context.body;
@@ -150,26 +212,45 @@ function createAuth(surface: AuthSurface) {
       }),
     },
     databaseHooks: {
-      user: { create: { before: async (newUser) => {
-        if (surface === "customer") currentLegalDocuments(process.env);
+      user: { create: {
+        before: async (newUser, context) => {
+        if (surface === "customer") requireCustomerRegistrationAcceptance(await registrationAcceptanceForContext(context));
         if (surface === "staff") {
-          const email = typeof newUser.email === "string" ? newUser.email.trim().toLowerCase() : "";
-          const { rows } = await db.execute(sql`select public.gphkm_staff_email_has_pending_invitation(${email}) as allowed`);
-          if (!(rows as Array<{ allowed: boolean }>)[0]?.allowed) {
-            throw APIError.from("FORBIDDEN", { code: "STAFF_INVITATION_REQUIRED", message: "Staff registration requires a current invitation" });
+          if (context?.path !== "/sign-up/email") throw APIError.from("FORBIDDEN", { code: "STAFF_INVITATION_REQUIRED", message: "Staff registration requires a current invitation" });
+          await requireCurrentStaffInvitation(newUser.email, (context.headers ?? context.request?.headers)?.get("x-gphkm-staff-invitation-token"));
+          return { data: { ...newUser, email: newUser.email.trim().toLowerCase(), name: normalizeDisplayName(newUser.name), emailVerified: true } };
+        }
+        },
+        after: async (newUser, context) => {
+          if (surface !== "customer") return;
+          const accepted = requireCustomerRegistrationAcceptance(await registrationAcceptanceForContext(context));
+          await db.transaction(async (tx) => {
+            await tx.execute(sql`select set_config('app.user_id', ${newUser.id}, true)`);
+            await recordLegalAcceptance(tx, newUser.id, accepted);
+          });
+        },
+      } },
+      session: { create: { before: async (session, context) => {
+        // Better Auth creates the invited user and first session in one
+        // transaction. The invitation was checked in user.create.before.
+        if (surface === "staff" && context?.path === "/sign-up/email") return;
+        const { staff, account } = await db.transaction(async (tx) => {
+          await tx.execute(sql`select set_config('app.user_id', ${session.userId}, true)`);
+          const [staff] = await tx.select({ active: schema.staffAccount.active }).from(schema.staffAccount).where(eq(schema.staffAccount.userId, session.userId)).limit(1);
+          const [account] = await tx.select({ email: schema.user.email, twoFactorEnabled: schema.user.twoFactorEnabled }).from(schema.user).where(eq(schema.user.id, session.userId)).limit(1);
+          return { staff, account };
+        });
+        if (!account) return false;
+        if (surface === "customer") {
+          if (staff) throw APIError.from("FORBIDDEN", { code: "STAFF_IDENTITY_ON_CUSTOMER_SURFACE", message: "Use the staff workspace to sign in" });
+          if (await isCustomerAccountSuspended(session.userId)) return false;
+          if (!customerSessionCreationAllowed(context?.path, account.twoFactorEnabled)) throw APIError.from("FORBIDDEN", { code: "TWO_FACTOR_REQUIRED", message: "Sign in with email and password and verify your authenticator" });
+        } else {
+          if (!staff && !await hasPendingStaffInvitation(account.email)) return false;
+          if (!staffMfaBypassed && !customerSessionCreationAllowed(context?.path, account.twoFactorEnabled)) {
+            throw APIError.from("FORBIDDEN", { code: "TWO_FACTOR_REQUIRED", message: "Verify your staff authenticator before signing in" });
           }
         }
-      } } },
-      session: { create: { before: async (session) => {
-        if (surface === "customer" && await isCustomerAccountSuspended(session.userId)) return false;
-        const [staff] = await db.transaction(async (tx) => {
-          await tx.execute(sql`select set_config('app.user_id', ${session.userId}, true)`);
-          return tx.select({ active: schema.staffAccount.active })
-            .from(schema.staffAccount).where(eq(schema.staffAccount.userId, session.userId)).limit(1);
-        });
-        // Pending staff need a session to enroll TOTP before activation. All
-        // staff data and commands still require active status and MFA proof.
-        if (staff && !staff.active && surface !== "staff") return false;
       } } },
     },
   });
@@ -180,6 +261,5 @@ const instances: Partial<Record<AuthSurface, ReturnType<typeof createAuth>>> = {
 export function getAuthForSurface(surface: AuthSurface) {
   // Recheck even with a cached instance: the local opt-in must never run outside development.
   localAuthEnabled(process.env);
-  localStaffMfaDisabled(process.env);
   return instances[surface] ??= createAuth(surface);
 }

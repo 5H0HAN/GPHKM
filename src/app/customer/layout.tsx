@@ -54,7 +54,7 @@ export default async function CustomerLayout({ children }: { children: ReactNode
           <Link className={styles.brand} href="/customer">
             <span className={styles.brandMark}>G</span> GPHKM
           </Link>
-          <OrganizationOnboarding documents={legal.documents} />
+          <OrganizationOnboarding documents={legal.documents} alreadyAccepted={legal.accepted} />
           <CustomerSignOut />
         </div>
       </main>

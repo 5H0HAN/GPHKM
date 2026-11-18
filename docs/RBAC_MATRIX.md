@@ -40,7 +40,7 @@ The Owner manages shared funding and settings. A Member may spend shared wallet 
 
 ## 3. Staff roles
 
-The v1 staff model uses three bundles: Admin, Finance, and Super Admin. Each ordinary staff account holds exactly one of Admin or Finance. Super Admin is the only all-access role. Admin handles routine catalog, fulfillment, and support work; there is no separate Support role in v1. Do not introduce a custom role builder. Public staff signup is disabled; the first Super Admin is bootstrapped by a one-time controlled setup, and Super Admin invites subsequent staff. MFA is required for staff; deactivation revokes active sessions.
+The v1 staff model uses three bundles: Admin, Finance, and Super Admin. Each ordinary staff account holds exactly one of Admin or Finance. Super Admin is the only all-access role. Admin handles routine catalog, fulfillment, and support work; there is no separate Support role in v1. Do not introduce a custom role builder. Public staff signup is disabled; the first Super Admin is bootstrapped by a one-time controlled setup, and Super Admin invites subsequent staff. Staff use invitation-bound email/password plus mandatory TOTP or a one-time backup code. Staff signup verifies the invited email. Acceptance creates an inactive Admin or Finance account pending activation by a different active Super Admin. Activation requires verified email and TOTP; a second active Super Admin may reactivate a provisioned Super Admin. Audited promotion is limited to an active Admin with verified email and TOTP. The staff host provides password reset by email and audited factor reset by another Super Admin. Staff authority requires an assigned role, an active account, a verified factor, exact-session proof, and the current permission. See [ADR-0036](adr/ADR-0036-staff-authentication-mandatory-totp.md).
 
 | Action | Admin | Finance | Super Admin |
 |---|---:|---:|---:|
@@ -64,7 +64,9 @@ The v1 staff model uses three bundles: Admin, Finance, and Super Admin. Each ord
 | Approve post-handoff exception refund or policy override | No | Yes, after Support case/evidence review | Yes, after Support case/evidence review |
 | Change global minimum/duration access policy | No | No | Yes, audited |
 | Export internal supplier/performance JSON reports | No | No | Yes |
-| Manage staff permissions | No | No | Yes |
+| Manage staff permissions and activate another verified staff member | No | No | Yes, audited |
+| Reset another staff member's password | No | No | No; staff use email reset |
+| Promote an active Admin with verified email to Super Admin | No | No | Yes, audited |
 | Read security/audit records | Scoped to own work | Finance scope | All authorized scope |
 | Assign/reassign order-item fulfillment staff | Yes | No | Yes |
 
@@ -89,7 +91,7 @@ See the detailed packet lifecycle and reconciliation contract in [Supplier Email
 - Finance or Super Admin may record an actual supplier transfer event. Require a private PDF/EML receipt, evidence/reference, positive amount, transfer date, reason, actor, timestamp, scoped idempotency, and audit. Partial transfers are allowed; state is derived against confirmed actual cost.
 - Do not allow any staff role to edit a wallet balance or posted ledger entry directly.
 - High-risk refunds, manual corrections, and access-policy changes require reason codes and durable audit; add maker/checker approval where the financial policy requires it.
-- Staff permission changes are audited; Super Admin cannot approve their own elevation.
+- Staff permission changes record an audit event and revoke affected sessions. A Super Admin cannot activate, promote, or deactivate their own staff account through the web console. Deactivation protects the last active Super Admin. Break-glass recovery is a separately audited migration-role command.
 - Recheck permission at mutation time. Session revocation and staff suspension take effect promptly.
 
 ## 6. Data visibility

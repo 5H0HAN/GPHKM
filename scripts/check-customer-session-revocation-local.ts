@@ -7,6 +7,9 @@ if (process.env.NODE_ENV !== "development" || !localAuthEnabled(process.env)) {
 
 const customerOrigin = assertLoopbackUrl(requiredEnv(process.env, "CUSTOMER_APP_URL"), "CUSTOMER_APP_URL").origin;
 const staffOrigin = assertLoopbackUrl(requiredEnv(process.env, "STAFF_APP_URL"), "STAFF_APP_URL").origin;
+async function staffFetch(path: string, options: RequestInit = {}) {
+  return fetch(new URL(path, staffOrigin), options);
+}
 const databaseUrl = assertLoopbackUrl(requiredEnv(process.env, "MIGRATION_DATABASE_URL"), "MIGRATION_DATABASE_URL");
 if (!["postgres:", "postgresql:"].includes(databaseUrl.protocol)) {
   throw new Error("MIGRATION_DATABASE_URL must use PostgreSQL");
@@ -62,9 +65,9 @@ try {
   }
 
   stage = "customer identity isolation on staff sign-in";
-  const staffSignInPage = await fetch(`${staffOrigin}/staff/sign-in`, { headers: { cookie } });
+  const staffSignInPage = await staffFetch("/staff/sign-in", { headers: { cookie } });
   const staffSignInHtml = await staffSignInPage.text();
-  if (staffSignInPage.status !== 200 || staffSignInHtml.includes(email.trim().toLowerCase()) || !staffSignInHtml.includes("STAFF WORKSPACE")) {
+  if (staffSignInPage.status !== 200 || staffSignInHtml.includes(email.trim().toLowerCase()) || !staffSignInHtml.includes("GPHKM staff sign-in")) {
     throw new Error("Staff sign-in did not remain distinct or exposed the customer identity");
   }
 
@@ -96,14 +99,14 @@ try {
   }
 
   stage = "customer-to-staff authorization boundary";
-  const staffWorkspace = await fetch(`${staffOrigin}/staff`, { headers: { cookie }, redirect: "manual" });
+  const staffWorkspace = await staffFetch("/staff", { headers: { cookie }, redirect: "manual" });
   if (staffWorkspace.status !== 307 || new URL(staffWorkspace.headers.get("location") ?? "/", staffOrigin).pathname !== "/staff/sign-in") {
     stage = `customer session was not denied staff workspace (HTTP ${staffWorkspace.status})`;
     throw new Error("Customer session crossed into staff workspace");
   }
 
   stage = "customer-to-staff API authorization boundary";
-  const staffCommand = await fetch(`${staffOrigin}/api/staff/catalog/import`, {
+  const staffCommand = await staffFetch("/api/staff/catalog/import", {
     method: "POST",
     headers: { cookie, origin: staffOrigin, "content-type": "multipart/form-data; boundary=local-probe" },
     redirect: "manual",
