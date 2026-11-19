@@ -8,7 +8,23 @@ Use the existing GPHKM_Staging project and its staging environment. The gphkm-de
 | Customers and Google callback | CUSTOMER_APP_URL | https://app.gphkm.asf.run |
 | Staff password and authenticator | STAFF_APP_URL | https://staff.gphkm.asf.run |
 
-Point the three DNS names at the staging host. In Coolify assign the three HTTPS domains to service web on internal port 3000. The proxy terminates TLS. Keep host ports closed for web and PostgreSQL. Set GPHKM_TRUSTED_PROXY_CIDRS to the actual Traefik hop after inspecting its network attachments, and recheck after changing the proxy or network. Traefik must discard untrusted forwarded headers. Check HTTP redirects, valid HTTPS, the landing-page sign-in destination, protected route redirects, and the database-backed /api/health endpoint after deployment.
+## HTTPS ingress
+
+Point all three DNS names at the staging host. Host Caddy owns ports 80 and 443 and terminates TLS. Choose one available host TCP port for `GPHKM_STAGING_WEB_PORT`, set it as a non-secret Coolify application variable available during both build and runtime, and configure Caddy with the same value. Compose publishes web port 3000 exclusively on IPv4 loopback. PostgreSQL has no host port.
+
+Configure Caddy to route the three exact HTTPS origins directly to web. Keep these sites out of the catch-all route to Traefik. If using Caddyfile environment substitution, supply the same three origins and the loopback port in the Caddy service environment.
+
+```caddyfile
+{$GPHKM_PUBLIC_BASE_URL}, {$CUSTOMER_APP_URL}, {$STAFF_APP_URL} {
+    reverse_proxy 127.0.0.1:{$GPHKM_STAGING_WEB_PORT} {
+        header_up X-Forwarded-For {http.request.remote.host}
+    }
+}
+```
+
+Caddy preserves the original Host, sets the forwarded scheme, and replaces incoming forwarded client addresses with the address of the connecting client. From the generated Compose directory, check `docker compose port web 3000` for the expected loopback binding. Web prefers its default bridge for the published port. Observe the peer on an incoming Caddy connection to web, set `GPHKM_TRUSTED_PROXY_CIDRS` to that individual bridge gateway address (/32 for IPv4), and recheck after a network change.
+
+From a known external client, verify the HTTP-to-HTTPS redirect, certificate for each origin, public sign-in link, customer and staff sign-in pages, and database-backed `/api/health`. To verify client attribution, send an anonymous `GET /api/auth/get-session` request on each sign-in origin from two different known client IPv4 addresses. Confirm distinct counters for the two client addresses in `auth_rate_limit` and `auth_staff_rate_limit` for `/get-session`, with no increment for the gateway or `no-trusted-ip`. Verify Caddy's active configuration replaces incoming forwarded addresses and the loopback port is unreachable from an external client.
 
 ## Database and secrets
 

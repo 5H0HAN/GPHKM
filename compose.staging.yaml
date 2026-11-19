@@ -73,8 +73,13 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    networks: [default, database]
-    expose: ["3000"]
+    networks:
+      default:
+        gw_priority: 1
+      database:
+        gw_priority: 0
+    ports:
+      - "127.0.0.1:${GPHKM_STAGING_WEB_PORT:?}:3000"
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     environment:

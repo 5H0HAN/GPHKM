@@ -13,18 +13,28 @@ test("staging Compose keeps migration credentials, provider gates and port expos
     STAFF_APP_URL: "https://staff.example.invalid",
     GPHKM_PUBLIC_BASE_URL: "https://example.invalid",
     GPHKM_TRUSTED_PROXY_CIDRS: "127.0.0.1",
+    GPHKM_STAGING_WEB_PORT: "19317",
   };
   for (const role of ["POSTGRES", "MIGRATION", "RUNTIME", "MFAPROOF", "STRIPEWEBHOOK", "64_AUTH"]) {
     env[`SERVICE_PASSWORD_${role}`] = `fixture-${role}`;
   }
-  const rendered = spawnSync("docker", [
+  const configArgs = [
     "compose", "--env-file", "/dev/null", "-f", "compose.staging.yaml", "config", "--format", "json",
-  ], { env, encoding: "utf8" });
+  ];
+  const missingPort = spawnSync("docker", configArgs, { env: { ...env, GPHKM_STAGING_WEB_PORT: "" }, encoding: "utf8" });
+  assert.notEqual(missingPort.status, 0);
+  assert.match(missingPort.stderr, /GPHKM_STAGING_WEB_PORT/);
+  const rendered = spawnSync("docker", configArgs, { env, encoding: "utf8" });
   assert.equal(rendered.status, 0, rendered.stderr);
   const { services, networks } = JSON.parse(rendered.stdout);
   assert.equal(networks.database.internal, true);
   assert.deepEqual(Object.keys(services.db.networks), ["database"]);
-  for (const service of Object.values(services)) assert.equal(service.ports, undefined);
+  assert.equal(services.db.ports, undefined);
+  assert.equal(services.migrate.ports, undefined);
+  assert.equal(services.web.networks.default.gw_priority, 1);
+  assert.deepEqual(services.web.ports, [{
+    mode: "ingress", host_ip: "127.0.0.1", target: 3000, published: env.GPHKM_STAGING_WEB_PORT, protocol: "tcp",
+  }]);
   assert.equal(services.web.depends_on.migrate.condition, "service_completed_successfully");
   assert.equal(services.migrate.depends_on.db.condition, "service_healthy");
   assert.equal(services.migrate.restart, "no");
