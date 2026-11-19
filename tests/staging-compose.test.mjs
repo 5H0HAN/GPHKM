@@ -27,6 +27,21 @@ test("staging Compose keeps migration credentials, provider gates and port expos
   const rendered = spawnSync("docker", configArgs, { env, encoding: "utf8" });
   assert.equal(rendered.status, 0, rendered.stderr);
   const { services, networks } = JSON.parse(rendered.stdout);
+  assert.equal(services.web.environment.GPHKM_STAGING_TESTER_NOTICES_ENABLED, "false");
+  assert.equal(services.web.environment.GPHKM_STAGING_GOOGLE_TEST_EMAILS, "");
+  const testers = {
+    GPHKM_STAGING_TESTER_NOTICES_ENABLED: "true",
+    GPHKM_STAGING_GOOGLE_TEST_EMAILS: "one@example.invalid,two@example.invalid",
+  };
+  const enabled = spawnSync("docker", configArgs, { env: { ...env, ...testers }, encoding: "utf8" });
+  assert.equal(enabled.status, 0, enabled.stderr);
+  const configured = JSON.parse(enabled.stdout).services;
+  for (const [name, service] of Object.entries(configured)) {
+    assert.deepEqual(service.build, services[name].build);
+    const runtime = { ...testers, ...service.environment };
+    assert.equal(runtime.GPHKM_STAGING_TESTER_NOTICES_ENABLED, name === "web" ? "true" : "false");
+    assert.equal(runtime.GPHKM_STAGING_GOOGLE_TEST_EMAILS, name === "web" ? testers.GPHKM_STAGING_GOOGLE_TEST_EMAILS : "unavailable");
+  }
   assert.equal(networks.database.internal, true);
   assert.deepEqual(Object.keys(services.db.networks), ["database"]);
   assert.equal(services.db.ports, undefined);

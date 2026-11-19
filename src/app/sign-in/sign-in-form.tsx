@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useRef, useState, type FormEvent } from "react";
 import { authClient } from "@/auth/client";
 import { staffAuthClient } from "@/auth/staff-client";
-import type { LegalDocuments } from "@/modules/legal/policy";
+import { usesStagingTesterNotices, type LegalDocuments } from "@/modules/legal/policy";
 import { LegalConsentCheckbox } from "@/components/legal-consent-checkbox";
 import { useStepHeading } from "@/components/identity/use-step-heading";
 import styles from "./sign-in.module.css";
@@ -37,7 +37,7 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
   const router = useRouter();
   const client = surface === "staff" ? staffAuthClient : authClient;
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(() => oauthError ? signInError(oauthError, "Google sign-in did not finish. Try again or sign in with email and password.") : "");
+  const [error, setError] = useState(() => oauthError ? signInError(oauthError, emailPasswordEnabled ? "Google sign-in did not finish. Try again or sign in with email and password." : "Google sign-in did not finish. Use your designated test account. New testers must choose Create an account first.") : "");
   const [notice, setNotice] = useState("");
   const [mode, setMode] = useState<"sign-in" | "sign-up" | "reset">("sign-in");
   const [useBackupCode, setUseBackupCode] = useState(false);
@@ -161,9 +161,10 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
         {session ? `Signed in as ${session.email}.` : verify
           ? useBackupCode ? "Enter one of the backup codes you saved when you set up your authenticator." : "Enter the six-digit code from your authenticator app."
           : mode === "reset" ? "Enter your account email. If it can use a password, we’ll send a secure reset link."
+            : mode === "sign-up" && usesStagingTesterNotices(legalDocuments) ? "Review the staging tester notices, then continue with your invited Google account."
             : mode === "sign-up" ? `Create your customer account with ${emailSignupEnabled && googleSignupEnabled ? "verified email or Google" : emailSignupEnabled ? "verified email" : "Google"}. Accept the current Terms and Privacy Policy to continue.`
             : googleEnabled
-            ? "Sign in with Google or your verified email address."
+            ? emailPasswordEnabled ? "Sign in with Google or your verified email address." : "Use your designated Google test account to continue."
             : "Access your placement workspace."}
       </p>
       {error ? <p className={styles.error} role="alert">{error}</p> : null}
@@ -218,9 +219,9 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
             <Link href={signInPath} className={styles.authLink}>Back to sign in</Link>
           </div>}
           {notice && <p className={styles.success} role="status" aria-live="polite">{notice}</p>}
-          {!verify && emailPasswordEnabled && <div className={styles.authLinks}>
-            {mode === "sign-in" && passwordResetEnabled && <button type="button" className={styles.textButton} disabled={busy} onClick={() => { setMode("reset"); setError(""); setNotice(""); }}>Forgot password?</button>}
-            {mode === "sign-in" && !passwordResetEnabled && <p className={styles.localNotice} role="status">Password reset email is not configured.</p>}
+          {!verify && (emailPasswordEnabled || googleSignupEnabled) && <div className={styles.authLinks}>
+            {mode === "sign-in" && emailPasswordEnabled && passwordResetEnabled && <button type="button" className={styles.textButton} disabled={busy} onClick={() => { setMode("reset"); setError(""); setNotice(""); }}>Forgot password?</button>}
+            {mode === "sign-in" && emailPasswordEnabled && !passwordResetEnabled && <p className={styles.localNotice} role="status">Password reset email is not configured.</p>}
             {mode === "sign-in" && surface === "customer" && (emailSignupEnabled || googleSignupEnabled) && <button type="button" className={styles.textButton} disabled={busy} onClick={() => { setMode("sign-up"); setError(""); setNotice(""); }}>Create an account</button>}
             {mode !== "sign-in" && <button type="button" className={styles.textButton} disabled={busy} onClick={() => { setMode("sign-in"); setError(""); setNotice(""); }}>Back to sign in</button>}
           </div>}

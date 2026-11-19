@@ -18,17 +18,19 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
   const session = await getSignInSession("customer");
   if (session) redirect("/customer");
   const googleEnabled = Boolean(process.env.GOOGLE_CLIENT_ID?.trim() && process.env.GOOGLE_CLIENT_SECRET?.trim());
+  const closed = process.env.GPHKM_DEPLOYMENT_ENV === "staging" && !legalConfigured;
+  const testerOnly = process.env.GPHKM_STAGING_TESTER_NOTICES_ENABLED === "true";
   return (
     <SignInForm
       session={session}
       oauthError={oauthError}
       localEnabled={localAuthEnabled(process.env)}
-      emailPasswordEnabled={true}
-      emailSignupEnabled={customerEmailSignupEnabled(process.env) && legalConfigured && authEmailAvailable()}
+      emailPasswordEnabled={!closed && !testerOnly}
+      emailSignupEnabled={customerEmailSignupEnabled(process.env) && !testerOnly && legalConfigured && authEmailAvailable()}
       googleSignupEnabled={legalConfigured && googleEnabled}
       legalDocuments={legalDocuments}
       passwordResetEnabled={authEmailAvailable()}
-      googleEnabled={googleEnabled}
+      googleEnabled={!closed && googleEnabled}
       legalUnavailable={!legalConfigured}
     />
   );
