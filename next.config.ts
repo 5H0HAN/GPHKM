@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  ...(process.env.GPHKM_STANDALONE_BUILD === "true" ? {
+    output: "standalone",
+    // Each container build starts from a fresh filesystem.
+    experimental: { turbopackFileSystemCacheForBuild: false },
+  } : {}),
   agentRules: false,
   allowedDevOrigins: [process.env.CUSTOMER_APP_URL, process.env.STAFF_APP_URL]
     .flatMap((value) => {

@@ -30,6 +30,9 @@ test("live Stripe checkout remains closed until both launch flags are enabled", 
   const liveConfig = { ...webhookConfig, STRIPE_SECRET_KEY: restrictedLiveKey, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: "pk_live_placeholder" };
   assert.equal(isStripeWalletCheckoutAvailable(liveConfig), false);
   assert.equal(isStripeWalletCheckoutAvailable({ ...liveConfig, GPHKM_REAL_MONEY_ENABLED: "true", GPHKM_LAUNCH_GATES_VERIFIED: "true" }), true);
+  const staging = { ...liveConfig, GPHKM_DEPLOYMENT_ENV: "staging", GPHKM_REAL_MONEY_ENABLED: "true", GPHKM_LAUNCH_GATES_VERIFIED: "true" };
+  assert.throws(() => getStripeRuntime(staging), /Staging requires a Stripe sandbox API key/);
+  assert.equal(isStripeWalletCheckoutAvailable(staging), false);
   assert.throws(() => getStripeRuntime({ STRIPE_SECRET_KEY: "prefix_sk_test_placeholder" }), /not recognized/);
 });
 
@@ -41,6 +44,9 @@ test("test funding requires webhook signing and database configuration before cr
     STRIPE_WEBHOOK_DATABASE_URL: "postgresql://gphkm_webhook@localhost/gphkm",
   };
   assert.equal(isStripeWalletCheckoutAvailable(testConfig), true);
+  const runtimePublishableKey = { ...testConfig, NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: undefined, STRIPE_PUBLISHABLE_KEY: "pk_test_runtime" };
+  assert.equal(isStripeWalletCheckoutAvailable(runtimePublishableKey), true);
+  assert.equal(isStripeWalletCheckoutAvailable({ ...testConfig, STRIPE_PUBLISHABLE_KEY: "pk_live_mismatch" }), false);
   for (const [key, invalidValue] of [
     ["STRIPE_WEBHOOK_SECRET", undefined], ["STRIPE_WEBHOOK_SECRET", "not-a-signing-secret"],
     ["STRIPE_WEBHOOK_DATABASE_URL", undefined], ["STRIPE_WEBHOOK_DATABASE_URL", "https://localhost/gphkm"],

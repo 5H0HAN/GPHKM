@@ -1,0 +1,119 @@
+# Managed Coolify Compose attaches its resource-wide .env to every service.
+# Explicit nonempty values override that file; each service receives its real
+# credentials only in the environment entries it overrides below.
+x-scoped-secrets: &scoped-secrets
+  SERVICE_PASSWORD_POSTGRES: unavailable
+  SERVICE_PASSWORD_MIGRATION: unavailable
+  SERVICE_PASSWORD_RUNTIME: unavailable
+  SERVICE_PASSWORD_MFAPROOF: unavailable
+  SERVICE_PASSWORD_STRIPEWEBHOOK: unavailable
+  SERVICE_PASSWORD_64_AUTH: unavailable
+  POSTGRES_PASSWORD: unavailable
+  GPHKM_MIGRATION_PASSWORD: unavailable
+  GPHKM_DATABASE_PASSWORD: unavailable
+  GPHKM_MFA_PROOF_PASSWORD: unavailable
+  GPHKM_WEBHOOK_PASSWORD: unavailable
+  MIGRATION_DATABASE_URL: unavailable
+  DATABASE_URL: unavailable
+  MFA_PROOF_DATABASE_URL: unavailable
+  STRIPE_WEBHOOK_DATABASE_URL: unavailable
+  BETTER_AUTH_SECRET: unavailable
+  GOOGLE_CLIENT_SECRET: unavailable
+  STRIPE_SECRET_KEY: unavailable
+  STRIPE_WEBHOOK_SECRET: unavailable
+
+services:
+  db:
+    build:
+      context: .
+      target: database
+    restart: unless-stopped
+    environment:
+      <<: *scoped-secrets
+      POSTGRES_DB: gphkm_staging
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRES}
+      GPHKM_MIGRATION_PASSWORD: ${SERVICE_PASSWORD_MIGRATION}
+      GPHKM_DATABASE_PASSWORD: ${SERVICE_PASSWORD_RUNTIME}
+      GPHKM_MFA_PROOF_PASSWORD: ${SERVICE_PASSWORD_MFAPROOF}
+      GPHKM_WEBHOOK_PASSWORD: ${SERVICE_PASSWORD_STRIPEWEBHOOK}
+    volumes:
+      - staging-postgres:/var/lib/postgresql/data
+    networks: [database]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "gphkm_staging"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: .
+      target: migration
+    restart: "no" # Coolify excludes one-shot services with this policy from aggregate health.
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [database]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    environment:
+      <<: *scoped-secrets
+      GPHKM_DEPLOYMENT_ENV: staging
+      GPHKM_REAL_MONEY_ENABLED: "false"
+      GPHKM_LAUNCH_GATES_VERIFIED: "false"
+      GPHKM_LOCAL_AUTH_ENABLED: "false"
+      GPHKM_LOCAL_MFA_DISABLED: "false"
+      MIGRATION_DATABASE_URL: postgres://gphkm_migration:${SERVICE_PASSWORD_MIGRATION}@db:5432/gphkm_staging
+
+  web:
+    build:
+      context: .
+      target: web
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [default, database]
+    expose: ["3000"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    environment:
+      <<: *scoped-secrets
+      GPHKM_DEPLOYMENT_ENV: staging
+      CUSTOMER_APP_URL: ${CUSTOMER_APP_URL:?}
+      STAFF_APP_URL: ${STAFF_APP_URL:?}
+      GPHKM_PUBLIC_BASE_URL: ${GPHKM_PUBLIC_BASE_URL:?}
+      GPHKM_TRUSTED_PROXY_CIDRS: ${GPHKM_TRUSTED_PROXY_CIDRS:?}
+      DATABASE_URL: postgres://gphkm_runtime:${SERVICE_PASSWORD_RUNTIME}@db:5432/gphkm_staging
+      MFA_PROOF_DATABASE_URL: postgres://gphkm_mfa_proof:${SERVICE_PASSWORD_MFAPROOF}@db:5432/gphkm_staging
+      STRIPE_WEBHOOK_DATABASE_URL: postgres://gphkm_webhook:${SERVICE_PASSWORD_STRIPEWEBHOOK}@db:5432/gphkm_staging
+      BETTER_AUTH_SECRET: ${SERVICE_PASSWORD_64_AUTH}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      GPHKM_TERMS_VERSION: ${GPHKM_TERMS_VERSION:-}
+      GPHKM_TERMS_URL: ${GPHKM_TERMS_URL:-}
+      GPHKM_PRIVACY_VERSION: ${GPHKM_PRIVACY_VERSION:-}
+      GPHKM_PRIVACY_URL: ${GPHKM_PRIVACY_URL:-}
+      GPHKM_REAL_MONEY_ENABLED: "false"
+      GPHKM_LAUNCH_GATES_VERIFIED: "false"
+      GPHKM_LOCAL_AUTH_ENABLED: "false"
+      GPHKM_LOCAL_MFA_DISABLED: "false"
+      GPHKM_RESEND_DATA_HANDLING_APPROVED: "false"
+      GPHKM_METRIC_CUSTOMER_DISPLAY_L05_VERIFIED: "false"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+networks:
+  default: {}
+  database:
+    internal: true
+
+volumes:
+  staging-postgres:

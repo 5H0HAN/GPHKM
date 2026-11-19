@@ -3,7 +3,7 @@ import { authSurfaceForHost, authSurfaceOrigins } from "@/server/auth/surfaces";
 import { isPublicIngressHost, publicBaseOrigin } from "@/server/auth/url-policy";
 import { buildContentSecurityPolicy } from "@/modules/security/content-security-policy";
 
-function pageResponse(request: NextRequest, surface: "customer" | "staff", destination?: URL) {
+function pageResponse(request: NextRequest, surface: "public" | "customer" | "staff", destination?: URL) {
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
   const policy = buildContentSecurityPolicy(nonce, {
     development: process.env.NODE_ENV === "development",
@@ -46,13 +46,24 @@ export function proxy(request: NextRequest) {
 
   const host = request.headers.get("host");
   const surface = host ? authSurfaceForHost(host, origins) : null;
-  if (!surface && host && isPublicIngressHost(host, process.env) && request.nextUrl.pathname.startsWith("/api/")) {
+  const publicIngress = !surface && host && isPublicIngressHost(host, process.env);
+  const pathname = request.nextUrl.pathname;
+  const read = request.method === "GET" || request.method === "HEAD";
+  if ((surface || publicIngress) && read && pathname === "/fonts/geist-latin.woff2") {
     return NextResponse.next();
+  }
+  if (publicIngress) {
+    if (pathname === "/" && read) {
+      return pageResponse(request, "public");
+    }
+    if (request.method === "POST" && (pathname === "/api/payments/stripe/webhook" || pathname === "/api/webhooks/resend")) {
+      return NextResponse.next();
+    }
+    return new NextResponse("Not found", { status: 404 });
   }
   if (!surface) {
     if (process.env.NODE_ENV === "production") return new NextResponse("Not found", { status: 404 });
 
-    const pathname = request.nextUrl.pathname;
     if (pathname.startsWith("/api/") || pathname.startsWith("/_next/") || pathname === "/favicon.ico") {
       return NextResponse.next();
     }
@@ -69,9 +80,15 @@ export function proxy(request: NextRequest) {
     return NextResponse.redirect(target);
   }
 
-  const pathname = request.nextUrl.pathname;
   if (pathname.startsWith("/api/") || pathname.startsWith("/_next/") || pathname === "/favicon.ico") {
     return NextResponse.next();
+  }
+
+  if (pathname.startsWith("/legal/drafts/")) {
+    if (surface !== "customer" || !read || process.env.GPHKM_DEPLOYMENT_ENV !== "staging") {
+      return new NextResponse("Not found", { status: 404 });
+    }
+    return pageResponse(request, surface);
   }
 
   if (surface === "customer") {

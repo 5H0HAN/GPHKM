@@ -1,0 +1,18 @@
+.document {
+  max-width: 76ch;
+  margin-block: clamp(20px, 6vh, 72px);
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.document h1 { margin: 0; font-size: clamp(2.4rem, 6vw, 4rem); line-height: 1.08; letter-spacing: -.045em; }
+.document h2 { margin: 0 0 .4rem; font-size: 1.3rem; line-height: 1.3; }
+.document p { margin: 0; }
+.document .status { color: var(--accent-text); margin-bottom: .6rem; font-weight: 650; }
+.document .version { margin-top: .75rem; color: var(--text-muted); font-size: .9rem; }
+.document .introduction { margin-top: 1.5rem; }
+.document section { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--divider); }
+.document section p { color: var(--text-secondary); }
+.document nav { display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; margin-top: 2rem; }
+.document a { display: inline-flex; align-items: center; min-height: 44px; color: var(--accent-text); }
+.document a:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }

@@ -25,6 +25,9 @@ export function getStripeRuntime(env: Record<string, string | undefined> = proce
   if (!key.startsWith("rk_")) {
     throw new Error("Stripe wallet integrations require a restricted API key");
   }
+  if (mode === "live" && env.GPHKM_DEPLOYMENT_ENV === "staging") {
+    throw new Error("Staging requires a Stripe sandbox API key");
+  }
   return {
     client: new Stripe(key, {
       apiVersion: "2026-10-28.endive",
@@ -43,7 +46,7 @@ export function assertStripeCheckoutEnabled(runtime: StripeRuntime, env: Record<
 
 export function requireStripeWalletPublishableKey(runtime: StripeRuntime, env: Record<string, string | undefined> = process.env): string {
   assertStripeCheckoutEnabled(runtime, env);
-  const publishableKey = env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.trim();
+  const publishableKey = env.STRIPE_PUBLISHABLE_KEY?.trim() || env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY?.trim();
   const prefix = runtime.mode === "live" ? "pk_live_" : "pk_test_";
   if (!publishableKey?.startsWith(prefix) || publishableKey.length === prefix.length) {
     throw new Error("Stripe checkout mode is not configured");

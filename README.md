@@ -50,7 +50,7 @@ The product behavior and security controls in these docs are the implementation 
 
 ## Authentication configuration
 
-`CUSTOMER_APP_URL` and `STAFF_APP_URL` are the canonical browser origins. Production requires HTTPS and separate hostnames. Register Google OAuth at the customer origin's `/api/auth/callback/google`. Invitation links, reset links, and host-only cookies stay on their respective app origins. `GPHKM_PUBLIC_BASE_URL` is the provider webhook and readiness ingress. A distinct ingress serves API requests only, with auth still restricted to the two app hosts. `APP_URL`, `STAFF_URL`, `CUSTOMER_URL`, and `BETTER_AUTH_URL` are rejected.
+`CUSTOMER_APP_URL` and `STAFF_APP_URL` are the canonical browser origins. Production requires HTTPS and separate hostnames. Register Google OAuth at the customer origin's `/api/auth/callback/google`. Invitation links, reset links, and host-only cookies stay on their respective app origins. `GPHKM_PUBLIC_BASE_URL` is the provider webhook and readiness ingress. A distinct public host serves the landing page, static assets, readiness and the signed provider webhook routes. Auth stays on the dedicated customer and staff hosts. `APP_URL`, `STAFF_URL`, `CUSTOMER_URL`, and `BETTER_AUTH_URL` are rejected.
 
 ### Google OAuth setup
 
@@ -61,6 +61,10 @@ Before creating the local client, configure Google Auth Platform Branding with a
 Staff proof writes use `MFA_PROOF_DATABASE_URL` with the restricted `gphkm_mfa_proof` role; do not point it at `DATABASE_URL`. `GPHKM_LOCAL_MFA_DISABLED=true` is accepted only with `NODE_ENV=development` and `GPHKM_LOCAL_AUTH_ENABLED=true`.
 
 Store and back up a stable `BETTER_AUTH_SECRET` in the secret manager. Changing it invalidates enrolled TOTP secrets and backup codes. Follow the [auth recovery runbook](docs/OPERATIONS_AND_QUALITY.md#auth-recovery) for staff recovery and the local [verification commands](docs/IMPLEMENTATION_GUIDE.md#auth-verification).
+
+## Demo staging
+
+Coolify deploys the GitHub App’s `main` branch using [the staging Compose definition](compose.staging.yaml). The [staging runbook](docs/STAGING.md) covers origins, provider setup, migration, safe seeds and operator bootstrap.
 
 ## Local development
 
