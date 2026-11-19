@@ -17,6 +17,7 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
   try { legalDocuments = currentLegalDocuments(process.env); legalConfigured = true; } catch { /* Fail closed for public customer registration. */ }
   const session = await getSignInSession("customer");
   if (session) redirect("/customer");
+  const googleEnabled = Boolean(process.env.GOOGLE_CLIENT_ID?.trim() && process.env.GOOGLE_CLIENT_SECRET?.trim());
   return (
     <SignInForm
       session={session}
@@ -24,10 +25,10 @@ export default async function SignInPage({ searchParams }: { searchParams: Promi
       localEnabled={localAuthEnabled(process.env)}
       emailPasswordEnabled={true}
       emailSignupEnabled={customerEmailSignupEnabled(process.env) && legalConfigured && authEmailAvailable()}
-      googleSignupEnabled={legalConfigured && Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)}
+      googleSignupEnabled={legalConfigured && googleEnabled}
       legalDocuments={legalDocuments}
       passwordResetEnabled={authEmailAvailable()}
-      googleEnabled={Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET)}
+      googleEnabled={googleEnabled}
       legalUnavailable={!legalConfigured}
     />
   );

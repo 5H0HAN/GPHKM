@@ -102,9 +102,9 @@ function createAuth(surface: AuthSurface) {
   if (local ? secret.length < 32 : !hasStrongAuthSecret(secret)) {
     throw new Error("BETTER_AUTH_SECRET must be at least 32 cryptographically random bytes encoded as hex or base64");
   }
-  const googleId = process.env.GOOGLE_CLIENT_ID;
-  const googleSecret = process.env.GOOGLE_CLIENT_SECRET;
-  if ((googleId && !googleSecret) || (!googleId && googleSecret) || (!local && !googleId)) {
+  const googleId = process.env.GOOGLE_CLIENT_ID?.trim();
+  const googleSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
+  if (surface === "customer" && Boolean(googleId) !== Boolean(googleSecret)) {
     throw new Error("Google authentication requires GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET");
   }
   // Separate buckets prevent customer traffic from exhausting staff sign-in

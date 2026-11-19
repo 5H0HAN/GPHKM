@@ -2,6 +2,8 @@ import Link from "next/link";
 import { authSurfaceOrigins } from "@/server/auth/surfaces";
 import styles from "./page.module.css";
 
+export const dynamic = "force-dynamic";
+
 const steps = [
   { title: "Find the right placement", detail: "Compare publication requirements, language, region, and approved metrics." },
   { title: "Order for your organization", detail: "Select up to 25 websites and provide the details each placement needs." },

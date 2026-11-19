@@ -24,6 +24,7 @@ function documentUrl(value: string | undefined, development: boolean): string {
   try { url = new URL(value?.trim() ?? ""); } catch { throw new LegalConfigurationError(); }
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.hostname.endsWith(".localhost");
   if (url.toString().length > 2048 || url.username || url.password || url.hostname.includes("*") ||
+    url.pathname.startsWith("/legal/drafts/") ||
     (url.protocol !== "https:" && !(development && loopback && url.protocol === "http:"))) throw new LegalConfigurationError();
   return url.toString();
 }
