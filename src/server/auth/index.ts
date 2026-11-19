@@ -1,7 +1,7 @@
 import "server-only";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { betterAuth } from "better-auth";
-import { APIError, addOAuthServerContext, createAuthMiddleware, getOAuthState } from "better-auth/api";
+import { APIError, addOAuthServerContext, createAuthMiddleware, getAuthoritativeSessionFromCtx, getOAuthState } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { eq, sql } from "drizzle-orm";
@@ -11,7 +11,8 @@ import { normalizeDisplayName } from "@/server/identity/policy";
 import { assertLoopbackUrl, authTrustedProxyCidrs, customerEmailSignupEnabled, customerSessionCreationAllowed, hasStrongAuthSecret, localAuthEnabled, localStaffMfaDisabled, requiredEnv, requiredMfaProofDatabaseUrl } from "./policy";
 import { authSurfaceOrigins, type AuthSurface } from "./surfaces";
 import { assertExplicitLegalAcceptance, currentLegalDocuments, LegalAcceptanceRequiredError, type LegalAcceptanceInput } from "@/modules/legal/policy";
-import { recordLegalAcceptance } from "@/server/legal/acceptance";
+import { stagingTesterEmails } from "@/modules/legal/staging-testers";
+import { recordLegalAcceptance, requireCurrentLegalAcceptance } from "@/server/legal/acceptance";
 import { authEmailAvailable, sendAuthEmailInBackground } from "./email-delivery";
 import { isCustomerAccountSuspended } from "@/server/identity/customer-access";
 import { hashInvitationSecret } from "@/server/identity/invitation-token";
@@ -27,6 +28,15 @@ const CUSTOMER_SESSION_REVOCATION_PATHS = new Set([
 ]);
 const CUSTOMER_SESSION_FRESH_AGE_MS = 10 * 60 * 1000;
 const CUSTOMER_LEGAL_OAUTH_CONTEXT = "gphkmCustomerLegalConsent";
+const TESTER_SESSION_ACTIONS = new Set(["/list-accounts", "/list-sessions", "/update-user", ...CUSTOMER_SESSION_REVOCATION_PATHS]);
+
+function stagingTesterAllowed(email: unknown, verified: unknown): boolean {
+  return verified === true && typeof email === "string" && stagingTesterEmails(process.env)?.has(email.toLowerCase()) === true;
+}
+
+function denyStagingAccess(): never {
+  throw APIError.from("FORBIDDEN", { code: "STAGING_TESTER_REQUIRED", message: "Sign in with a designated Google test account." });
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -80,6 +90,12 @@ function createAuth(surface: AuthSurface) {
   if (process.env.BETTER_AUTH_TRUSTED_ORIGINS?.trim()) throw new Error("BETTER_AUTH_TRUSTED_ORIGINS is not supported; configure the exact surface origins");
   if (process.env.BETTER_AUTH_SECRETS?.trim()) throw new Error("BETTER_AUTH_SECRETS is not supported; configure BETTER_AUTH_SECRET");
   const local = localAuthEnabled(process.env);
+  const testerOnly = surface === "customer" && process.env.GPHKM_STAGING_TESTER_NOTICES_ENABLED === "true";
+  let stagingDocuments: ReturnType<typeof currentLegalDocuments> | undefined;
+  if (surface === "customer" && process.env.GPHKM_DEPLOYMENT_ENV === "staging") {
+    try { stagingDocuments = currentLegalDocuments(process.env); } catch { /* Closed until valid documents are configured. */ }
+  }
+  const stagingSignInClosed = surface === "customer" && process.env.GPHKM_DEPLOYMENT_ENV === "staging" && !stagingDocuments;
   const staffMfaBypassed = surface === "staff" && localStaffMfaDisabled(process.env);
   if (surface === "staff" && !staffMfaBypassed) requiredMfaProofDatabaseUrl(process.env);
   const publicCustomerCredentials = surface === "customer" && customerEmailSignupEnabled(process.env) && authEmailAvailable();
@@ -112,14 +128,15 @@ function createAuth(surface: AuthSurface) {
   const authSchema = { ...schema, rateLimit: surface === "staff" ? schema.staffRateLimit : schema.rateLimit };
   return betterAuth({
     appName: "GPHKM",
-    secret,
+    // Ordinary customer and staff cookies must never authenticate a tester session.
+    secret: testerOnly ? createHmac("sha256", secret).update("gphkm:staging:google-testers:v1:" + JSON.stringify(stagingDocuments)).digest("base64") : secret,
     baseURL,
     trustedOrigins: [url.origin],
     database: drizzleAdapter(db, { provider: "pg", schema: authSchema, transaction: true }),
     verification: { storeIdentifier: { default: "plain", overrides: { "reset-password:": { hash: async (identifier) => resetIdentifier(identifier) } } } },
     logger: { level: "error", log: () => { console.error(JSON.stringify({ event: "auth_library_error" })); } },
     emailAndPassword: {
-      enabled: true,
+      enabled: !testerOnly,
       disableSignUp: surface === "staff" ? false : !publicCustomerCredentials,
       requireEmailVerification: surface === "customer",
       minPasswordLength: 16,
@@ -149,7 +166,13 @@ function createAuth(surface: AuthSurface) {
         sendAuthEmailInBackground({ to: user.email, subject, text: `Verify your email address before ${purpose}:\n\n${url}\n\nIf you did not create this account, ignore this email.` });
       },
     },
-    socialProviders: surface === "customer" && googleId && googleSecret ? { google: { clientId: googleId, clientSecret: googleSecret, disableImplicitSignUp: true } } : {},
+    socialProviders: surface === "customer" && googleId && googleSecret ? { google: {
+      clientId: googleId, clientSecret: googleSecret, disableImplicitSignUp: true,
+      ...(testerOnly ? { mapProfileToUser: (profile) => {
+        if (!stagingTesterAllowed(profile.email, profile.email_verified)) denyStagingAccess();
+        return {};
+      } } : {}),
+    } } : {},
     account: { accountLinking: { enabled: false } },
     session: { freshAge: 10 * 60, cookieCache: { enabled: false } },
     rateLimit: { enabled: true, storage: "database", modelName: "rateLimit" },
@@ -158,6 +181,22 @@ function createAuth(surface: AuthSurface) {
     disabledPaths: ["/delete-user", "/change-email", "/two-factor/get-totp-uri", "/two-factor/send-otp", "/two-factor/verify-otp", ...(surface === "staff" ? ["/set-password", "/change-password", "/two-factor/disable"] : [])],
     hooks: {
       before: createAuthMiddleware(async (context) => {
+        if (stagingSignInClosed && context.path !== "/get-session" && context.path !== "/sign-out") {
+          throw APIError.from("FORBIDDEN", { code: "STAGING_SIGN_IN_CLOSED", message: "Customer sign-in is closed for this staging environment." });
+        }
+        if (testerOnly) {
+          const body = asRecord(context.body);
+          const googleSignIn = context.path === "/sign-in/social" && body.provider === "google" && !body.idToken && !body.scopes;
+          const googleCallback = context.path === "/callback/:id" && context.params?.id === "google";
+          if (googleSignIn || googleCallback) {
+            if (!stagingTesterEmails(process.env)) denyStagingAccess();
+          } else if (TESTER_SESSION_ACTIONS.has(context.path)) {
+            const session = await getAuthoritativeSessionFromCtx(context);
+            if (!stagingTesterAllowed(session?.user.email, session?.user.emailVerified)) denyStagingAccess();
+          } else if (!["/get-session", "/sign-out", "/error"].includes(context.path)) {
+            denyStagingAccess();
+          }
+        }
         if (surface === "customer" && CUSTOMER_SESSION_REVOCATION_PATHS.has(context.path)) {
           // Better Auth's built-in revocation endpoints require a valid session
           // but do not all enforce freshAge. Guard the catch-all HTTP routes and
@@ -210,10 +249,21 @@ function createAuth(surface: AuthSurface) {
           }
         }
       }),
+      after: createAuthMiddleware(async (context) => {
+        if (stagingSignInClosed && context.path === "/get-session") return context.json(null);
+        if (testerOnly && context.path === "/get-session") {
+          const result = asRecord(context.context.returned);
+          if (result.user) {
+            const user = asRecord(result.user);
+            if (!stagingTesterAllowed(user.email, user.emailVerified)) return context.json(null);
+          }
+        }
+      }),
     },
     databaseHooks: {
       user: { create: {
         before: async (newUser, context) => {
+        if (testerOnly && (context?.path !== "/callback/:id" || context.params?.id !== "google" || !stagingTesterAllowed(newUser.email, newUser.emailVerified))) denyStagingAccess();
         if (surface === "customer") requireCustomerRegistrationAcceptance(await registrationAcceptanceForContext(context));
         if (surface === "staff") {
           if (context?.path !== "/sign-up/email") throw APIError.from("FORBIDDEN", { code: "STAFF_INVITATION_REQUIRED", message: "Staff registration requires a current invitation" });
@@ -231,20 +281,37 @@ function createAuth(surface: AuthSurface) {
         },
       } },
       session: { create: { before: async (session, context) => {
+        if (testerOnly && (context?.path !== "/callback/:id" || context.params?.id !== "google")) denyStagingAccess();
         // Better Auth creates the invited user and first session in one
         // transaction. The invitation was checked in user.create.before.
         if (surface === "staff" && context?.path === "/sign-up/email") return;
         const { staff, account } = await db.transaction(async (tx) => {
           await tx.execute(sql`select set_config('app.user_id', ${session.userId}, true)`);
           const [staff] = await tx.select({ active: schema.staffAccount.active }).from(schema.staffAccount).where(eq(schema.staffAccount.userId, session.userId)).limit(1);
-          const [account] = await tx.select({ email: schema.user.email, twoFactorEnabled: schema.user.twoFactorEnabled }).from(schema.user).where(eq(schema.user.id, session.userId)).limit(1);
+          const [account] = await tx.select({ email: schema.user.email, emailVerified: schema.user.emailVerified, twoFactorEnabled: schema.user.twoFactorEnabled }).from(schema.user).where(eq(schema.user.id, session.userId)).limit(1);
           return { staff, account };
         });
         if (!account) return false;
         if (surface === "customer") {
           if (staff) throw APIError.from("FORBIDDEN", { code: "STAFF_IDENTITY_ON_CUSTOMER_SURFACE", message: "Use the staff workspace to sign in" });
+          if (testerOnly && !stagingTesterAllowed(account.email, account.emailVerified)) denyStagingAccess();
           if (await isCustomerAccountSuspended(session.userId)) return false;
           if (!customerSessionCreationAllowed(context?.path, account.twoFactorEnabled)) throw APIError.from("FORBIDDEN", { code: "TWO_FACTOR_REQUIRED", message: "Sign in with email and password and verify your authenticator" });
+          if (testerOnly) {
+            // A returning Google account may predate this notice version or a failed acceptance write.
+            const consent = await registrationAcceptanceForContext(context);
+            await db.transaction(async (tx) => {
+              await tx.execute(sql`select set_config('app.user_id', ${session.userId}, true)`);
+              if (consent) await recordLegalAcceptance(tx, session.userId, requireCustomerRegistrationAcceptance(consent));
+              else {
+                try { await requireCurrentLegalAcceptance(tx, session.userId); }
+                catch (error) {
+                  if (!(error instanceof LegalAcceptanceRequiredError)) throw error;
+                  throw APIError.from("FORBIDDEN", { code: "LEGAL_ACCEPTANCE_REQUIRED", message: "Choose Create an account to accept the current staging tester notices." });
+                }
+              }
+            });
+          }
         } else {
           if (!staff && !await hasPendingStaffInvitation(account.email)) return false;
           if (!staffMfaBypassed && !customerSessionCreationAllowed(context?.path, account.twoFactorEnabled)) {

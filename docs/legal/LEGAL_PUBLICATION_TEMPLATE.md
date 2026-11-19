@@ -15,7 +15,9 @@ GPHKM_PRIVACY_VERSION=local-test-v1
 
 These settings are present in `.env.example` and the private local `.env`. The routes say they are nonbinding and return 404 outside development. `local-test-v1` must never be used for staging or production acceptance.
 
-## Staging or production values
+The isolated staging demo has a separate [designated Google tester exception](../adr/ADR-0038-staging-tester-notices.md). Its preliminary notices have a dedicated version namespace and require each tester’s own acceptance.
+
+## Approved public documents
 
 Complete this block only after legal approval and after the customer domain is chosen. The `app.` hostname is the planned customer origin; replace `<approved-domain>` with the actual domain.
 

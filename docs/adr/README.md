@@ -39,3 +39,4 @@ ADRs capture material choices and their consequences. Product behavior details r
 - [ADR-0035: Advance placement after a recorded manual supplier send](ADR-0035-advance-after-recorded-manual-send.md)
 - [ADR-0036: Staff password authentication, mandatory TOTP, and Super Admin recovery](ADR-0036-staff-authentication-mandatory-totp.md)
 - [ADR-0037: Isolated Coolify demo staging](ADR-0037-staging-deployment.md)
+- [ADR-0038: Preliminary notices for designated staging Google testers](ADR-0038-staging-tester-notices.md)

@@ -84,7 +84,7 @@ export function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  if (pathname.startsWith("/legal/drafts/")) {
+  if (pathname.startsWith("/legal/drafts/") || pathname.startsWith("/legal/testing/")) {
     if (surface !== "customer" || !read || process.env.GPHKM_DEPLOYMENT_ENV !== "staging") {
       return new NextResponse("Not found", { status: 404 });
     }

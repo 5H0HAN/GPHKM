@@ -5,11 +5,12 @@ import { readFileSync } from "node:fs";
 
 registerHooks({ resolve(specifier, context, next) {
   if (specifier === "server-only") return { url: "data:text/javascript,export{}", shortCircuit: true };
-  if (specifier === "@/server/legal/acceptance") return { url: "data:text/javascript,export async function recordLegalAcceptance(){}", shortCircuit: true };
+  if (specifier === "@/server/legal/acceptance") return { url: "data:text/javascript,export async function recordLegalAcceptance(){} export async function requireCurrentLegalAcceptance(){}", shortCircuit: true };
   const paths = {
     "@/db": "../src/db/index.ts",
     "@/db/schema": "../src/db/schema.ts",
     "@/modules/legal/policy": "../src/modules/legal/policy.ts",
+    "@/modules/legal/staging-testers": "../src/modules/legal/staging-testers.ts",
     "@/server/identity/policy": "../src/server/identity/policy.ts",
     "./surfaces": "../src/server/auth/surfaces.ts",
     "./identity-domain": "../src/server/auth/identity-domain.ts",

@@ -21,6 +21,8 @@ Customer onboarding and protected actions require consent to the current Terms a
 - The Better Auth user-create hook records acceptance after the account row is created. If that evidence write fails, signup can report failure while leaving an unverified account. That account has no organization or protected access; after email verification, onboarding requires an explicit current acceptance and records it in the same transaction before creating the first organization. Keep a staging failure-path integration check before enabling public signup.
 - Keep newsletter consent separate. Local test credential authentication remains available only under the existing local-development opt-in.
 
+The owner approved a narrow [staging tester exception](ADR-0038-staging-tester-notices.md) on 2026-11-19. Public launch still requires final approval.
+
 ## Consequences
 
 - Product cannot enable public customer signup, wallet funding, or ordering until legal copy is approved, published, versioned, and configured. The checkbox and server guard do not substitute for legal approval.

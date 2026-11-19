@@ -39,7 +39,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   ]);
   const twoFactorEnabled = session !== null && "twoFactorEnabled" in session.user && session.user.twoFactorEnabled === true;
   const hasGoogleAccount = authAccounts.some((account) => account.providerId === "google");
-  const signInMethods = twoFactorEnabled ? "Email and password with authenticator"
+  const testerOnly = process.env.GPHKM_STAGING_TESTER_NOTICES_ENABLED === "true";
+  const signInMethods = testerOnly ? "Google" : twoFactorEnabled ? "Email and password with authenticator"
     : [hasGoogleAccount ? "Google" : null, hasPassword ? "Email and password" : null].filter(Boolean).join(", ") || "Unavailable";
   let sessions: Awaited<ReturnType<typeof listCustomerSessions>> | null = null;
   try { sessions = await listCustomerSessions(requestHeaders); } catch { /* Require a fresh authenticated session to review device sessions. */ }
@@ -60,7 +61,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       </div>
       {firstQueryValue(query.updated) === "left" && <p role="status" className={settings.notice}>You have left the organization. Your other memberships remain available.</p>}
       {firstQueryValue(query.updated) === "notifications" && <p role="status" className={settings.notice}>Email notification preference saved.</p>}
-      {firstQueryValue(query.updated) === "password-added" && <p role="status" className={settings.notice}>Password added. You can sign in with email and password.</p>}
+      {!testerOnly && firstQueryValue(query.updated) === "password-added" && <p role="status" className={settings.notice}>Password added. You can sign in with email and password.</p>}
       {firstQueryValue(query.updated) === "newsletter" && <p role="status" className={settings.notice}>Newsletter preference saved.</p>}
       {firstQueryValue(query.notificationError) && <p role="alert" className={settings.notice}>Email notifications could not be saved. Refresh the page and try again.</p>}
       {firstQueryValue(query.newsletterError) && <p role="alert" className={settings.notice}>Newsletter preference could not be saved. Check that the consent notice is configured and try again.</p>}
@@ -74,19 +75,21 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             <li className={styles.listItem}><span>Sign-in method</span><span>{signInMethods}</span></li>
           </ul>
           <ProfileNameForm initialName={workspace.customer.name} />
-          <section className={settings.securitySection} id="password">
-            <h3 className={styles.panelTitle}>Password</h3>
-            {hasPassword ? <>
-              <p className={styles.panelText}>Use your current password to choose a new one. Other active sessions will be signed out.</p>
-              <PasswordChangeForm />
-            </> : <>
-              <p className={styles.panelText}>Add a password to sign in with email or set up an authenticator.</p>
-              <AddPasswordForm organizationId={organizationId} />
-            </>}
-          </section>
-          <section className={settings.securitySection}>
-            <TwoFactorSettings enabled={twoFactorEnabled} hasPassword={hasPassword} />
-          </section>
+          {!testerOnly && <>
+            <section className={settings.securitySection} id="password">
+              <h3 className={styles.panelTitle}>Password</h3>
+              {hasPassword ? <>
+                <p className={styles.panelText}>Use your current password to choose a new one. Other active sessions will be signed out.</p>
+                <PasswordChangeForm />
+              </> : <>
+                <p className={styles.panelText}>Add a password to sign in with email or set up an authenticator.</p>
+                <AddPasswordForm organizationId={organizationId} />
+              </>}
+            </section>
+            <section className={settings.securitySection}>
+              <TwoFactorSettings enabled={twoFactorEnabled} hasPassword={hasPassword} />
+            </section>
+          </>}
           {hasGoogleAccount && <>
             <p className={styles.panelText}>Your Google password and account recovery are managed by Google.</p>
             <div className={settings.links}><a href="https://myaccount.google.com/" rel="noopener noreferrer">Manage Google Account</a><a href="https://accounts.google.com/signin/recovery" rel="noopener noreferrer">Google account recovery</a></div>
