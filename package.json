@@ -12,6 +12,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:check-rls:local": "node --env-file=.env scripts/check-local-rls.ts",
+    "db:check-customer-suspension:local": "node --env-file=.env --import tsx scripts/check-customer-suspension-local.ts",
     "db:check-import-apply:local": "node --conditions=react-server --env-file=.env --import tsx scripts/check-catalog-import-apply-local.ts",
     "db:check-private-files:local": "node --env-file=.env scripts/check-local-private-files.ts",
     "db:check-content-race:local": "node --env-file=.env scripts/check-content-handoff-race-local.ts",

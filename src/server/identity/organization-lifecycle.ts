@@ -19,13 +19,13 @@ import type { LegalAcceptanceInput } from "@/modules/legal/policy";
 import { assertOrganizationInvitationDeliveryAvailable, invitationDisplayStatus, normalizeOrganizationName, organizationInvitationDeliveryStatus } from "@/modules/identity/organizations";
 
 export async function createFirstOrganization(headers: Headers, requestedName: string, legalAcceptance: LegalAcceptanceInput) {
-  const authSession = await getAuthForSurface("customer").api.getSession({ headers });
-  if (!authSession?.user.emailVerified) throw new Error("Unauthorized");
+  const actor = await requireVerifiedCustomer(headers);
   const name = normalizeOrganizationName(requestedName);
-  const actorUserId = authSession.user.id;
+  const actorUserId = actor.userId;
 
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${actorUserId}, true)`);
+    await tx.execute(sql`select public.gphkm_assert_active_customer(true)`);
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${actorUserId}, 0))`);
     const [staffIdentity] = await tx.select({ userId: staffAccount.userId })
       .from(staffAccount).where(eq(staffAccount.userId, actorUserId)).limit(1);
@@ -130,14 +130,14 @@ export async function inviteOrganizationMember(headers: Headers, organizationId:
 }
 
 export async function acceptOrganizationInvitation(headers: Headers, token: string) {
-  const actor = await getAuthForSurface("customer").api.getSession({ headers });
-  if (!actor?.user.emailVerified) throw new Error("Unauthorized");
+  const actor = await requireVerifiedCustomer(headers);
   if (typeof token !== "string" || token.length > 128 || token.length < 32) throw new Error("Invitation unavailable");
   const tokenHash = hashInvitationSecret(token);
 
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select set_config('app.user_id', ${actor.user.id}, true)`);
-    await requireCurrentLegalAcceptance(tx, actor.user.id);
+    await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    await tx.execute(sql`select public.gphkm_assert_active_customer(true)`);
+    await requireCurrentLegalAcceptance(tx, actor.userId);
     await tx.execute(sql`select set_config('app.invitation_token_hash', ${tokenHash}, true)`);
     const [invite] = await tx.select({ id: organizationInvitation.id }).from(organizationInvitation)
       .where(eq(organizationInvitation.tokenHash, tokenHash)).limit(1);

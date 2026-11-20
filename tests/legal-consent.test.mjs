@@ -73,7 +73,8 @@ test("legal evidence is append-only and common customer commands cannot skip the
   assert.match(context, /export function withProtectedOrganizationContext/);
   const lifecycle = readFileSync(new URL("../src/server/identity/organization-lifecycle.ts", import.meta.url), "utf8");
   assert.ok(lifecycle.indexOf("recordLegalAcceptance(tx, actorUserId, legalAcceptance)") < lifecycle.indexOf("tx.insert(organization)"));
-  assert.match(lifecycle, /requireCurrentLegalAcceptance\(tx, actor\.user\.id\)/);
+  assert.match(lifecycle, /requireCurrentLegalAcceptance\(tx, actor\.userId\)/);
+  assert.match(lifecycle, /gphkm_assert_active_customer\(true\)/);
   const auth = readFileSync(new URL("../src/server/auth/index.ts", import.meta.url), "utf8");
   assert.match(auth, /surface === "customer" && context\.path === "\/sign-in\/social" && asRecord\(context\.body\)\.requestSignUp === true/);
   assert.match(auth, /addOAuthServerContext\(\{ \[CUSTOMER_LEGAL_OAUTH_CONTEXT\]: accepted \}\)/);
@@ -102,7 +103,7 @@ test("onboarding requires explicit consent when post-signup evidence is absent",
   assert.match(onboarding, /accepted: alreadyAccepted \|\| values\.get\("accepted"\) === "on"/);
 
   const lifecycle = readFileSync(new URL("../src/server/identity/organization-lifecycle.ts", import.meta.url), "utf8");
-  assert.match(lifecycle, /if \(!authSession\?\.user\.emailVerified\) throw new Error\("Unauthorized"\)/);
+  assert.match(lifecycle, /const actor = await requireVerifiedCustomer\(headers\)/);
   assert.ok(lifecycle.indexOf("await recordLegalAcceptance(tx, actorUserId, legalAcceptance)") < lifecycle.indexOf("tx.insert(organization).values"));
   const context = readFileSync(new URL("../src/server/identity/customer-context.ts", import.meta.url), "utf8");
   assert.match(context, /if \(requireLegalAcceptance\) await requireCurrentLegalAcceptance\(tx, actor\.userId\)/);

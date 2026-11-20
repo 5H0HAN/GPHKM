@@ -1387,6 +1387,13 @@
       "when": 1794936120000,
       "tag": "0197_require_staff_totp",
       "breakpoints": true
+    },
+    {
+      "idx": 198,
+      "version": "7",
+      "when": 1795219200000,
+      "tag": "0198_customer_suspension_command_guard",
+      "breakpoints": true
     }
   ]
 }
