@@ -337,18 +337,25 @@ async function checkHttpRecovery() {
     assert.equal(customerAuth.hasSessionCookie(), true);
     assert.equal((await customerAuth.request("/get-session")).body?.user?.id, customer.id);
 
-    stage = "customer password change, backup-code recovery, and TOTP disable";
+    stage = "customer password-change request";
     const changed = await customerAuth.request("/change-password", {
       currentPassword: password, newPassword: changedPassword, revokeOtherSessions: true,
     });
     assert.equal(changed.status, 200);
+    stage = "customer session after password change";
     assert.equal((await customerAuth.request("/get-session")).body?.user?.id, customer.id);
+    stage = "customer sign-out after password change";
     assert.equal((await customerAuth.request("/sign-out", {})).status, 200);
+    stage = "customer password sign-in after password change";
     assert.equal((await signIn(changedPassword)).body?.twoFactorRedirect, true);
+    stage = "customer backup-code request";
     const recovered = await customerAuth.request("/two-factor/verify-backup-code", { code: backupCode });
     assert.equal(recovered.status, 200);
+    stage = "customer session after backup-code recovery";
     assert.equal((await customerAuth.request("/get-session")).body?.user?.twoFactorEnabled, true);
+    stage = "customer TOTP disable request";
     assert.equal((await customerAuth.request("/two-factor/disable", { password: changedPassword })).status, 200);
+    stage = "customer session after TOTP disable";
     assert.equal((await customerAuth.request("/get-session")).body?.user?.twoFactorEnabled, false);
 
     stage = "customer and staff reset token surface isolation";
