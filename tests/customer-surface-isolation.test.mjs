@@ -65,3 +65,31 @@ test("other customer read paths use explicit self/org fields and Owner-only rech
   const org = source("src/server/identity/organization-lifecycle.ts");
   assert.match(org, /if \(role !== "OWNER"\) return .*members: \[\], invitations: \[\]/);
 });
+
+test("organization creation and invitation acceptance recheck customer state inside their transactions", () => {
+  const identity = source("src/server/identity/organization-lifecycle.ts");
+  for (const name of ["createFirstOrganization", "acceptOrganizationInvitation"]) {
+    const start = identity.indexOf(`export async function ${name}`);
+    const next = identity.indexOf("export async function", start + 1);
+    const command = identity.slice(start, next < 0 ? undefined : next);
+    assert.match(command, /requireVerifiedCustomer\(headers\)/, `${name} uses the customer surface guard`);
+    assert.match(command, /gphkm_assert_active_customer\((?:true)?\)/, `${name} rechecks suspension in its DB transaction`);
+  }
+  const customerContext = source("src/server/identity/customer-context.ts");
+  assert.match(customerContext, /gphkm_assert_active_customer\(\)/,
+    "tenant commands serialize the active-customer check with account suspension");
+  const suspensionSql = source("src/db/migrations/0198_customer_suspension_command_guard.sql");
+  assert.match(suspensionSql, /FOR SHARE/);
+  assert.match(suspensionSql, /gphkm_customer_is_active/);
+  assert.match(suspensionSql, /organization_create_self[\s\S]*gphkm_customer_is_active/);
+  assert.match(suspensionSql, /organization_member_create_first_owner[\s\S]*gphkm_customer_is_active/);
+  assert.match(suspensionSql, /organization_member_read_self_or_tenant[\s\S]*gphkm_is_active_org_member/,
+    "organization context alone cannot expose another tenant's member directory");
+  assert.match(suspensionSql, /auth_session_reject_suspended_customer/,
+    "session persistence is serialized with customer suspension");
+  assert.match(suspensionSql, /gphkm_accept_organization_invitation[\s\S]*FOR UPDATE/,
+    "the definer command protects both invitation insert and reactivation branches");
+  const notifications = source("src/server/notifications/customer.ts");
+  assert.match(notifications, /gphkm_assert_active_customer\(true\)[\s\S]*gphkm_set_customer_newsletter_consent/,
+    "newsletter updates take the exclusive identity lock before their database command");
+});

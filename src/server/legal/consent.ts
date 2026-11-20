@@ -44,6 +44,7 @@ export async function acceptCustomerLegalDocuments(headers: Headers, input: Lega
   const userId = await legalActor(headers);
   await db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${userId}, true)`);
+    await tx.execute(sql`select public.gphkm_assert_active_customer()`);
     await recordLegalAcceptance(tx, userId, input);
   });
 }

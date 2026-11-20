@@ -109,13 +109,35 @@ jobs:
         run: |
           npm run db:migrate
           npm run db:check-rls:local
+          npm run db:check-customer-suspension:local
           npm run db:check-import-apply:local
           npm run db:check-content-race:local
           npm run db:check-supplier-recovery:local
           npm run db:check-recipient-reconsent:local
+      - name: Prepare isolated staging-seed database
+        shell: bash
+        run: |
+          set -euo pipefail
+          migration_password="$(sed -n 's/^POSTGRES_MIGRATION_PASSWORD=//p' .env)"
+          database_password="$(sed -n 's/^GPHKM_DATABASE_PASSWORD=//p' .env)"
+          docker exec gphkm-ci-postgres psql --username=gphkm_migration --dbname=gphkm --set=ON_ERROR_STOP=1 \
+            --command='CREATE DATABASE gphkm_staging OWNER gphkm_migration'
+          docker exec gphkm-ci-postgres psql --username=gphkm_migration --dbname=gphkm_staging --set=ON_ERROR_STOP=1 \
+            --command='GRANT USAGE ON SCHEMA public TO gphkm_runtime, gphkm_mfa_proof'
+          MIGRATION_DATABASE_URL="postgres://gphkm_migration:${migration_password}@127.0.0.1:54329/gphkm_staging" npm run db:migrate
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      - name: Verify isolated staging seed and bootstrap
+        run: |
+          set -euo pipefail
+          migration_password="$(sed -n 's/^POSTGRES_MIGRATION_PASSWORD=//p' .env)"
+          database_password="$(sed -n 's/^GPHKM_DATABASE_PASSWORD=//p' .env)"
+          GPHKM_CHECK_ISOLATED_STAGING_DB=true GPHKM_DEPLOYMENT_ENV=staging \
+            GPHKM_REAL_MONEY_ENABLED=false GPHKM_LAUNCH_GATES_VERIFIED=false \
+            MIGRATION_DATABASE_URL="postgres://gphkm_migration:${migration_password}@127.0.0.1:54329/gphkm_staging" \
+            DATABASE_URL="postgres://gphkm_runtime:${database_password}@127.0.0.1:54329/gphkm_staging" \
+            node --test tests/staging-setup.test.mjs
       - run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: "1"

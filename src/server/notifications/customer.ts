@@ -49,6 +49,7 @@ export async function getCustomerNotificationEmailPreference(headers: Headers) {
   const actor = await requireVerifiedCustomer(headers);
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    await tx.execute(sql`select public.gphkm_assert_active_customer()`);
     const [row] = await tx.select({ enabled: customerNotificationPreference.transactionalEmailEnabled })
       .from(customerNotificationPreference).where(eq(customerNotificationPreference.userId, actor.userId)).limit(1);
     return row?.enabled ?? true;
@@ -60,6 +61,7 @@ export async function setCustomerNotificationEmailPreference(headers: Headers, e
   const actor = await requireVerifiedCustomer(headers);
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    await tx.execute(sql`select public.gphkm_assert_active_customer()`);
     await tx.insert(customerNotificationPreference).values({ userId: actor.userId, transactionalEmailEnabled: enabled, updatedAt: new Date() })
       .onConflictDoUpdate({ target: customerNotificationPreference.userId, set: { transactionalEmailEnabled: enabled, updatedAt: new Date() } });
   });
@@ -86,6 +88,9 @@ export async function setCustomerNewsletterPreference(headers: Headers, subscrib
   if (subscribed && !noticeVersion) throw new Error("Newsletter consent notice is not configured");
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    // The DB consent command locks auth_user FOR UPDATE; acquire that lock
+    // before any shared customer guard to avoid lock upgrades between writers.
+    await tx.execute(sql`select public.gphkm_assert_active_customer(true)`);
     const result = await tx.execute(sql`select * from public.gphkm_set_customer_newsletter_consent(
       ${randomUUID()}, ${subscribed}, ${noticeVersion})`);
     const row = (result as unknown as { rows?: Array<{ subscribed: boolean; changed: boolean; notice_version: string }> }).rows?.[0];

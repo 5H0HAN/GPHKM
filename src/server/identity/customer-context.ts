@@ -45,6 +45,7 @@ export async function listMyOrganizations(headers: Headers) {
   const actor = await requireVerifiedCustomer(headers);
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    await tx.execute(sql`select public.gphkm_assert_active_customer()`);
     const rows = await tx.select({
       id: organization.id,
       name: organization.name,
@@ -67,6 +68,7 @@ export async function withOrganizationContext<T>(
   if (!requestedOrganizationId || requestedOrganizationId.length > 128) throw new Error("Forbidden");
   return db.transaction(async (tx) => {
     await tx.execute(sql`select set_config('app.user_id', ${actor.userId}, true)`);
+    await tx.execute(sql`select public.gphkm_assert_active_customer()`);
     const [membership] = await tx.select({ role: organizationMember.role })
       .from(organizationMember)
       .where(and(

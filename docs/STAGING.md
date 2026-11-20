@@ -1,6 +1,10 @@
 # Demo staging operations
 
-Use the existing GPHKM_Staging project and its staging environment. The gphkm-demo application uses the installed GitHub App, repository 5H0HAN/GPHKM, branch main, base directory / and Compose file /compose.staging.yaml. A push to main is the deployment trigger. Keep preview deployments disabled.
+Use the existing GPHKM_Staging project and its staging environment. Coolify represents the app as one Compose resource; PostgreSQL runs as the `db` service in that Compose file and persists in the `staging-postgres` volume, not as a separate Coolify database resource. The gphkm-demo application uses the installed GitHub App, repository 5H0HAN/GPHKM, branch main, base directory / and Compose file /compose.staging.yaml. A merged change to main triggers Coolify's GitHub App webhook. Keep preview deployments disabled.
+
+## Verified deployment state
+
+Verified 2026-11-20: Coolify reports `gphkm-demo` as `running:healthy` in `GPHKM_Staging`. The latest deployment came from the GitHub webhook at main commit `43a909abcdc9d686ea0b5923c44fa3021c2b3122`; GitHub's required `quality` check passed for that commit. GitHub requires changes to merge through a pull request with the branch current against `main` and the `quality` check green. The public landing page, customer sign-in page, and staff sign-in page loaded. Their 390px mobile layouts showed no obvious clipping. The staff sign-in page reports password reset unavailable because no staging email worker is configured. Full Google signup, tester notice acceptance, staff TOTP enrollment, and sandbox payment still require the designated humans to complete the staging runbook steps below.
 
 | Surface | Runtime configuration | Staging URL |
 | --- | --- | --- |
@@ -31,6 +35,8 @@ From a known external client, verify the HTTP-to-HTTPS redirect, certificate for
 Store all secrets as runtime-only application variables. Generate separate random alphanumeric values for SERVICE_PASSWORD_POSTGRES, SERVICE_PASSWORD_MIGRATION, SERVICE_PASSWORD_RUNTIME, SERVICE_PASSWORD_MFAPROOF, SERVICE_PASSWORD_STRIPEWEBHOOK, and a stable 64-character SERVICE_PASSWORD_64_AUTH. Back up the auth secret privately before enrolling staff. Recovering from a database or key loss requires both the original database and matching auth secret. To rotate a database password on an existing volume, coordinate ALTER ROLE with the Coolify secret update.
 
 The one-shot migrate service runs before web. It takes an advisory lock for migrations and seeds three fictional publications and one private supplier transactionally. The seed keeps staff edits across redeploys. The staging catalog uses reserved domains, a non-login audit actor and zero wallet credits. Check migration service logs after first deploy. No email worker, external supplier delivery, or private object storage is enabled for this demo.
+
+The PostgreSQL data directory uses Coolify's persistent volume. A local volume backup is configured daily at 20:00 UTC (02:00 Dhaka), with the stack configured to pause during capture and retention limits of seven copies/seven days on the same VM. Coolify reported the first execution as `Success` on 2026-11-20; no restore has been verified, so the backup is not yet proven recoverable. No off-host S3/R2 destination is configured, so it does not protect against loss of the Coolify VM. Back up the matching `BETTER_AUTH_SECRET` separately and privately.
 
 Bootstrap the first Super Admin once on the staging host after verifying the operator controls the mailbox. From the application's generated Compose directory use the following command in a Bash terminal. Enter the fresh password at the hidden prompt and store it in the operator's password manager. The bootstrap refuses an existing staff setup or an email already in use.
 

@@ -4,6 +4,10 @@
 - Date: 2026-10-28
 - Decision owners: Project owner and implementation team
 
+## Supersession note (2026-11-20)
+
+This ADR remains the accepted record for the initial application, ORM, and local PostgreSQL stack. Its Neon assessment and provisional production connection guidance below are historical, not the active hosting direction. [ADR-0039](ADR-0039-production-vm-database-backups.md) supersedes decision 5 and records the owner's production Coolify VM/PostgreSQL and two-tier backup direction. Keep the validation evidence below as history; target-VM checks and recovery proof remain open under O-01.
+
 ## Context
 
 Implementation is starting from the approved single-application architecture. The project owner has Docker installed and authorized its use for local development. The preferred candidates were Next.js, PostgreSQL, Better Auth, and Drizzle/Drizzle Kit, while the production app/Neon connection and pooled-connection behavior were still subject to Slice 0 validation.
@@ -14,7 +18,7 @@ Implementation is starting from the approved single-application architecture. Th
 2. Use PostgreSQL and Drizzle ORM with Drizzle Kit as the initial schema and migration toolchain. Keep generated SQL migrations reviewable and use migrations rather than schema push for shared environments.
 3. Run a clean PostgreSQL 17 instance locally with Docker Compose. Keep the migration/owner credential separate from a restricted application runtime role. Local credentials live in an ignored `.env` file and are never committed.
 4. Use direct PostgreSQL connections for local development. Tenant context must be set transaction-locally on the transaction handle for protected queries; a connection pooler is not enabled until its transaction-local context behavior is proven.
-5. Keep Coolify + Neon as the preferred production direction, not a production-ready decision. Before selecting production connection pooling, demonstrate RLS isolation and transaction behavior with the exact Neon connection mode, restricted runtime role, Better Auth schema, and retry/concurrency paths. Use a direct migration connection.
+5. (Superseded 2026-11-20 by ADR-0039.) The initial provisional direction was Coolify + Neon, not a production-ready decision. The historical checks and assessment below describe why it was considered; the current production direction is recorded in ADR-0039.
 6. Use the project’s documented dark-first theme and a persistent per-user Dark/Light setting. The initial default is dark. Keep preference storage isolated from organization-wide settings.
 
 ## Neon connection assessment (2026-10-29)
@@ -31,7 +35,7 @@ This is a code/provider compatibility assessment, not a production validation. N
 - Local Compose is disposable development infrastructure; it is not a backup or production deployment plan.
 - The first database schema and tenant-context helper must be designed together. Tests must run under the restricted runtime identity, not the migration owner.
 - The ORM choice is an initial implementation choice. If the Better Auth adapter or RLS proof fails, stop before building domain features and revise this ADR.
-- Production Neon pooling, deployment, backup/recovery settings, and real-money provider configuration remain launch gates.
+- Production VM sizing, database deployment, backup/recovery settings, and real-money provider configuration remain launch gates under the current decisions in ADR-0039 and O-01.
 
 ## Validation before closing the production portion of Slice 0
 
@@ -40,7 +44,7 @@ This is a code/provider compatibility assessment, not a production validation. N
 - Verify tenant-scoped reads/writes fail closed across organizations under the restricted runtime role.
 - Verify transaction-local tenant settings do not survive commit/rollback or leak across reused connections.
 - Verify atomic wallet/order transaction behavior before implementing money features.
-- Record Neon region, connection limits, runtime/migration credentials, recovery settings, backup and restore evidence, and deployment choice.
+- Record the selected VM region and capacity, connection limits, runtime/migration credentials, recovery settings, backup and restore evidence, and deployment validation.
 
 ## Related documents
 

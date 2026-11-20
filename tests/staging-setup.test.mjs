@@ -44,6 +44,12 @@ test("staging catalog replay, customer row visibility and first staff bootstrap"
       auth_user: 1, auth_account: 0, staff_account: 0, organization_member: 0, wallet_ledger_entry: 0,
       supplier: 1, marketplace_listing: 3, marketplace_listing_revision: 3,
     })) assert.equal(await count(table), expected, table);
+    assert.equal((await db.query(`SELECT retail_price_cents FROM marketplace_listing
+      WHERE title = 'Demo Garden Journal'`)).rows[0]?.retail_price_cents, "5000",
+    "one demo offer matches the $50 qualifying wallet top-up");
+    assert.equal((await db.query(`SELECT count(*) FROM supplier_contact
+      WHERE email = 'demo-contact@staging.invalid' AND is_primary`)).rows[0]?.count, "1",
+    "the supplier-backed demo offer has a synthetic non-deliverable primary recipient");
 
     const customer = randomUUID();
     const org = randomUUID();

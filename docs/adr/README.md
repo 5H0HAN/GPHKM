@@ -40,3 +40,4 @@ ADRs capture material choices and their consequences. Product behavior details r
 - [ADR-0036: Staff password authentication, mandatory TOTP, and Super Admin recovery](ADR-0036-staff-authentication-mandatory-totp.md)
 - [ADR-0037: Isolated Coolify demo staging](ADR-0037-staging-deployment.md)
 - [ADR-0038: Preliminary notices for designated staging Google testers](ADR-0038-staging-tester-notices.md)
+- [ADR-0039: Production VM and database backup tiers](ADR-0039-production-vm-database-backups.md)
