@@ -8,7 +8,7 @@ import { organizationBillingProfile } from "@/db/identity-schema";
 import { appendAuditEvent } from "@/server/audit/append";
 import { ensureWalletAccount } from "@/server/wallet/accounts";
 import { getAuthForSurface } from "@/server/auth";
-import { withOrganizationContext, withProtectedOrganizationContext } from "./customer-context";
+import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganizationContext } from "./customer-context";
 import {
   normalizeEmail,
 } from "./policy";
