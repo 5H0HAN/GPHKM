@@ -11,7 +11,7 @@ The app server owns authorization and business commands. PostgreSQL constraints 
 
 Add one lightweight worker using database-backed jobs/outbox only when reliable retries or scheduled execution are needed for Stripe events, Sheets imports, metric refreshes, or notifications. Do not add Redis or multiple worker lanes initially. The app may process simple synchronous work until durable background execution is justified.
 
-Drizzle/Drizzle Kit and local Docker PostgreSQL are accepted for initial development in [ADR-0010](adr/ADR-0010-initial-development-stack.md). Coolify + Neon remain the preferred production direction, subject to the RLS, transaction, cost, region, and recovery checks in O-01. Use a direct migration connection. Resend is the preferred email candidate pending O-05 checks. Use private object storage for staff imports and optional handoff evidence; select the provider before that integration.
+Drizzle/Drizzle Kit and local Docker PostgreSQL are accepted for initial development in [ADR-0010](adr/ADR-0010-initial-development-stack.md). The selected production direction is PostgreSQL on the planned Coolify VM with local and off-host backups under [ADR-0039](adr/ADR-0039-production-vm-database-backups.md); sizing, cost, connection limits, RLS proof, and recovery remain open in O-01. Use a direct migration connection. Resend is the preferred email candidate pending O-05 checks. Use private Cloudflare R2 object storage for staff imports and optional handoff evidence as recorded in ADR-0028; configure its separate backup bucket and retention under O-02.
 
 ## 2. Logical shape
 
@@ -66,4 +66,4 @@ Define backups, recovery, monitoring, object-storage controls, support hours, an
 
 ## 7. Decisions intentionally deferred
 
-ADR-0010 selects the initial ORM and local migration approach. The production hosting, Neon connection mode, and recovery details remain open under O-01. Provider/account setup and legal/finance review remain gates before real-money production. Future scale does not justify a separate API, Redis, microservices, a supplier portal, or payout infrastructure at this stage.
+ADR-0010 records the initial ORM and local migration approach; ADR-0039 supersedes its provisional Neon deployment direction. Production VM provisioning, backup settings, RLS/recovery proof, provider/account setup, and legal/finance review remain gates under O-01 and the launch decisions. Future scale does not justify a separate API, Redis, microservices, a supplier portal, or payout infrastructure at this stage.
