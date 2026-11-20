@@ -62,7 +62,9 @@ DROP POLICY organization_member_read_self_or_tenant ON public.organization_membe
 CREATE POLICY organization_member_read_self_or_tenant ON public.organization_member FOR SELECT TO gphkm_runtime
   USING (public.gphkm_customer_is_active(nullif(current_setting('app.user_id', true), ''))
     AND (user_id = nullif(current_setting('app.user_id', true), '')
-      OR organization_id = nullif(current_setting('app.organization_id', true), '')));
+      OR (organization_id = nullif(current_setting('app.organization_id', true), '')
+        AND public.gphkm_is_active_org_member(organization_member.organization_id,
+          nullif(current_setting('app.user_id', true), '')))));
 
 CREATE OR REPLACE FUNCTION public.gphkm_accept_organization_invitation(target_invitation text, membership_id text) RETURNS text
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$

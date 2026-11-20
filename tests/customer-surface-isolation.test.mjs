@@ -83,6 +83,8 @@ test("organization creation and invitation acceptance recheck customer state ins
   assert.match(suspensionSql, /gphkm_customer_is_active/);
   assert.match(suspensionSql, /organization_create_self[\s\S]*gphkm_customer_is_active/);
   assert.match(suspensionSql, /organization_member_create_first_owner[\s\S]*gphkm_customer_is_active/);
+  assert.match(suspensionSql, /organization_member_read_self_or_tenant[\s\S]*gphkm_is_active_org_member/,
+    "organization context alone cannot expose another tenant's member directory");
   assert.match(suspensionSql, /auth_session_reject_suspended_customer/,
     "session persistence is serialized with customer suspension");
   assert.match(suspensionSql, /gphkm_accept_organization_invitation[\s\S]*FOR UPDATE/,
