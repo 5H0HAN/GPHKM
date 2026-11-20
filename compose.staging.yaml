@@ -29,6 +29,7 @@ services:
     build:
       context: .
       target: database
+      pull: true
     restart: unless-stopped
     environment:
       <<: *scoped-secrets
@@ -51,6 +52,7 @@ services:
     build:
       context: .
       target: migration
+      pull: true
     restart: "no" # Coolify excludes one-shot services with this policy from aggregate health.
     depends_on:
       db:
@@ -71,6 +73,7 @@ services:
     build:
       context: .
       target: web
+      pull: true
     restart: unless-stopped
     depends_on:
       migrate:
