@@ -24,6 +24,8 @@ The three DNS names `gphkm.asf.run`, `app.gphkm.asf.run`, and `staff.gphkm.asf.r
 
 The active GPHKM site block in `/etc/caddy/Caddyfile` handles these three exact names, sets no-index and HSTS headers, replaces `X-Forwarded-For` with the connecting client's address, and proxies to the loopback web port. Keep this rule ahead of any catch-all route to Traefik. This is host-managed configuration outside the application repository; back it up, run `caddy validate`, and gracefully reload Caddy after changes.
 
+External ingress verification (2026-11-21): from an external network path, HTTPS requests to `/api/health` on all three hostnames returned HTTP 200 with a valid TLS certificate; `/`, `/sign-in` on the customer host, and `/staff/sign-in` on the staff host returned HTTP 200. Plain HTTP requests redirected to HTTPS with HTTP 308. The three page responses included the expected Content Security Policy. `/api/health` did not include CSP, as that route bypasses the page middleware. The page and health responses included Referrer-Policy, HSTS (`max-age=31536000`), `X-Content-Type-Options: nosniff`, and `X-Robots-Tag: noindex, nofollow, noarchive`. This verifies public status, TLS, redirects, and response headers; it does not replace rendered desktop/mobile browser review or human completion of the signup, MFA, and sandbox-payment flows.
+
 ```caddyfile
 gphkm.asf.run, app.gphkm.asf.run, staff.gphkm.asf.run {
     header X-Robots-Tag "noindex, nofollow, noarchive"
