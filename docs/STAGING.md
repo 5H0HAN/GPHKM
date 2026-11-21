@@ -14,25 +14,25 @@ Verified 2026-11-21 (Dhaka time): Coolify reports `gphkm-demo` as `running:healt
 
 ## HTTPS ingress
 
-Point all three DNS names at the staging host. The intended ingress routes the exact hostnames through the host Caddy proxy to the Compose web port; Coolify also reports its managed Traefik proxy as running. Public responses identify Caddy in the request path, but host listener ownership and the public TLS termination point have not been verified. Choose one available host TCP port for `GPHKM_STAGING_WEB_PORT`, set it as a non-secret Coolify application variable available during both build and runtime, and configure Caddy with the same value. Compose publishes web port 3000 exclusively on IPv4 loopback. PostgreSQL has no host port.
+The three DNS names `gphkm.asf.run`, `app.gphkm.asf.run`, and `staff.gphkm.asf.run` point to the staging host at `129.146.102.189`. Host inspection confirmed Caddy owns public TCP ports 80/443 and terminates TLS; Coolify's Traefik proxy remains available for other routes. The GPHKM web container publishes port 3000 only at `127.0.0.1:18123`; PostgreSQL has no host port.
 
-Configure Caddy to route the three exact HTTPS origins directly to web. Keep these sites out of the catch-all route to Traefik. If using Caddyfile environment substitution, supply the same three origins and the loopback port in the Caddy service environment.
+The active GPHKM site block in `/etc/caddy/Caddyfile` handles these three exact names, sets no-index and HSTS headers, replaces `X-Forwarded-For` with the connecting client's address, and proxies to the loopback web port. Keep this rule ahead of any catch-all route to Traefik. This is host-managed configuration outside the application repository; back it up, run `caddy validate`, and gracefully reload Caddy after changes.
 
 ```caddyfile
-{$GPHKM_PUBLIC_BASE_URL}, {$CUSTOMER_APP_URL}, {$STAFF_APP_URL} {
-    reverse_proxy 127.0.0.1:{$GPHKM_STAGING_WEB_PORT} {
+gphkm.asf.run, app.gphkm.asf.run, staff.gphkm.asf.run {
+    header X-Robots-Tag "noindex, nofollow, noarchive"
+    header Strict-Transport-Security "max-age=31536000"
+    reverse_proxy 127.0.0.1:18123 {
         header_up X-Forwarded-For {http.request.remote.host}
     }
 }
 ```
 
-With the example above, Caddy preserves the original Host, sets the forwarded scheme, and replaces incoming forwarded client addresses with the address of the connecting client. From the generated Compose directory, check `docker compose port web 3000` for the expected loopback binding. Web prefers its default bridge for the published port. Observe the peer on an incoming Caddy connection to web, set `GPHKM_TRUSTED_PROXY_CIDRS` to that individual bridge gateway address (/32 for IPv4), and recheck after a network change.
+Do not add `includeSubDomains` or preload while this is a staging boundary. Browsers cache the one-year HSTS max-age after receiving it; reverting the file alone does not clear client policy. To retire it early, serve `max-age=0` over valid HTTPS on each hostname. See [Caddy's header directive](https://caddyserver.com/docs/caddyfile/directives/header) and [RFC 6797 §6.2](https://www.rfc-editor.org/rfc/rfc6797.html#section-6.2).
 
-From a known external client, verify the HTTP-to-HTTPS redirect, certificate for each origin, public sign-in link, customer and staff sign-in pages, and database-backed `/api/health`. To verify client attribution, send an anonymous `GET /api/auth/get-session` request on each sign-in origin from two different known client IPv4 addresses. Confirm distinct counters for the two client addresses in `auth_rate_limit` and `auth_staff_rate_limit` for `/get-session`, with no increment for the gateway or `no-trusted-ip`. Verify Caddy's active configuration replaces incoming forwarded addresses and the loopback port is unreachable from an external client.
+Checks on 2026-11-21 confirmed HTTP redirects to HTTPS, HTTPS `/api/health` returns 200 on all three hosts, and the landing, customer sign-in, staff sign-in, password-reset, and invitation routes load. Responses include CSP, `Referrer-Policy`, `X-Content-Type-Options: nosniff`, no-index and HSTS headers. Customer/staff reset pages use `no-referrer` and `no-store`; invitation pages use `no-store`. An unauthenticated session request with an untrusted `Origin` returned without an `Access-Control-Allow-Origin` header. The shorter initial name `gphk.asf.run` had no DNS A record.
 
-Host verification on 2026-11-21 confirmed Caddy owns the public 80/443 listeners and terminates TLS. Its active `/etc/caddy/Caddyfile` routes only the three staging hosts to `127.0.0.1:18123), with `X-Robots-Tag: noindex, nofollow, noarchive` and `Strict-Transport-Security: max-age=31536000`. The Caddyfile was backed up before the HSTS change, validated with `caddy validate`, and gracefully reloaded. The app continues to publish its web port only on loopback; PostgreSQL has no host port. No `includeSubDomains` or preload directive is enabled. Browsers cache this 1-year HSTS max-age after receiving it; to retire it early, serve `max-age=0` over valid HTTPS on each hostname (reverting the file alone does not clear client policy). See [Caddy's header directive](https://caddyserver.com/docs/caddyfile/directives/header) and [RFC 6797 §6.2](https://www.rfc-editor.org/rfc/rfc6797.html#section-6.2).
-
-External checks on 2026-11-21 confirmed HTTP redirects to HTTPS and database-backed `/api/health` returns 200 on all three hosts. HTTPS responses returned the existing CSP, `Referrer-Policy`, `X-Content-Type-Options: nosniff`, no-index headers, and HSTS. The landing, customer sign-in, staff sign-in, password-reset, and invitation routes load. Customer/staff reset pages use `no-referrer` and `no-store`; invitation pages use `no-store`. An unauthenticated session request with an untrusted `Origin` returned without an `Access-Control-Allow-Origin` header. The shorter initial name `gphk.asf.run` did not resolve. Still verify forwarded-client-IP sanitization, two-client rate-limit attribution, and that the loopback web port is unreachable externally.
+The app's configured `GPHKM_TRUSTED_PROXY_CIDRS=172.29.3.1/32` matches the default Docker bridge gateway for the published web port. Still verify the actual Caddy-to-web peer address, two-client rate-limit attribution, and that the loopback web port is unreachable from an external client.
 
 ## Database and secrets
 
