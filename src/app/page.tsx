@@ -36,7 +36,7 @@ export default function Home() {
         </nav>
       </header>
 
-      <section className={styles.hero} id="main-content" aria-labelledby="hero-title">
+      <section className={styles.hero} id="main-content" tabIndex={-1} aria-labelledby="hero-title">
         <div className={styles.heroCopy}>
           <h1 id="hero-title">A clearer path from placement order to publication.</h1>
           <p className={styles.intro}>

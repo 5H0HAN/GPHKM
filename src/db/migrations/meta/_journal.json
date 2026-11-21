@@ -1394,6 +1394,13 @@
       "when": 1795219200000,
       "tag": "0198_customer_suspension_command_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 199,
+      "version": "7",
+      "when": 1795274930000,
+      "tag": "0199_serialize_checkout_membership_revocation",
+      "breakpoints": true
     }
   ]
 }

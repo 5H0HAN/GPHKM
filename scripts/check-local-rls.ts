@@ -178,6 +178,16 @@ try {
   assert.equal(connection.rows[0]?.user, "gphkm_migration");
   assert.equal(connection.rows[0]?.database, "gphkm");
 
+  phase = "checking checkout membership revocation serialization";
+  const checkoutDefinition = await migration.query<{ definition: string }>(
+    "select pg_get_functiondef('public.gphkm_finalize_order_checkout(text)'::regprocedure) as definition",
+  );
+  const checkoutSql = checkoutDefinition.rows[0]?.definition ?? "";
+  assert.match(checkoutSql, /FROM public\.organization_member[\s\S]*?FOR SHARE/i,
+    "checkout must hold an active-membership row lock through transaction end");
+  assert.match(checkoutSql, /pg_advisory_xact_lock[\s\S]*?customer_order[\s\S]*?organization_member/i,
+    "checkout must preserve wallet-risk, order, then membership lock order");
+
   phase = "checking restricted role attributes";
   const roleRows = await migration.query<{
     rolname: string; rolsuper: boolean; rolcreatedb: boolean; rolcreaterole: boolean;

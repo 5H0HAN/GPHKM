@@ -81,7 +81,7 @@ export default async function CustomerLayout({ children }: { children: ReactNode
             <CustomerSignOut />
           </div>
         </aside>
-        <main className={styles.main} id="customer-main">
+        <main className={styles.main} id="customer-main" tabIndex={-1}>
           <header className={styles.topbar}>
             <span className={styles.crumb}>Customer workspace</span>
             {workspace.organizations.length ? <OrganizationSwitcher organizations={workspace.organizations} /> : <span className={styles.quiet}>No organization yet</span>}

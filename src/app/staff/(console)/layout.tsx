@@ -64,7 +64,7 @@ export default async function ConsoleLayout({ children }: Readonly<{ children: R
           <StaffSignOut />
         </div>
       </aside>
-      <main className={styles.main} id="staff-main">{children}</main>
+      <main className={styles.main} id="staff-main" tabIndex={-1}>{children}</main>
     </div>
   );
 }
