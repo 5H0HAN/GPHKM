@@ -1,4 +1,6 @@
 FROM postgres:17-alpine AS database
+# Keep PostgreSQL's bundled OpenSSL runtime libraries on the current Alpine security release.
+RUN apk upgrade --no-cache libcrypto3 libssl3
 COPY infrastructure/docker/staging/roles.sql /docker-entrypoint-initdb.d/01-staging-roles.sql
 
 FROM node:24-trixie-slim AS dependencies
