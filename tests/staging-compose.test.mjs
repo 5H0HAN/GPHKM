@@ -20,7 +20,7 @@ test("staging Compose keeps migration credentials, provider gates and port expos
     RESEND_WEBHOOK_SECRET: "fixture-webhook-secret",
     GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY: "a".repeat(64),
   };
-  for (const role of ["POSTGRES", "MIGRATION", "RUNTIME", "MFAPROOF", "STRIPEWEBHOOK", "WORKER", "64_AUTH"]) {
+  for (const role of ["POSTGRES", "MIGRATION", "RUNTIME", "MFAPROOF", "STRIPEWEBHOOK", "RESEND_WEBHOOK", "WORKER", "64_AUTH"]) {
     env[`SERVICE_PASSWORD_${role}`] = `fixture-${role}`;
   }
   const configArgs = [
@@ -60,6 +60,8 @@ test("staging Compose keeps migration credentials, provider gates and port expos
     mode: "ingress", host_ip: "127.0.0.1", target: 3000, published: env.GPHKM_STAGING_WEB_PORT, protocol: "tcp",
   }]);
   assert.equal(services.web.depends_on.migrate.condition, "service_completed_successfully");
+  assert.equal(services.web.depends_on["worker-role"].condition, "service_completed_successfully");
+  assert.match(services["worker-role"].command.join(" "), /webhook_password/);
   assert.equal(services.worker.depends_on.migrate.condition, "service_completed_successfully");
   assert.equal(services.worker.depends_on["worker-role"].condition, "service_completed_successfully");
   assert.equal(services["worker-role"].depends_on.db.condition, "service_healthy");
@@ -72,25 +74,30 @@ test("staging Compose keeps migration credentials, provider gates and port expos
   assert.equal(services.worker.ports, undefined);
   assert.deepEqual(Object.keys(services.worker.networks).sort(), ["database", "default"]);
   for (const [service, allowed, resendAllowed] of [
-    [services.web, ["RUNTIME", "MFAPROOF", "STRIPEWEBHOOK", "64_AUTH"], true],
+    [services.web, ["RUNTIME", "MFAPROOF", "STRIPEWEBHOOK", "RESEND_WEBHOOK", "64_AUTH"], true],
     [services.migrate, ["MIGRATION"], false],
     [services.worker, ["WORKER"], true],
-    [services["worker-role"], ["POSTGRES", "WORKER"], false],
+    [services["worker-role"], ["POSTGRES", "WORKER", "RESEND_WEBHOOK"], false],
     [services.db, ["POSTGRES", "MIGRATION", "RUNTIME", "MFAPROOF", "STRIPEWEBHOOK", "WORKER"], false],
   ]) {
     // Coolify supplies the entire resource .env as env_file on each service.
     const settings = Object.values({ ...env, ...service.environment }).join("\n");
-    for (const role of ["POSTGRES", "MIGRATION", "RUNTIME", "MFAPROOF", "STRIPEWEBHOOK", "WORKER", "64_AUTH"]) {
+    for (const role of ["POSTGRES", "MIGRATION", "RUNTIME", "MFAPROOF", "STRIPEWEBHOOK", "RESEND_WEBHOOK", "WORKER", "64_AUTH"]) {
       assert.equal(settings.includes(`fixture-${role}`), allowed.includes(role), role);
     }
     for (const key of ["RESEND_API_KEY", "RESEND_SYSTEM_FROM_EMAIL", "RESEND_SUPPORT_FROM_EMAIL", "RESEND_WEBHOOK_SECRET", "GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY"]) {
       const allowed = key === "RESEND_WEBHOOK_SECRET" ? service === services.web : resendAllowed;
       assert.equal(service.environment[key] !== "unavailable", allowed, key);
     }
+    assert.equal(service.environment.RESEND_WEBHOOK_DATABASE_URL !== "unavailable", service === services.web);
     for (const flag of ["GPHKM_LOCAL_AUTH_ENABLED", "GPHKM_LOCAL_MFA_DISABLED", "GPHKM_REAL_MONEY_ENABLED", "GPHKM_LAUNCH_GATES_VERIFIED"]) {
       assert.equal(service.environment[flag], "false", flag);
     }
   }
+  assert.equal(services.web.environment.RESEND_WEBHOOK_DATABASE_URL, "postgres://gphkm_resend_webhook:fixture-RESEND_WEBHOOK@db:5432/gphkm_staging");
+  assert.equal(services.worker.environment.RESEND_WEBHOOK_DATABASE_URL, "unavailable");
+  assert.equal(services.migrate.environment.RESEND_WEBHOOK_DATABASE_URL, "unavailable");
+  assert.equal(services.db.environment.RESEND_WEBHOOK_DATABASE_URL, "unavailable");
   assert.equal(services.web.environment.GPHKM_RESEND_DATA_HANDLING_APPROVED, "false");
   assert.equal(services.worker.environment.GPHKM_RESEND_DATA_HANDLING_APPROVED, "false");
   assert.equal(services.worker.environment.RESEND_WEBHOOK_SECRET, "unavailable");

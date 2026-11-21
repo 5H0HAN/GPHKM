@@ -15,5 +15,5 @@ CREATE ROLE gphkm_worker LOGIN PASSWORD :'worker_password' NOSUPERUSER NOCREATED
 CREATE ROLE gphkm_resend_webhook NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 ALTER DATABASE gphkm_staging OWNER TO gphkm_migration;
 REVOKE ALL ON DATABASE gphkm_staging FROM PUBLIC;
-GRANT CONNECT ON DATABASE gphkm_staging TO gphkm_runtime, gphkm_webhook, gphkm_mfa_proof, gphkm_worker;
+GRANT CONNECT ON DATABASE gphkm_staging TO gphkm_runtime, gphkm_webhook, gphkm_mfa_proof, gphkm_resend_webhook, gphkm_worker;
 COMMIT;

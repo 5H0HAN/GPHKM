@@ -20,7 +20,8 @@ export class LegalAcceptanceRequiredError extends Error {
 
 function version(value: string | undefined, development: boolean): string {
   const result = value?.trim() ?? "";
-  if (/staging-testers|(?:^|[-_.:])draft(?:$|[-_.:])/i.test(result) ||
+  if (result === stagingReviewTermsVersion || result === stagingReviewPrivacyVersion ||
+    /staging-testers|(?:^|[-_.:])draft(?:$|[-_.:])/i.test(result) ||
     /^(terms|privacy)-2026-11-19-v1$/.test(result) || (!development && /^local-test(?:-|$)/i.test(result)) ||
     !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(result)) throw new LegalConfigurationError();
   return result;
@@ -32,6 +33,7 @@ function documentUrl(value: string | undefined, development: boolean): string {
   const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.hostname.endsWith(".localhost");
   if (url.toString().length > 2048 || url.username || url.password || url.hostname.includes("*") ||
     url.pathname.startsWith("/legal/drafts/") || url.pathname.startsWith("/legal/testing/") ||
+    url.pathname.startsWith("/legal/staging/") ||
     (!development && loopback) ||
     (url.protocol !== "https:" && !(development && loopback && url.protocol === "http:"))) throw new LegalConfigurationError();
   return url.toString();

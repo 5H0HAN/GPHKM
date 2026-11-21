@@ -44,3 +44,6 @@ $$;
 REVOKE ALL ON FUNCTION public.gphkm_claim_customer_notification_emails(text, integer) FROM PUBLIC, gphkm_runtime;
 --> statement-breakpoint
 GRANT EXECUTE ON FUNCTION public.gphkm_claim_customer_notification_emails(text, integer) TO gphkm_worker;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION public.gphkm_process_customer_notification_email_event(text, text, text, text, text, timestamptz)
+  TO gphkm_resend_webhook;

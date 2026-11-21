@@ -38,3 +38,26 @@ test("staging review notices cannot be enabled outside staging or with a live-mo
     assert.throws(() => currentLegalDocuments(env), LegalConfigurationError);
   }
 });
+
+test("staging review identifiers and routes are rejected by production fallback config", async () => {
+  const { currentLegalDocuments, LegalConfigurationError } = await tsImport("../src/modules/legal/policy.ts", import.meta.url);
+  const production = {
+    NODE_ENV: "production",
+    GPHKM_DEPLOYMENT_ENV: "production",
+    GPHKM_STAGING_REVIEW_NOTICES_ENABLED: "false",
+  };
+  assert.throws(() => currentLegalDocuments({
+    ...production,
+    GPHKM_TERMS_VERSION: "terms-staging-review",
+    GPHKM_PRIVACY_VERSION: "privacy-staging-review",
+    GPHKM_TERMS_URL: "https://app.example.test/legal/terms",
+    GPHKM_PRIVACY_URL: "https://app.example.test/legal/privacy",
+  }), LegalConfigurationError);
+  assert.throws(() => currentLegalDocuments({
+    ...production,
+    GPHKM_TERMS_VERSION: "terms-approved-v1",
+    GPHKM_PRIVACY_VERSION: "privacy-approved-v1",
+    GPHKM_TERMS_URL: "https://app.example.test/legal/staging/terms",
+    GPHKM_PRIVACY_URL: "https://app.example.test/legal/privacy",
+  }), LegalConfigurationError);
+});
