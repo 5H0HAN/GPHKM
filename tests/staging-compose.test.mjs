@@ -29,6 +29,9 @@ test("staging Compose keeps migration credentials, provider gates and port expos
   const { services, networks } = JSON.parse(rendered.stdout);
   assert.equal(services.web.environment.GPHKM_STAGING_TESTER_NOTICES_ENABLED, "false");
   assert.equal(services.web.environment.GPHKM_STAGING_GOOGLE_TEST_EMAILS, "");
+  for (const service of ["db", "migrate", "web"]) {
+    assert.equal(services[service].build.pull, true, `${service} pulls current base images`);
+  }
   const testers = {
     GPHKM_STAGING_TESTER_NOTICES_ENABLED: "true",
     GPHKM_STAGING_GOOGLE_TEST_EMAILS: "one@example.invalid,two@example.invalid",
