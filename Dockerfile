@@ -9,6 +9,9 @@ RUN npm ci --no-fund --no-audit
 FROM dependencies AS migration
 COPY src/db/migrations ./src/db/migrations
 COPY scripts/*staging*.mjs ./scripts/
+# The runtime entrypoint invokes Node directly and does not need the global package manager.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx
 ENV NODE_ENV=production
 USER node
 CMD ["sh", "-ec", "node scripts/migrate-staging.mjs && node scripts/seed-staging-demo.mjs"]
@@ -29,7 +32,11 @@ ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
-RUN mkdir -p .next/cache && chown node:node .next/cache
+# The web entrypoint and health check invoke Node directly.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx \
+    && mkdir -p .next/cache \
+    && chown node:node .next/cache
 USER node
 EXPOSE 3000
 CMD ["node", "server.js"]
