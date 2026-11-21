@@ -12,7 +12,7 @@ Verified 2026-11-21 (Dhaka time): Coolify reports `gphkm-demo` as `running:healt
 | Customers and Google callback | CUSTOMER_APP_URL | https://app.gphkm.asf.run |
 | Staff password and authenticator | STAFF_APP_URL | https://staff.gphkm.asf.run |
 
-## HTTPS ingress
+**Latest main deployment (2026-11-21):** PR #51 merged commit `03107332859e53cb60ede4806a1cb3261a918c89`. Coolify received the GitHub App webhook, finished deployment `7qswowag3wt8zloix6wgdfgv` at 15:43:55 UTC, and reported `gphkm-demo` as `running:healthy` at 15:47:22 UTC, with no unhealthy resources. This confirms the `main`-to-Coolify deployment path. Public ingress was not independently revalidated from the automation workspace after this deployment because its network path could not reach the staging hosts. Designated humans still need to complete Google tester signup and notice acceptance, Super Admin TOTP enrollment, signed Stripe sandbox settlement, and the backup restore rehearsal.\n\n## HTTPS ingress
 
 The three DNS names `gphkm.asf.run`, `app.gphkm.asf.run`, and `staff.gphkm.asf.run` point to the staging host at `129.146.102.189`. Host inspection confirmed Caddy owns public TCP ports 80/443 and terminates TLS; Coolify's Traefik proxy remains available for other routes. The GPHKM web container publishes port 3000 only at `127.0.0.1:18123`; PostgreSQL has no host port.
 
