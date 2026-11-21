@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useRef, useState, type FormEvent } from "react";
 import { authClient } from "@/auth/client";
 import { staffAuthClient } from "@/auth/staff-client";
-import { usesStagingTesterNotices, type LegalDocuments } from "@/modules/legal/policy";
+import { usesStagingReviewNotices, usesStagingTesterNotices, type LegalDocuments } from "@/modules/legal/policy";
 import { LegalConsentCheckbox } from "@/components/legal-consent-checkbox";
 import { useStepHeading } from "@/components/identity/use-step-heading";
 import styles from "./sign-in.module.css";
@@ -161,7 +161,8 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
         {session ? `Signed in as ${session.email}.` : verify
           ? useBackupCode ? "Enter one of the backup codes you saved when you set up your authenticator." : "Enter the six-digit code from your authenticator app."
           : mode === "reset" ? "Enter your account email. If it can use a password, we’ll send a secure reset link."
-            : mode === "sign-up" && usesStagingTesterNotices(legalDocuments) ? "Review the staging tester notices, then continue with your invited Google account."
+            : mode === "sign-up" && usesStagingTesterNotices(legalDocuments) ? "Review the staging tester notices, then continue with your designated Google account."
+            : mode === "sign-up" && usesStagingReviewNotices(legalDocuments) ? "Create your staging customer account with verified email or Google. Review the staging Terms and Privacy drafts before continuing."
             : mode === "sign-up" ? `Create your customer account with ${emailSignupEnabled && googleSignupEnabled ? "verified email or Google" : emailSignupEnabled ? "verified email" : "Google"}. Accept the current Terms and Privacy Policy to continue.`
             : googleEnabled
             ? emailPasswordEnabled ? "Sign in with Google or your verified email address." : "Use your designated Google test account to continue."

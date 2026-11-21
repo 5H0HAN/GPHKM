@@ -7,12 +7,14 @@ x-scoped-secrets: &scoped-secrets
   SERVICE_PASSWORD_RUNTIME: unavailable
   SERVICE_PASSWORD_MFAPROOF: unavailable
   SERVICE_PASSWORD_STRIPEWEBHOOK: unavailable
+  SERVICE_PASSWORD_WORKER: unavailable
   SERVICE_PASSWORD_64_AUTH: unavailable
   POSTGRES_PASSWORD: unavailable
   GPHKM_MIGRATION_PASSWORD: unavailable
   GPHKM_DATABASE_PASSWORD: unavailable
   GPHKM_MFA_PROOF_PASSWORD: unavailable
   GPHKM_WEBHOOK_PASSWORD: unavailable
+  GPHKM_WORKER_PASSWORD: unavailable
   MIGRATION_DATABASE_URL: unavailable
   DATABASE_URL: unavailable
   MFA_PROOF_DATABASE_URL: unavailable
@@ -23,6 +25,14 @@ x-scoped-secrets: &scoped-secrets
   GPHKM_STAGING_GOOGLE_TEST_EMAILS: unavailable
   STRIPE_SECRET_KEY: unavailable
   STRIPE_WEBHOOK_SECRET: unavailable
+  WORKER_DATABASE_URL: unavailable
+  RESEND_API_KEY: unavailable
+  RESEND_SYSTEM_FROM_EMAIL: unavailable
+  RESEND_SUPPORT_FROM_EMAIL: unavailable
+  RESEND_WEBHOOK_SECRET: unavailable
+  GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY: unavailable
+  GPHKM_STAGING_REVIEW_NOTICES_ENABLED: "false"
+  GPHKM_RESEND_DATA_HANDLING_APPROVED: "false"
 
 services:
   db:
@@ -39,6 +49,12 @@ services:
       GPHKM_DATABASE_PASSWORD: ${SERVICE_PASSWORD_RUNTIME}
       GPHKM_MFA_PROOF_PASSWORD: ${SERVICE_PASSWORD_MFAPROOF}
       GPHKM_WEBHOOK_PASSWORD: ${SERVICE_PASSWORD_STRIPEWEBHOOK}
+      GPHKM_WORKER_PASSWORD: ${SERVICE_PASSWORD_WORKER:?}
+      GPHKM_DEPLOYMENT_ENV: staging
+      GPHKM_REAL_MONEY_ENABLED: "false"
+      GPHKM_LAUNCH_GATES_VERIFIED: "false"
+      GPHKM_LOCAL_AUTH_ENABLED: "false"
+      GPHKM_LOCAL_MFA_DISABLED: "false"
     volumes:
       - staging-postgres:/var/lib/postgresql/data
     networks: [database]
@@ -47,6 +63,33 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+  worker-role:
+    build:
+      context: .
+      target: database
+      pull: true
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [database]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        PGPASSWORD="$${POSTGRES_PASSWORD}" psql
+        --host=db --username=postgres --dbname=gphkm_staging
+        --set=ON_ERROR_STOP=1 --set=worker_password="$${SERVICE_PASSWORD_WORKER}"
+        --file=/opt/gphkm/provision-worker.sql
+    environment:
+      <<: *scoped-secrets
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_POSTGRES}
+      SERVICE_PASSWORD_WORKER: ${SERVICE_PASSWORD_WORKER:?}
+      GPHKM_DEPLOYMENT_ENV: staging
+      GPHKM_REAL_MONEY_ENABLED: "false"
+      GPHKM_LAUNCH_GATES_VERIFIED: "false"
+      GPHKM_LOCAL_AUTH_ENABLED: "false"
+      GPHKM_LOCAL_MFA_DISABLED: "false"
 
   migrate:
     build:
@@ -102,6 +145,13 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GPHKM_STAGING_TESTER_NOTICES_ENABLED: ${GPHKM_STAGING_TESTER_NOTICES_ENABLED:-false}
       GPHKM_STAGING_GOOGLE_TEST_EMAILS: ${GPHKM_STAGING_GOOGLE_TEST_EMAILS:-}
+      GPHKM_STAGING_REVIEW_NOTICES_ENABLED: ${GPHKM_STAGING_REVIEW_NOTICES_ENABLED:-false}
+      GPHKM_RESEND_DATA_HANDLING_APPROVED: ${GPHKM_RESEND_DATA_HANDLING_APPROVED:-false}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_SYSTEM_FROM_EMAIL: ${RESEND_SYSTEM_FROM_EMAIL:-}
+      RESEND_SUPPORT_FROM_EMAIL: ${RESEND_SUPPORT_FROM_EMAIL:-}
+      RESEND_WEBHOOK_SECRET: ${RESEND_WEBHOOK_SECRET:-}
+      GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY: ${GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY:-}
       STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:-}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
@@ -113,7 +163,6 @@ services:
       GPHKM_LAUNCH_GATES_VERIFIED: "false"
       GPHKM_LOCAL_AUTH_ENABLED: "false"
       GPHKM_LOCAL_MFA_DISABLED: "false"
-      GPHKM_RESEND_DATA_HANDLING_APPROVED: "false"
       GPHKM_METRIC_CUSTOMER_DISPLAY_L05_VERIFIED: "false"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -121,6 +170,46 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  worker:
+    build:
+      context: .
+      target: worker
+      pull: true
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      worker-role:
+        condition: service_completed_successfully
+    networks:
+      default:
+        gw_priority: 1
+      database:
+        gw_priority: 0
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    environment:
+      <<: *scoped-secrets
+      GPHKM_DEPLOYMENT_ENV: staging
+      GPHKM_REAL_MONEY_ENABLED: "false"
+      GPHKM_LAUNCH_GATES_VERIFIED: "false"
+      GPHKM_LOCAL_AUTH_ENABLED: "false"
+      GPHKM_LOCAL_MFA_DISABLED: "false"
+      WORKER_DATABASE_URL: postgres://gphkm_worker:${SERVICE_PASSWORD_WORKER:?}@db:5432/gphkm_staging
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_SYSTEM_FROM_EMAIL: ${RESEND_SYSTEM_FROM_EMAIL:-}
+      RESEND_SUPPORT_FROM_EMAIL: ${RESEND_SUPPORT_FROM_EMAIL:-}
+      GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY: ${GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY:-}
+      GPHKM_RESEND_DATA_HANDLING_APPROVED: ${GPHKM_RESEND_DATA_HANDLING_APPROVED:-false}
+      GPHKM_PUBLIC_BASE_URL: ${GPHKM_PUBLIC_BASE_URL:?}
+      CUSTOMER_APP_URL: ${CUSTOMER_APP_URL:?}
+      STAFF_APP_URL: ${STAFF_APP_URL:?}
+      GPHKM_PRIVATE_STORAGE_DRIVER: ${GPHKM_PRIVATE_STORAGE_DRIVER:-}
+      GPHKM_R2_ACCOUNT_ID: ${GPHKM_R2_ACCOUNT_ID:-}
+      GPHKM_R2_BUCKET: ${GPHKM_R2_BUCKET:-}
+      GPHKM_R2_ACCESS_KEY_ID: ${GPHKM_R2_ACCESS_KEY_ID:-}
+      GPHKM_R2_SECRET_ACCESS_KEY: ${GPHKM_R2_SECRET_ACCESS_KEY:-}
 
 networks:
   default: {}

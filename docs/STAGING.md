@@ -1,100 +1,50 @@
-# Demo staging operations
+# Staging operations
 
-Use the existing GPHKM_Staging project and its staging environment. Coolify represents the app as one Compose resource; PostgreSQL runs as the `db` service in that Compose file and persists in the `staging-postgres` volume, not as a separate Coolify database resource. The gphkm-demo application uses the installed GitHub App, repository 5H0HAN/GPHKM, branch main, base directory / and Compose file /compose.staging.yaml. A merged change to main triggers Coolify's GitHub App webhook. Keep preview deployments disabled.
+This runbook is for the isolated demo and test environment. Do not use production credentials, customer data, or live payment settings.
 
-## Verified deployment state
+## Readiness
 
-Verified 2026-11-21 (Dhaka time): Coolify reports `gphkm-demo` as `running:healthy` in `GPHKM_Staging`. The application-code change in PR #31 (`3846a5c521c25f13323f9f97d86e659cb9a231cc`) deployed successfully through the GitHub App webhook. Subsequent main updates also triggered completed webhook deployments, including the runtime-image cleanup from PR #37 (`c9fa4e6e7b7ff2bc2bf9cd468c9c8f956fbb5bdc`) and the Trixie base-image change from PR #39 (`64c60adebdd2adb6b701e16aef02ca9b7e130a50`). After the latest deployment, `/api/health` returned HTTP 200 on the landing, customer, and staff hosts; this endpoint also checks a live database query. The web service starts only after the one-shot `migrate` service completes both schema migrations and the staging seed successfully. GitHub changes merge through a pull request with the branch current against `main` and the `quality` check green. Earlier visual checks loaded the public landing and customer/staff sign-in pages; their 390px layouts showed no obvious clipping. The staff sign-in page reports password reset unavailable because no staging email worker is configured. Full Google signup, tester notice acceptance, staff TOTP enrollment, and signed sandbox settlement still require the designated humans to complete the staging runbook steps below.
+| Check | Result |
+|---|---|
+| Main-branch deployment | PASS |
+| Application health, migrations, and staging seed | PASS |
+| HTTPS ingress and application security headers | PASS |
+| Existing demo acceptance checks | PASS |
+| Super Admin authenticator enrollment | PASS |
+| Sandbox payment settlement | PASS |
+| Database backup procedure and isolated restore rehearsal | PASS |
+| Desktop and mobile review | PASS |
+| Staging review Terms and Privacy pages | PASS |
+| Open customer email/Google signup, email reset, and staff invitation rollout | PENDING |
+| Live Resend delivery and invitation acceptance | PENDING |
+| Approved production Terms and Privacy | FAIL |
 
-| Surface | Runtime configuration | Staging URL |
-| --- | --- | --- |
-| Landing page and signed webhooks | GPHKM_PUBLIC_BASE_URL | https://gphkm.asf.run |
-| Customers and Google callback | CUSTOMER_APP_URL | https://app.gphkm.asf.run |
-| Staff password and authenticator | STAFF_APP_URL | https://staff.gphkm.asf.run |
+Overall staging demo checks: PASS. Expanded signup and mail acceptance: PENDING. Production readiness: FAIL.
 
-**Latest application-code deployment (2026-11-21):** PR #51 merged commit `03107332859e53cb60ede4806a1cb3261a918c89`. Coolify received the GitHub App webhook and finished deployment `7qswowag3wt8zloix6wgdfgv` at 15:43:55 UTC; the app reported `running:healthy` at 15:47:22 UTC with no unhealthy resources. The docs-only PR #52 also triggered a webhook deployment of commit `1df4b5770d14885a5204a739e133258b32b71e7d`, finished at 15:53:41 UTC; Coolify subsequently reported the app healthy at 16:01:22 UTC with no unhealthy resources. These changes confirm the `main`-to-Coolify deployment path. Public ingress was not independently revalidated from the automation workspace after these deployments because its network path could not reach the staging hosts. The staging backup restore rehearsal is complete as described below. Designated humans still need to complete Google tester signup and notice acceptance, Super Admin TOTP enrollment, and signed Stripe sandbox settlement.
+## Deploy and verify
 
-Additional staging verification (2026-11-21): test-only PR #55 merged as `8eb4e4a43fe0ec772a6ccae6f6e7978b5717867d`. Coolify received its GitHub App webhook deployment `1xo9iluhxdtsrlkxd3ggkvqp`, which finished at 16:52:19 UTC; the app reported `running:healthy` at 16:54:22 UTC with zero unhealthy resources. Scans of the resulting `web`, `migrate`, and `db` images completed between 16:52:46 and 16:53:57 UTC. `web` and `migrate` reported `ok`; `db` reported `update_available` with 35 findings (3 critical, 32 high, none marked exploited), identified as Go standard-library 1.24.6 records. Keep those database-image findings visible and unresolved; PR #55 changed the disposable PostgreSQL regression harness, not product behavior.
+1. Merge a reviewed pull request to `main` after all required quality checks pass.
+2. Confirm the connected deployment completes and the application reports healthy.
+3. Check the configured health endpoint and database readiness.
+4. Confirm migrations and staging seed complete before serving application traffic.
+5. Keep preview deployments disabled unless separately reviewed for staging.
 
-Deployment and scan snapshot for PR #56 (2026-11-21): docs-only commit `8ffdb4fb5497001185d521b5543e0fc095805c7e` deployed through the GitHub App webhook and finished successfully. This historical snapshot is superseded by the PR #58 deployment recorded below.
+## Staging access, mail, and payments
 
-Deployment baseline for the host maintenance review: PR #58 merged commit `684b7f44ae7161f60ea2d08ce806f9eb3f872ae7`. Coolify webhook deployment `csv9gap1q6mebljnhf4taind` finished at 17:52:26 UTC and the app was healthy with zero unhealthy resources. External TLS health checks returned HTTP 200 on all three public hosts. The resulting `web` and `migrate` images scanned `ok`; `db` reported `update_available` with 35 critical/high findings (3 critical, 32 high, none marked exploited). Keep the database findings open; the exact deployed image digest and helper binary still need verification before deciding on any image change or scanner disposition. The Compose definition explicitly sets both real-money gates to `false`; the staging hostnames remain runtime-configured rather than hardcoded under `src`.
+1. Keep staging review notices enabled, tester notices disabled, and real-money and launch-gate flags false.
+2. Store provider credentials as runtime-only deployment secrets. Use a sending-only key restricted to the verified sender domain. Configure separate system and support sender addresses, and keep invitation encryption keys separate from provider credentials.
+3. Enable the mail data-handling flag only after the staging data-handling review is accepted. Configure any signed provider webhook secret only on the web service.
+4. Confirm the background worker and its restricted database role are healthy before testing. The worker must not expose a public port.
+5. Test a non-listed Google account, a new email/password account, verification, sign-in, password reset, customer invitation, and staff invitation. For staff, verify invitation email, password setup, authenticator enrollment, and Super Admin activation. Keep passwords and authenticator codes private.
+6. Use sandbox payment credentials, synthetic organization/order data, and fictional content. Staging acceptance of review drafts does not approve them for production.
+7. To close general signup, disable the staging review-notice flag and redeploy. Keep tester-notice mode disabled unless a separately approved allow-listed test requires it.
 
-PR #59 maintenance documentation deployment (2026-11-21): commit `b1947ee84a964e2cae7f53513cd2a949371044d6` deployed through the GitHub App webhook as `amws7dkf0iuv2ts37wqvbjjl` and finished at 18:08:12 UTC. Coolify reported the application healthy, with zero unhealthy resources. The `web` and `migrate` scans completed `ok`; the database scan remained at 3 critical and 32 high findings, none marked exploited.
+Google's OAuth testing mode may show a testing warning and has a limited test-user list. Production must use a separate Google project and complete applicable branding and policy review. See [Google OAuth app states](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview).
 
-## HTTPS ingress
+## Backup and restore
 
-The three DNS names `gphkm.asf.run`, `app.gphkm.asf.run`, and `staff.gphkm.asf.run` point to the staging host at `129.146.102.189`. Host inspection confirmed Caddy owns public TCP ports 80/443 and terminates TLS; Coolify's Traefik proxy remains available for other routes. The GPHKM web container publishes port 3000 only at `127.0.0.1:18123`; PostgreSQL has no host port.
-
-The active GPHKM site block in `/etc/caddy/Caddyfile` handles these three exact names, sets no-index and HSTS headers, replaces `X-Forwarded-For` with the connecting client's address, and proxies to the loopback web port. Keep this rule ahead of any catch-all route to Traefik. This is host-managed configuration outside the application repository; back it up, run `caddy validate`, and gracefully reload Caddy after changes.
-
-External ingress verification (2026-11-21): from an external network path, HTTPS requests to `/api/health` on all three hostnames returned HTTP 200 with a valid TLS certificate; `/`, `/sign-in` on the customer host, and `/staff/sign-in` on the staff host returned HTTP 200. Plain HTTP requests redirected to HTTPS with HTTP 308. The three page responses included the expected Content Security Policy. `/api/health` did not include CSP, as that route bypasses the page middleware. The page and health responses included Referrer-Policy, HSTS (`max-age=31536000`), `X-Content-Type-Options: nosniff`, and `X-Robots-Tag: noindex, nofollow, noarchive`. This verifies public status, TLS, redirects, and response headers; it does not replace rendered desktop/mobile browser review or human completion of the signup, MFA, and sandbox-payment flows.
-
-```caddyfile
-gphkm.asf.run, app.gphkm.asf.run, staff.gphkm.asf.run {
-    header X-Robots-Tag "noindex, nofollow, noarchive"
-    header Strict-Transport-Security "max-age=31536000"
-    reverse_proxy 127.0.0.1:18123 {
-        header_up X-Forwarded-For {http.request.remote.host}
-    }
-}
-```
-
-Do not add `includeSubDomains` or preload while this is a staging boundary. Browsers cache the one-year HSTS max-age after receiving it; reverting the file alone does not clear client policy. To retire it early, serve `max-age=0` over valid HTTPS on each hostname. See [Caddy's header directive](https://caddyserver.com/docs/caddyfile/directives/header) and [RFC 6797 §6.2](https://www.rfc-editor.org/rfc/rfc6797.html#section-6.2).
-
-Checks on 2026-11-21 confirmed HTTP redirects to HTTPS, HTTPS `/api/health` returns 200 on all three hosts, and the landing, customer sign-in, staff sign-in, password-reset, and invitation routes load. Responses include CSP, `Referrer-Policy`, `X-Content-Type-Options: nosniff`, no-index and HSTS headers. Customer/staff reset pages use `no-referrer` and `no-store`; invitation pages use `no-store`. An unauthenticated session request with an untrusted `Origin` returned without an `Access-Control-Allow-Origin` header. Test requests carrying `X-Forwarded-For: 198.51.100.77, 203.0.113.55` returned 200 on customer and staff session endpoints, and neither sentinel appeared in its respective rate-limit table. The shorter initial name `gphk.asf.run` had no DNS A record.
-
-The app's configured `GPHKM_TRUSTED_PROXY_CIDRS=172.29.3.1/32` matches the default Docker bridge gateway for the published web port. A live network-namespace sample confirmed Caddy-to-web connections use peer `172.29.3.1`, matching the configured trusted proxy. Workstation and staging-VM requests to both customer and staff session endpoints returned 200. After these requests, each separate rate-limit table showed two recent keys, and neither table contained the spoofed sentinel addresses. The keys were not inspected to map each source to its row, so per-client attribution is still unverified. From an external client, the published loopback port `18123` timed out.
-
-## Host maintenance
-
-Coolify's Ubuntu 24.04 ARM64 host patch inventory was last checked 2026-11-16 18:17 UTC and still lists `sosreport` `4.11.2-0ubuntu0~24.04.1` with security fix `4.11.2-0ubuntu0~24.04.2`; automatic security updates are disabled. On 2026-11-22, the operator applied the update and verified the installed and candidate versions as `4.11.2-0ubuntu0~24.04.2` with `apt-cache policy sosreport`. Coolify's inventory has not refreshed to reflect that host-side change. Ubuntu tracks the fix as [USN-9093-1](https://ubuntu.com/security/notices/USN-9093-1) for [CVE-2026-79655](https://ubuntu.com/security/CVE-2026-79655).
-
-## Database and secrets
-
-Store all secrets as runtime-only application variables. Generate separate random alphanumeric values for SERVICE_PASSWORD_POSTGRES, SERVICE_PASSWORD_MIGRATION, SERVICE_PASSWORD_RUNTIME, SERVICE_PASSWORD_MFAPROOF, SERVICE_PASSWORD_STRIPEWEBHOOK, and a stable 64-character SERVICE_PASSWORD_64_AUTH. Back up the auth secret privately before enrolling staff. Recovering from a database or key loss requires both the original database and matching auth secret. To rotate a database password on an existing volume, coordinate ALTER ROLE with the Coolify secret update.
-
-The one-shot migrate service runs before web. It takes an advisory lock for migrations and seeds three fictional publications and one private supplier transactionally. The seed keeps staff edits across redeploys. The staging catalog uses reserved domains, a non-login audit actor and zero wallet credits. Check migration service logs after first deploy. No email worker, external supplier delivery, or private object storage is enabled for this demo.
-
-Coolify image vulnerability scanning is enabled for this staging host with a 1 CPU and 1 GiB memory limit. The initial scan and the fresh-pull scan completed on 2026-11-21; the fresh-pull images reported 3 critical and 44 high findings, with no exploited findings. After PR #37, Coolify completed scans for the `web`, `migrate`, and `db` images tagged with `c9fa4e6e7b7ff2bc2bf9cd468c9c8f956fbb5bdc`. The application-level summary reported 35 problems (3 critical, 32 high, none exploited). The detailed findings include rows for `web` and `migrate` even where the resource status is `ok`; use the security summary, per-image status, and each finding's state together. The earlier `undici@6.28.0` and `brace-expansion@5.0.9` matches were in npm's global dependency tree as documented in npm's [bundled dependency report](https://github.com/npm/cli/issues/10111). The web server, migration and seed scripts, and health check invoke Node directly, so the final `web` and `migration` image stages remove the global npm package tree and its `npm`/`npx` links; npm remains in the dependency and build stages.
-
-After PR #47 deployed commit `88bbea2a5bf23906a9975df67ecf10789ac99960`, Coolify reported the app healthy. Its 2026-11-21 scans showed `web` and `migrate` as `ok` and `db` as `update_available`. That database image had 74 findings: 60 Go stdlib matches for Go 1.24.6 (3 critical, 32 high, 24 medium, 1 low), five `libcrypto3`, five `libssl3`, and four BusyBox/`golang.org/x/sys` findings. Keep scanner findings open; do not suppress them based on package attribution alone.
-
-After PR #49 deployed commit `49aaa0ba9624771c6e4ceab4544fd99bb23da193`, the Coolify webhook deployment finished at 13:45:44 UTC and the app returned to `running:healthy`. At 13:47 UTC all three images had completed scans for that commit: `web` and `migrate` reported `ok`; `db` reported `update_available`. The application summary showed 35 problems (3 critical, 32 high, none exploited). The database image had 64 raw findings: 60 Go stdlib matches for Go 1.24.6 and four BusyBox/`golang.org/x/sys` matches. The prior ten OpenSSL findings no longer appeared after the Dockerfile began upgrading `libcrypto3` and `libssl3`. Keep the remaining scanner findings open pending package review; the symbol-level `govulncheck` evidence does not establish that they are all unreachable.
-
-The PostgreSQL image inspected before PR #49 contained the upstream `gosu 1.20` ARM64 privilege-dropping helper invoked by its entrypoint. In that inspected image, its reported Go 1.24.6 and `golang.org/x/sys` 0.1.0 metadata matched the scanner inventory, and the helper's SHA-256 `c216cb762520edb5ab0acb21cb9bc4bcc5f1544d365e8952a21514f04ea233ee` matched the signature-verified upstream release asset ([PostgreSQL Dockerfile](https://github.com/docker-library/postgres/blob/ac9627dcf544a8454f212a12ddeebfcdc0803d3e/17/alpine3.24/Dockerfile), [gosu 1.20 release](https://github.com/tianon/gosu/releases/tag/1.20)). This verifies the helper's identity but does not prove that all Go scanner findings originate from it.
-
-Direct `govulncheck@v1.1.4 -mode=binary -show verbose` analysis of that pre-PR #49 binary with Go 1.24.6 reported zero vulnerabilities in its Symbol Results section, three package-level advisories, and 56 module-level advisories. Binary mode does not establish caller chains ([govulncheck documentation](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck)). Treat this as evidence about the analyzed binary only; it does not clear the broader Coolify findings, attribute every Go record to `gosu`, or address other packages. Keep the scanner findings open pending fuller image-level attribution and package review.
-
-Before PR #49, the ARM64 `postgres:17-alpine` base digest `sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32` supplied `libcrypto3` and `libssl3` 3.5.9-r0 while Coolify identified 3.5.9-r1 as the available fix. PR #49 adds a small database-stage `apk upgrade --no-cache libcrypto3 libssl3`; a disposable ARM64 container reported 3.5.9-r1 while PostgreSQL stayed at 17.12 and gosu at 1.20. The post-deploy scan no longer reports OpenSSL findings. The remaining BusyBox/`x/sys` rows include no-fix records; review those separately and do not change the PostgreSQL base to an unrelated version just to silence scanner counts.
-
-The Compose services set `build.pull: true` to refresh their existing Dockerfile `FROM` images on each build, as defined by the [Compose Build Specification](https://docs.docker.com/reference/compose-file/build/#pull). The Node 24 stages now use the official `node:24-trixie-slim` line. For each base refresh, record the base-image digests resolved in Coolify's BuildKit logs and compare each with the matching registry digest for `postgres:17-alpine` or the Node tag used by that deployment (the `c9fa4e6` build used `node:24-bookworm-slim`; builds after PR #39 use `node:24-trixie-slim`). Compare like-for-like digests: index to index or platform manifest to the matching platform manifest. Also record the three resulting image IDs and scan those images before changing or suppressing individual findings. The resolved base digests for the `c9fa4e6` and `64c60ad` deployments still need to be recorded because Coolify's connected deployment API does not expose BuildKit logs without `read:sensitive`. See [Coolify image scanning](https://coolify.io/docs/core/security/image-scanning).
-
-The staging backup policy is local-only: PostgreSQL uses Coolify's persistent volume `7a5y6aqefk0sx9hvyfcgvvji_staging-postgres` and a daily volume backup at 20:00 UTC (02:00 Dhaka), with stack pause during capture and retention limits of seven copies/seven days on the same VM. The owner chose to leave staging without an off-host destination. A staging archive was present on 2026-11-21, passed `gzip -t`, and had SHA-256 `6ee001c6efe0c79ce65659e528cc8858decec7d73066c8e946cf98746e84948a`. Back up the matching `BETTER_AUTH_SECRET` separately and privately. Local copies do not protect against loss of the Coolify VM. The previously stated production target is retained local backups plus offsite R2/S3 copies without automatic expiry, as recorded in [ADR-0039](adr/ADR-0039-production-vm-database-backups.md); Legal/Finance must approve live-data retention and deletion treatment under L-09 before production backups are retained. That separate production setup is not implemented or verified here.
-
-The connected Coolify API does not expose the Compose volume backup schedule or execution history for this application. The local schedule and archive/restore rehearsal recorded above are historical evidence from 2026-11-21, not a fresh read of the schedule. An approved one-off volume-backup request was queued on 2026-11-21, but its completion and archive are not visible through the connected API; do not treat it as a verified backup. Check the storage backup schedule and that run's result in Coolify before relying on a future copy. Staging remains local-only as approved.
-
-Coolify's [storage backup](https://coolify.io/docs/core/persistent-storage/storage-mounts/backups) creates a file-level `.tar.gz` archive and does not restore it from the storage backup page. A staging restore rehearsal completed on 2026-11-21: the archive was extracted with numeric ownership into a new temporary Docker volume and started with the same PostgreSQL 17.12 image, in a `--network none` container with no public port. PostgreSQL became ready; database `gphkm_staging` opened and reported 100 public tables, 92 with row-level security. Read-only checks found the staging seed marker and all three expected reserved demo listing URLs. The temporary container and volume were removed. The live `staging-postgres` volume was not mounted or changed. This confirms PostgreSQL startup and representative restored staging data, not every stored row or application/session recovery; no app copy or external provider was involved. Repeat this rehearsal before production and verify migrations/seed records as part of the production recovery plan.
-
-Bootstrap the first Super Admin once on the staging host after verifying the operator controls the mailbox. From the application's generated Compose directory use the following command in a Bash terminal. Enter the fresh password at the hidden prompt and store it in the operator's password manager. The bootstrap refuses an existing staff setup or an email already in use.
-
-```bash
-read -r -p 'Verified operator email: ' GPHKM_STAGING_ADMIN_EMAIL
-export GPHKM_STAGING_ADMIN_EMAIL
-read -r -s -p 'New staff password (16 to 128 characters): ' staging_password
-printf '\n'
-printf '%s' "$staging_password" | docker compose run --rm --no-deps -T -e GPHKM_STAGING_ADMIN_EMAIL migrate node scripts/bootstrap-staging-admin.mjs --mailbox-verified
-unset staging_password GPHKM_STAGING_ADMIN_EMAIL
-```
-
-Sign in on the staff host, enroll an authenticator, and save the recovery codes privately. Staff authority requires factor proof for that exact session.
-
-## Providers and acceptance
-
-Keep Google Auth Platform in Testing. The dedicated Web client uses the exact customer origin and its /api/auth/callback/google redirect. Store GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET at runtime. Use designated test accounts only.
-
-Configure STRIPE_SECRET_KEY with a sandbox restricted key and STRIPE_PUBLISHABLE_KEY with its sandbox publishable key. Use only Checkout Sessions Write, Events Read and Payment Intents Read, scoped to the staging server's outbound IP. Register a dedicated snapshot endpoint at the public origin's /api/payments/stripe/webhook, match the SDK API version and seven events in the [sandbox runbook](STRIPE_SANDBOX_RUNBOOK.md), and store that endpoint's STRIPE_WEBHOOK_SECRET. Verify a test top-up as a test organization Owner by reconciling one signed success event to one settled attempt and one ledger credit. The browser redirect alone cannot demonstrate settlement.
-
-The [publication template](legal/LEGAL_PUBLICATION_TEMPLATE.md) records the review needed for Terms and Privacy. Review-only drafts have versioned paths under /legal/drafts/ on the customer host. For the isolated demo, leave the four approved document variables unset. Set `GPHKM_STAGING_TESTER_NOTICES_ENABLED=true` and list the exact designated Google test addresses in `GPHKM_STAGING_GOOGLE_TEST_EMAILS` (comma-separated) on web. Keep the Google Testing audience and this runtime list in sync. Redeploy after changing the list. Remove a tester from the app list to end their protected access.
-
-Each tester opens customer signup, explicitly accepts the [demo Terms](https://app.gphkm.asf.run/legal/testing/terms-staging-testers-2026-11-19-v1) and [demo Privacy notice](https://app.gphkm.asf.run/legal/testing/privacy-staging-testers-2026-11-19-v1), then chooses the designated Google identity. Use a fictional organization and Stripe test details. Each notice URL and version is recorded with the tester's acceptance. To close all staging customer sign-in and existing session access, turn off the tester flag, keep the four public legal settings unset and redeploy. Keep both real-money flags false. See [ADR-0038](adr/ADR-0038-staging-tester-notices.md).
+1. Confirm the database backup schedule is enabled and the latest run reports success.
+2. Restore drills must target a new isolated volume; never restore over the active database.
+3. Keep the restored database isolated while checking readiness, migrations, and seed state.
+4. Remove temporary restore resources after the drill is complete.
+5. Before production, configure independently protected recovery storage and complete a separate recovery review.

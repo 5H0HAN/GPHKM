@@ -2,6 +2,8 @@
 
 Accepted by the project owner on 2026-11-19 for the isolated demo.
 
+This limited tester flow is retained for use when explicitly configured. The staging-wide review-draft signup decision in [ADR-0040](ADR-0040-open-customer-staging-signup.md) supersedes its tester-list requirement for general staging access.
+
 The owner wants to exercise customer registration and wallet settlement before final legal review. In staging, a designated Google tester may explicitly accept the following preliminary documents on the configured customer HTTPS origin.
 
 | Document | Immutable version |

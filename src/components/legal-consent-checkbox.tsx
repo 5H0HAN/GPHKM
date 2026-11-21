@@ -6,6 +6,6 @@ export function LegalConsentCheckbox({ documents, disabled = false, inputRef, fo
   const testing = usesStagingTesterNotices(documents);
   return <label className={styles.checkbox}>
     <input ref={inputRef} form={form} type="checkbox" name="accepted" required disabled={disabled} />
-    <span>I have read and accept the <a href={documents.termsUrl} target="_blank" rel="noopener noreferrer">{testing ? "Staging tester terms" : "Terms"} ({documents.termsVersion})</a> and <a href={documents.privacyUrl} target="_blank" rel="noopener noreferrer">{testing ? "Staging tester privacy notice" : "Privacy Policy"} ({documents.privacyVersion})</a>.</span>
+    <span>I have read and accept the <a href={documents.termsUrl} target="_blank" rel="noopener noreferrer">{testing ? "Staging tester Terms" : "Terms of Service"}</a> and <a href={documents.privacyUrl} target="_blank" rel="noopener noreferrer">{testing ? "Staging tester Privacy notice" : "Privacy Policy"}</a>.</span>
   </label>;
 }

@@ -21,8 +21,8 @@ import { getConsentedSupplierPacketContentBatch } from "@/server/orders/content-
 import { hashOrderContent } from "@/modules/orders/content-changes";
 import { readPrivateFile, savePrivateFile } from "@/server/storage/private-files";
 import { linkPrivateFileUpload, preparePrivateFileUpload, queuePrivateFileDeleteOutsideTransaction } from "@/server/storage/private-file-lifecycle";
-import { readSmallJsonResponse } from "@/modules/security/small-json-response";
 import { isDefinitiveResendRejection, readResendMessageId } from "@/modules/fulfillment/resend-send-result";
+import { mailSenders } from "@/modules/email/senders";
 
 type Actor = { userId: string; role: "ADMIN" | "FINANCE" | "SUPER_ADMIN" };
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -820,36 +820,17 @@ async function loadCurrentPacket(tx: Tx, row: typeof supplierPacket.$inferSelect
 
 function resendConfig() {
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM_EMAIL;
-  const webhookId = process.env.RESEND_WEBHOOK_ID;
+  let senders: ReturnType<typeof mailSenders>;
+  try { senders = mailSenders(process.env); } catch { return null; }
   const webhookSecret = process.env.RESEND_WEBHOOK_SECRET;
   const publicBase = process.env.GPHKM_PUBLIC_BASE_URL;
   const dataApproved = process.env.GPHKM_RESEND_DATA_HANDLING_APPROVED === "true";
-  if (!apiKey || !from || !webhookId || !webhookSecret || !publicBase || !dataApproved || /[\r\n\0]/.test(from)) return null;
-  const address = /<([^<>]+)>/.exec(from)?.[1] ?? from;
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) return null;
+  if (!apiKey || !webhookSecret || !publicBase || !dataApproved) return null;
   if (!isRoutablePublicBase(publicBase, process.env)) return null;
-  const base = new URL(publicBase);
-  return { apiKey, from, senderDomain: address.slice(address.lastIndexOf("@") + 1).toLowerCase(), webhookId, webhookSecret, webhookUrl: new URL("/api/webhooks/resend", base).toString() };
+  return { apiKey, from: senders.system };
 }
 
 export function resendEnvConfigured(): boolean { return resendConfig() !== null; }
-
-async function resendPreflight(config: NonNullable<ReturnType<typeof resendConfig>>) {
-  const headers = { Authorization: `Bearer ${config.apiKey}`, Accept: "application/json" };
-  const domainsResponse = await fetch("https://api.resend.com/domains", { headers, redirect: "error", signal: AbortSignal.timeout(10_000) });
-  if (!domainsResponse.ok) throw new Error("Resend account verification failed");
-  const domainsPayload = await readSmallJsonResponse<{ data?: Array<{ name?: string; status?: string; capabilities?: { sending?: string } }> }>(domainsResponse);
-  const domainVerified = domainsPayload.data?.some((domain) => domain.name?.toLowerCase() === config.senderDomain
-    && domain.status === "verified" && domain.capabilities?.sending === "enabled");
-  if (!domainVerified) throw new Error("Configured sender domain is not verified for sending");
-  const webhookResponse = await fetch(`https://api.resend.com/webhooks/${encodeURIComponent(config.webhookId)}`, { headers, redirect: "error", signal: AbortSignal.timeout(10_000) });
-  if (!webhookResponse.ok) throw new Error("Resend webhook registration is unavailable");
-  const webhookPayload = await readSmallJsonResponse<{ endpoint?: string; events?: string[]; signing_secret?: string }>(webhookResponse);
-  if (webhookPayload.endpoint !== config.webhookUrl || !WEBHOOK_TYPES.every((event) => webhookPayload.events?.includes(event))
-    || webhookPayload.signing_secret !== config.webhookSecret) throw new Error("Resend webhook configuration is incomplete");
-  return config;
-}
 
 async function transitionPacketAttempt(input: { attemptId: string; state: PacketAttemptState; eventCode: string; actorId: string | null; actorRole?: "ADMIN" | "SUPER_ADMIN"; actorKind: "STAFF" | "PROVIDER"; providerReference?: string; acceptedAt?: Date; deliveredAt?: Date; unknownAt?: Date; resolvedAt?: Date; packetId: string; itemIds: string[] }) {
   return db.transaction(async (tx) => {
@@ -890,7 +871,6 @@ export async function sendSupplierPacket(headers: Headers, packetId: string, res
   if (authorized.role === "FINANCE") throw new Error("Forbidden");
   const config = resendConfig();
   if (!config) throw new Error("Resend is not fully configured or approved");
-  await resendPreflight(config);
   const prepared = await staffTx(headers, async (tx, actor) => {
     await lockPacketSupplierContact(tx, packetId);
     await lockPacketRetryHistory(tx, packetId);

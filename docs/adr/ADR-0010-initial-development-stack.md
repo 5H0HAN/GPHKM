@@ -6,7 +6,7 @@
 
 ## Supersession note (2026-11-20)
 
-This ADR remains the accepted record for the initial application, ORM, and local PostgreSQL stack. Its Neon assessment and provisional production connection guidance below are historical, not the active hosting direction. [ADR-0039](ADR-0039-production-vm-database-backups.md) supersedes decision 5 and records the owner's production Coolify VM/PostgreSQL and two-tier backup direction. Keep the validation evidence below as history; target-VM checks and recovery proof remain open under O-01.
+This ADR remains the accepted record for the initial application, ORM, and local PostgreSQL stack. Its Neon assessment and provisional production connection guidance below are historical, not the active hosting direction. [ADR-0039](ADR-0039-production-vm-database-backups.md) records the current production database direction. Keep the validation evidence below as history; production deployment checks and recovery proof remain open under O-01.
 
 ## Context
 
@@ -27,7 +27,7 @@ The current application sets `app.user_id` and `app.organization_id` with Postgr
 
 Conditional deployment recommendation: use Neon's pooled TLS URL for runtime `DATABASE_URL` only after running the restricted-role RLS smoke and transaction/concurrency checks against that exact Neon endpoint. Keep `MIGRATION_DATABASE_URL` direct/unpooled for Drizzle migrations. Do not use session-level `SET`, session advisory locks, temp tables, `LISTEN`, or any other connection-persistent state on the pooled runtime path. Neon documents transaction-mode pooling and recommends a direct connection for session-dependent work in [Connection pooling](https://neon.com/docs/connect/connection-pooling) and [Connecting Neon to your stack](https://neon.com/docs/get-started/connect-neon).
 
-This is a code/provider compatibility assessment, not a production validation. Neon account/region/plan selection, pool capacity, TLS connectivity from the Coolify VPS, Better Auth migration rehearsal, backup configuration, restore drill, and final RLS/race checks against Neon remain open under O-01. Do not close O-01 based on local Docker checks alone.
+This is a code/provider compatibility assessment, not a production validation. Provider selection, pool capacity, TLS connectivity, Better Auth migration rehearsal, recovery validation, and final RLS/race checks remain open under O-01. Do not close O-01 based on local Docker checks alone.
 
 ## Consequences
 
@@ -35,7 +35,7 @@ This is a code/provider compatibility assessment, not a production validation. N
 - Local Compose is disposable development infrastructure; it is not a backup or production deployment plan.
 - The first database schema and tenant-context helper must be designed together. Tests must run under the restricted runtime identity, not the migration owner.
 - The ORM choice is an initial implementation choice. If the Better Auth adapter or RLS proof fails, stop before building domain features and revise this ADR.
-- Production VM sizing, database deployment, backup/recovery settings, and real-money provider configuration remain launch gates under the current decisions in ADR-0039 and O-01.
+- Production deployment, recovery settings, and real-money provider configuration remain launch gates under ADR-0039 and O-01.
 
 ## Validation before closing the production portion of Slice 0
 
@@ -44,7 +44,7 @@ This is a code/provider compatibility assessment, not a production validation. N
 - Verify tenant-scoped reads/writes fail closed across organizations under the restricted runtime role.
 - Verify transaction-local tenant settings do not survive commit/rollback or leak across reused connections.
 - Verify atomic wallet/order transaction behavior before implementing money features.
-- Record the selected VM region and capacity, connection limits, runtime/migration credentials, recovery settings, backup and restore evidence, and deployment validation.
+- Record private deployment settings, connection limits, runtime/migration credentials, recovery evidence, and deployment validation outside this public ADR.
 
 ## Related documents
 

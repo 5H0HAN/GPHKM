@@ -6,6 +6,7 @@ import { Client } from "pg";
 import { assertInvitationTokenEncryptionConfigured, decryptInvitationToken } from "../src/modules/identity/invitation-crypto.ts";
 import { readSmallJsonResponse } from "../src/modules/security/small-json-response.ts";
 import { assertPrivateFileStorageConfigured, deletePrivateFile } from "../src/server/storage/private-files.ts";
+import { mailSenders } from "../src/modules/email/senders.ts";
 
 type ClaimedEmail = {
   kind: "CUSTOMER_NOTIFICATION";
@@ -15,6 +16,7 @@ type ClaimedEmail = {
   email_enabled: boolean;
   subject: string;
   body: string;
+  notification_kind: "ORDER_MILESTONE" | "ORDER_ACTION" | "SUPPORT_UPDATE";
   attempts: number;
   first_attempt_at: Date;
 };
@@ -38,13 +40,11 @@ type ClaimedInvitation = {
 type ClaimedPrivateFile = { storage_key: string };
 type MailSettings = {
   apiKey: string;
-  from: string;
-  webhookId: string;
-  webhookSecret: string;
+  systemFrom: string;
+  supportFrom: string;
   publicBase: URL;
   customerBase: URL;
   staffBase: URL;
-  senderDomain: string;
 };
 
 const required = (name: string) => {
@@ -53,30 +53,25 @@ const required = (name: string) => {
   return value;
 };
 const workerUrl = required("WORKER_DATABASE_URL");
+const privateFileCleanupEnabled = Boolean(process.env.GPHKM_PRIVATE_STORAGE_DRIVER?.trim());
 const mailSettings: MailSettings | null = process.env.GPHKM_RESEND_DATA_HANDLING_APPROVED === "true" ? (() => {
   const apiKey = required("RESEND_API_KEY");
-  const from = required("RESEND_FROM_EMAIL");
-  const webhookId = required("RESEND_WEBHOOK_ID");
-  const webhookSecret = required("RESEND_WEBHOOK_SECRET");
+  const senders = mailSenders(process.env);
   const publicBase = publicBaseOrigin(process.env);
   if (!publicBase) throw new Error("Customer notification public ingress is missing");
   const origins = authSurfaceOrigins(process.env);
   const customerBase = new URL(origins.customer);
   const staffBase = new URL(origins.staff);
-  if (/[\r\n\0]/.test(from)
-    || [customerBase, staffBase].some((base) => base.username !== "" || base.password !== ""
+  if ([customerBase, staffBase].some((base) => base.username !== "" || base.password !== ""
       || (base.protocol !== "https:" && base.hostname !== "localhost" && !base.hostname.endsWith(".localhost"))
       || base.pathname !== "/" || base.search || base.hash)
     || publicBase.protocol !== "https:" || publicBase.username !== "" || publicBase.password !== ""
     || publicBase.pathname !== "/" || publicBase.search || publicBase.hash) {
     throw new Error("Customer notification sender or URL settings are invalid");
   }
-  const senderAddress = /<([^<>]+)>/.exec(from)?.[1] ?? from;
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(senderAddress)) throw new Error("Customer notification sender address is invalid");
   assertInvitationTokenEncryptionConfigured();
   return {
-    apiKey, from, webhookId, webhookSecret, publicBase, customerBase, staffBase,
-    senderDomain: senderAddress.slice(senderAddress.lastIndexOf("@") + 1).toLowerCase(),
+    apiKey, systemFrom: senders.system, supportFrom: senders.support, publicBase, customerBase, staffBase,
   };
 })() : null;
 
@@ -85,32 +80,6 @@ const workerId = randomUUID();
 let running = true;
 process.on("SIGINT", () => { running = false; });
 process.on("SIGTERM", () => { running = false; });
-
-async function providerPreflight() {
-  if (!mailSettings) return;
-  const response = await fetch("https://api.resend.com/domains", {
-    headers: { Authorization: `Bearer ${mailSettings.apiKey}`, Accept: "application/json" },
-    redirect: "error", signal: AbortSignal.timeout(10_000),
-  });
-  if (!response.ok) throw new Error("Customer notification provider preflight failed");
-  const payload = await readSmallJsonResponse<{ data?: Array<{ name?: string; status?: string; capabilities?: { sending?: string } }> }>(response);
-  if (!payload.data?.some((domain) => domain.name?.toLowerCase() === mailSettings.senderDomain
-    && domain.status === "verified" && domain.capabilities?.sending === "enabled")) {
-    throw new Error("Customer notification sender domain is not verified for sending");
-  }
-  const webhookResponse = await fetch(`https://api.resend.com/webhooks/${encodeURIComponent(mailSettings.webhookId)}`, {
-    headers: { Authorization: `Bearer ${mailSettings.apiKey}`, Accept: "application/json" },
-    redirect: "error", signal: AbortSignal.timeout(10_000),
-  });
-  if (!webhookResponse.ok) throw new Error("Customer notification webhook preflight failed");
-  const webhook = await readSmallJsonResponse<{ endpoint?: string; events?: string[]; signing_secret?: string }>(webhookResponse);
-  const expectedEndpoint = new URL("/api/webhooks/resend", mailSettings.publicBase).toString();
-  const requiredEvents = ["email.delivered", "email.bounced", "email.failed", "email.delivery_delayed"];
-  if (mailSettings.publicBase.protocol !== "https:" || webhook.endpoint !== expectedEndpoint
-    || !requiredEvents.every((event) => webhook.events?.includes(event)) || webhook.signing_secret !== mailSettings.webhookSecret) {
-    throw new Error("Customer notification webhook is not verified for this deployment");
-  }
-}
 
 async function finish(job: ClaimedEmail, state: "SENT" | "RETRY" | "UNKNOWN" | "FAILED" | "SKIPPED", input: {
   reference?: string; errorCode?: string; nextAttemptAt?: Date;
@@ -160,7 +129,7 @@ async function sendOne(job: ClaimedEmail) {
         "Content-Type": "application/json",
         "Idempotency-Key": `gphkm-customer-${job.outbox_id}`,
       },
-      body: JSON.stringify({ from: mailSettings.from, to: [job.recipient_email], subject: job.subject, text,
+      body: JSON.stringify({ from: job.notification_kind === "SUPPORT_UPDATE" ? mailSettings.supportFrom : mailSettings.systemFrom, to: [job.recipient_email], subject: job.subject, text,
         tags: [{ name: "gphkm_outbox", value: job.outbox_id }] }),
     });
   } catch {
@@ -217,7 +186,7 @@ async function sendInvitation(job: ClaimedInvitation) {
         "Content-Type": "application/json",
         "Idempotency-Key": `gphkm-invitation-${job.outbox_id}`,
       },
-      body: JSON.stringify({ from: mailSettings.from, to: [job.recipient_email], subject, text,
+      body: JSON.stringify({ from: mailSettings.systemFrom, to: [job.recipient_email], subject, text,
         tags: [{ name: "gphkm_invitation", value: job.outbox_id }] }),
     });
   } catch {
@@ -272,12 +241,11 @@ async function cleanupOnePrivateFile() {
 }
 
 async function main() {
-  assertPrivateFileStorageConfigured();
+  if (privateFileCleanupEnabled) assertPrivateFileStorageConfigured();
   await client.connect();
-  if (mailSettings) await providerPreflight();
-  console.log(JSON.stringify({ event: "gphkm_worker_started", workerId, privateFileCleanup: true, notifications: mailSettings !== null }));
+  console.log(JSON.stringify({ event: "gphkm_worker_started", workerId, privateFileCleanup: privateFileCleanupEnabled, notifications: mailSettings !== null }));
   while (running) {
-    const privateFileWorked = await cleanupOnePrivateFile();
+    const privateFileWorked = privateFileCleanupEnabled ? await cleanupOnePrivateFile() : false;
     if (mailSettings) {
       const invitationResult = await client.query<ClaimedInvitation>(
         "select 'INVITATION'::text as kind, * from public.gphkm_claim_invitation_emails($1,$2)", [workerId, 1],

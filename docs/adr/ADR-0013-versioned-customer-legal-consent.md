@@ -23,9 +23,11 @@ Customer onboarding and protected actions require consent to the current Terms a
 
 The owner approved a narrow [staging tester exception](ADR-0038-staging-tester-notices.md) on 2026-11-19. Public launch still requires final approval.
 
+For the current staging rollout, [ADR-0040](ADR-0040-open-customer-staging-signup.md) allows customers to accept clearly labeled review drafts. This does not change the published-document requirement for production.
+
 ## Consequences
 
-- Product cannot enable public customer signup, wallet funding, or ordering until legal copy is approved, published, versioned, and configured. The checkbox and server guard do not substitute for legal approval.
+- Production customer signup, wallet funding, and ordering remain disabled until legal copy is approved, published, versioned, and configured. Staging may use the clearly labeled review drafts under [ADR-0040](ADR-0040-open-customer-staging-signup.md); that exception does not satisfy production approval.
 - URL changes require a version bump so acceptance never silently transfers to different text.
 - Legal text remains outside the application bundle until the business supplies approved content and a hosting choice.
 

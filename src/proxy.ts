@@ -91,6 +91,13 @@ export function proxy(request: NextRequest) {
     return pageResponse(request, surface);
   }
 
+  if (pathname.startsWith("/legal/staging/")) {
+    if (surface !== "customer" || !read || process.env.GPHKM_DEPLOYMENT_ENV !== "staging") {
+      return new NextResponse("Not found", { status: 404 });
+    }
+    return pageResponse(request, surface);
+  }
+
   if (surface === "customer") {
     if (pathname.startsWith("/sign-in") || pathname === "/invitations/accept" || pathname.startsWith("/customer") ||
       pathname === "/legal/terms" || pathname === "/legal/privacy") return pageResponse(request, surface);

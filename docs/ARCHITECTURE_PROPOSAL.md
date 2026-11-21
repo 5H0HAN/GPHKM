@@ -11,7 +11,7 @@ The app server owns authorization and business commands. PostgreSQL constraints 
 
 Add one lightweight worker using database-backed jobs/outbox only when reliable retries or scheduled execution are needed for Stripe events, Sheets imports, metric refreshes, or notifications. Do not add Redis or multiple worker lanes initially. The app may process simple synchronous work until durable background execution is justified.
 
-Drizzle/Drizzle Kit and local Docker PostgreSQL are accepted for initial development in [ADR-0010](adr/ADR-0010-initial-development-stack.md). The selected production direction is PostgreSQL on the planned Coolify VM with local and off-host backups under [ADR-0039](adr/ADR-0039-production-vm-database-backups.md); sizing, cost, connection limits, RLS proof, and recovery remain open in O-01. Use a direct migration connection. Resend is the preferred email candidate pending O-05 checks. Use private Cloudflare R2 object storage for staff imports and optional handoff evidence as recorded in ADR-0028; configure its separate backup bucket and retention under O-02.
+Drizzle/Drizzle Kit and local Docker PostgreSQL are accepted for initial development in [ADR-0010](adr/ADR-0010-initial-development-stack.md). Production database placement and recovery are private launch-time decisions under [ADR-0039](adr/ADR-0039-production-vm-database-backups.md) and O-01. Use a direct migration connection. Resend is the preferred email candidate pending O-05 checks. Use private object storage for staff imports and optional handoff evidence as recorded in ADR-0028; keep provider configuration and recovery details in private operations records under O-02.
 
 ## 2. Logical shape
 

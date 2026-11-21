@@ -4,7 +4,7 @@ import { ProfileNameForm } from "../profile-name-form";
 import { ThemeToggle } from "@/components/theme-toggle";
 import Link from "next/link";
 import { selectedOrganizationId } from "../workspace";
-import { currentLegalDocuments } from "@/modules/legal/policy";
+import { currentLegalDocuments, usesStagingReviewNotices } from "@/modules/legal/policy";
 import { headers } from "next/headers";
 import { getCustomerNewsletterPreference, getCustomerNotificationEmailPreference } from "@/server/notifications/customer";
 import { revokeOtherSessionsAction, revokeSessionAction, saveNewsletterPreference, saveNotificationPreference } from "./actions";
@@ -50,6 +50,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const suffix = organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : "";
   let documents;
   try { documents = currentLegalDocuments(process.env); } catch { documents = null; }
+  const stagingReview = usesStagingReviewNotices(documents);
 
   return (
     <>
@@ -160,7 +161,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             <div><strong>Accepted {record.acceptedAt.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: "UTC" })} UTC</strong><p>Terms: {record.termsVersion}</p><p>Privacy: {record.privacyVersion}</p></div>
           </li>)}</ul>}
         </article>
-        <article className={`${styles.panel} ${styles.span12}`}><h2 className={styles.panelTitle}>Account links</h2><div className={settings.links}><Link href={`/customer/orders${suffix}`}>Your orders</Link><Link href={`/customer/wallet${suffix}`}>Organization wallet</Link><Link href={`/customer/support${suffix}`}>Support requests</Link>{documents && <><a href={documents.termsUrl} target="_blank" rel="noopener noreferrer">Terms ({documents.termsVersion})</a><a href={documents.privacyUrl} target="_blank" rel="noopener noreferrer">Privacy ({documents.privacyVersion})</a></>}</div></article>
+        <article className={`${styles.panel} ${styles.span12}`}><h2 className={styles.panelTitle}>Account links</h2><div className={settings.links}><Link href={`/customer/orders${suffix}`}>Your orders</Link><Link href={`/customer/wallet${suffix}`}>Organization wallet</Link><Link href={`/customer/support${suffix}`}>Support requests</Link>{documents && <><a href={documents.termsUrl} target="_blank" rel="noopener noreferrer">{stagingReview ? "Terms of Service (staging review draft)" : `Terms (${documents.termsVersion})`}</a><a href={documents.privacyUrl} target="_blank" rel="noopener noreferrer">{stagingReview ? "Privacy Policy (staging review draft)" : `Privacy (${documents.privacyVersion})`}</a></>}</div></article>
       </section>
     </>
   );

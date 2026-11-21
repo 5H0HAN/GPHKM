@@ -3,16 +3,17 @@
 \getenv runtime_password GPHKM_DATABASE_PASSWORD
 \getenv stripe_password GPHKM_WEBHOOK_PASSWORD
 \getenv mfa_password GPHKM_MFA_PROOF_PASSWORD
+\getenv worker_password GPHKM_WORKER_PASSWORD
 
 BEGIN;
 CREATE ROLE gphkm_migration LOGIN PASSWORD :'migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 CREATE ROLE gphkm_runtime LOGIN PASSWORD :'runtime_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 CREATE ROLE gphkm_webhook LOGIN PASSWORD :'stripe_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 CREATE ROLE gphkm_mfa_proof LOGIN PASSWORD :'mfa_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
--- Migrations grant privileges to these roles. Staging does not run delivery.
-CREATE ROLE gphkm_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+-- Migration 0200 grants notification outbox access to the isolated staging worker.
+CREATE ROLE gphkm_worker LOGIN PASSWORD :'worker_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 CREATE ROLE gphkm_resend_webhook NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 ALTER DATABASE gphkm_staging OWNER TO gphkm_migration;
 REVOKE ALL ON DATABASE gphkm_staging FROM PUBLIC;
-GRANT CONNECT ON DATABASE gphkm_staging TO gphkm_runtime, gphkm_webhook, gphkm_mfa_proof;
+GRANT CONNECT ON DATABASE gphkm_staging TO gphkm_runtime, gphkm_webhook, gphkm_mfa_proof, gphkm_worker;
 COMMIT;

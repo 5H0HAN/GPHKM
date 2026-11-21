@@ -8,6 +8,9 @@ export type LegalDocuments = {
 };
 export type LegalAcceptanceInput = { accepted: unknown; termsVersion: unknown; privacyVersion: unknown };
 
+const stagingReviewTermsVersion = "terms-staging-review";
+const stagingReviewPrivacyVersion = "privacy-staging-review";
+
 export class LegalConfigurationError extends Error {
   constructor() { super("Customer legal documents are not configured"); }
 }
@@ -36,7 +39,11 @@ function documentUrl(value: string | undefined, development: boolean): string {
 
 export function currentLegalDocuments(env: Record<string, string | undefined>): LegalDocuments {
   const testerFlag = env.GPHKM_STAGING_TESTER_NOTICES_ENABLED;
-  if (testerFlag && testerFlag !== "false") {
+  const reviewFlag = env.GPHKM_STAGING_REVIEW_NOTICES_ENABLED;
+  if ((testerFlag !== undefined && testerFlag !== "true" && testerFlag !== "false") ||
+    (reviewFlag !== undefined && reviewFlag !== "true" && reviewFlag !== "false") ||
+    (testerFlag === "true" && reviewFlag === "true")) throw new LegalConfigurationError();
+  if (testerFlag === "true") {
     if (!stagingTesterEmails(env)) throw new LegalConfigurationError();
     const { terms, privacy } = stagingTesterVersions;
     const origin = env.CUSTOMER_APP_URL;
@@ -44,6 +51,28 @@ export function currentLegalDocuments(env: Record<string, string | undefined>): 
       termsVersion: terms, privacyVersion: privacy,
       termsUrl: new URL(`/legal/testing/${terms}`, origin).href,
       privacyUrl: new URL(`/legal/testing/${privacy}`, origin).href,
+    };
+  }
+  if (reviewFlag === "true") {
+    if (env.GPHKM_DEPLOYMENT_ENV !== "staging" || env.GPHKM_REAL_MONEY_ENABLED !== "false" ||
+      env.GPHKM_LAUNCH_GATES_VERIFIED !== "false" || env.GPHKM_LOCAL_AUTH_ENABLED === "true" ||
+      env.GPHKM_LOCAL_MFA_DISABLED === "true") throw new LegalConfigurationError();
+    let customerOrigin: URL;
+    let staffOrigin: URL;
+    try {
+      customerOrigin = new URL(env.CUSTOMER_APP_URL ?? "");
+      staffOrigin = new URL(env.STAFF_APP_URL ?? "");
+    } catch { throw new LegalConfigurationError(); }
+    if (customerOrigin.protocol !== "https:" || staffOrigin.protocol !== "https:" ||
+      customerOrigin.username || customerOrigin.password || staffOrigin.username || staffOrigin.password ||
+      customerOrigin.pathname !== "/" || customerOrigin.search || customerOrigin.hash ||
+      staffOrigin.pathname !== "/" || staffOrigin.search || staffOrigin.hash) throw new LegalConfigurationError();
+    const origin = customerOrigin.origin;
+    return {
+      termsVersion: stagingReviewTermsVersion,
+      privacyVersion: stagingReviewPrivacyVersion,
+      termsUrl: new URL("/legal/staging/terms", origin).href,
+      privacyUrl: new URL("/legal/staging/privacy", origin).href,
     };
   }
   const development = env.NODE_ENV === "development";
@@ -56,6 +85,10 @@ export function currentLegalDocuments(env: Record<string, string | undefined>): 
 
 export function usesStagingTesterNotices(documents: LegalDocuments | null): boolean {
   return documents?.termsVersion === stagingTesterVersions.terms && documents.privacyVersion === stagingTesterVersions.privacy;
+}
+
+export function usesStagingReviewNotices(documents: LegalDocuments | null): boolean {
+  return documents?.termsVersion === stagingReviewTermsVersion && documents.privacyVersion === stagingReviewPrivacyVersion;
 }
 
 export function assertExplicitLegalAcceptance(input: LegalAcceptanceInput, documents: LegalDocuments): void {

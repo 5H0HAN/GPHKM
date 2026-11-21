@@ -1401,6 +1401,13 @@
       "when": 1795274930000,
       "tag": "0199_serialize_checkout_membership_revocation",
       "breakpoints": true
+    },
+    {
+      "idx": 200,
+      "version": "7",
+      "when": 1795274940000,
+      "tag": "0200_support_notification_sender",
+      "breakpoints": true
     }
   ]
 }

@@ -8,14 +8,14 @@ type Document = {
 };
 
 export function LegalDocument({ document, version, status, relatedHref, relatedTitle }: {
-  document: Document; version: string; status: string; relatedHref: string; relatedTitle: string;
+  document: Document; version?: string; status: string; relatedHref: string; relatedTitle: string;
 }) {
   return (
     <main className={`legalDocument ${styles.document}`}>
       <header>
         <p className={styles.status}>{status}</p>
         <h1>{document.title}</h1>
-        <p className={styles.version}>GPHKM staging · Version {version}</p>
+        {version ? <p className={styles.version}>GPHKM staging · Version {version}</p> : null}
         <p className={styles.introduction}>{document.introduction}</p>
       </header>
       {document.sections.map(({ heading, text }) => (
