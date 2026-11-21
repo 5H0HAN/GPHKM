@@ -563,6 +563,10 @@ try {
   for (let index = 0; index < checkoutOrderIds.length; index += 1) {
     const orderIdForMember = checkoutOrderIds[index]!;
     await setup.query(
+      "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)",
+      [checkoutMemberIds[index], organizationId],
+    );
+    await setup.query(
       `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
          placement_price_minor, writing_selected, target_url, anchor_text, article_text,
          supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
