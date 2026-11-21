@@ -18,7 +18,9 @@ Additional staging verification (2026-11-21): test-only PR #55 merged as `8eb4e4
 
 Deployment and scan snapshot for PR #56 (2026-11-21): docs-only commit `8ffdb4fb5497001185d521b5543e0fc095805c7e` deployed through the GitHub App webhook and finished successfully. This historical snapshot is superseded by the PR #58 deployment recorded below.
 
-Latest verified deployment before this runbook update: PR #58 merged commit `684b7f44ae7161f60ea2d08ce806f9eb3f872ae7`. Coolify webhook deployment `csv9gap1q6mebljnhf4taind` finished at 17:52:26 UTC; the app returned to `running:healthy` at 18:00:22 UTC, with zero unhealthy resources. External TLS health checks returned HTTP 200 on all three public hosts. The resulting `web` and `migrate` images scanned `ok`; `db` remains `update_available` with 35 critical/high findings (3 critical, 32 high, none marked exploited). Keep the database findings open; the exact deployed image digest and helper binary still need verification before deciding on any image change or scanner disposition. The Compose definition explicitly sets both real-money gates to `false`; the staging hostnames remain runtime-configured rather than hardcoded under `src`.
+Deployment baseline for the host maintenance review: PR #58 merged commit `684b7f44ae7161f60ea2d08ce806f9eb3f872ae7`. Coolify webhook deployment `csv9gap1q6mebljnhf4taind` finished at 17:52:26 UTC and the app was healthy with zero unhealthy resources. External TLS health checks returned HTTP 200 on all three public hosts. The resulting `web` and `migrate` images scanned `ok`; `db` reported `update_available` with 35 critical/high findings (3 critical, 32 high, none marked exploited). Keep the database findings open; the exact deployed image digest and helper binary still need verification before deciding on any image change or scanner disposition. The Compose definition explicitly sets both real-money gates to `false`; the staging hostnames remain runtime-configured rather than hardcoded under `src`.
+
+PR #59 maintenance documentation deployment (2026-11-21): commit `b1947ee84a964e2cae7f53513cd2a949371044d6` deployed through the GitHub App webhook as `amws7dkf0iuv2ts37wqvbjjl` and finished at 18:08:12 UTC. Coolify reported the application healthy, with zero unhealthy resources. The `web` and `migrate` scans completed `ok`; the database scan remained at 3 critical and 32 high findings, none marked exploited.
 
 ## HTTPS ingress
 
@@ -46,7 +48,7 @@ The app's configured `GPHKM_TRUSTED_PROXY_CIDRS=172.29.3.1/32` matches the defau
 
 ## Host maintenance
 
-Coolify's Ubuntu 24.04 ARM64 host patch inventory, last checked 2026-11-16 18:17 UTC and still reporting the same package on 2026-11-21, lists `sosreport` `4.11.2-0ubuntu0~24.04.1` with security fix `4.11.2-0ubuntu0~24.04.2`; automatic security updates are disabled. Ubuntu tracks the fix as [USN-9093-1](https://ubuntu.com/security/notices/USN-9093-1) for [CVE-2026-79655](https://ubuntu.com/security/CVE-2026-79655). Apply from the VM host shell with `sudo apt update && sudo apt install --only-upgrade sosreport`, then confirm with `apt-cache policy sosreport`. This host update was not applied or verified through the connected Coolify API and remains outstanding.
+Coolify's Ubuntu 24.04 ARM64 host patch inventory was last checked 2026-11-16 18:17 UTC and still lists `sosreport` `4.11.2-0ubuntu0~24.04.1` with security fix `4.11.2-0ubuntu0~24.04.2`; automatic security updates are disabled. On 2026-11-22, the operator applied the update and verified the installed and candidate versions as `4.11.2-0ubuntu0~24.04.2` with `apt-cache policy sosreport`. Coolify's inventory has not refreshed to reflect that host-side change. Ubuntu tracks the fix as [USN-9093-1](https://ubuntu.com/security/notices/USN-9093-1) for [CVE-2026-79655](https://ubuntu.com/security/CVE-2026-79655).
 
 ## Database and secrets
 
