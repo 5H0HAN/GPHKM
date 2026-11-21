@@ -3394,6 +3394,15 @@ try {
   await resendWebhook.connect();
   const actualResendRole = await resendWebhook.query<{ user: string }>("select current_user as user");
   assert.equal(actualResendRole.rows[0]?.user, "gphkm_resend_webhook", "RESEND_WEBHOOK_DATABASE_URL must authenticate as the isolated Resend role");
+  const resendPrivileges = await resendWebhook.query<{ can_process_event: boolean; can_claim_email: boolean; can_read_outbox: boolean }>(
+    `select has_function_privilege(current_user,
+       'public.gphkm_process_customer_notification_email_event(text,text,text,text,text,timestamp with time zone)', 'EXECUTE') as can_process_event,
+       has_function_privilege(current_user,
+       'public.gphkm_claim_customer_notification_emails(text,integer)', 'EXECUTE') as can_claim_email,
+       has_table_privilege(current_user, 'public.customer_notification_email_outbox', 'SELECT') as can_read_outbox`,
+  );
+  assert.deepEqual(resendPrivileges.rows[0], { can_process_event: true, can_claim_email: false, can_read_outbox: false },
+    "the Resend webhook role may process signed delivery callbacks but cannot claim mail or read the outbox");
   console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, exact-consent checkout and wallet finalization with stale/missing legacy-consent rejection, atomic two-item debit and idempotent replay, scoped batch item reads and Support placement counts, private per-user Overview dismissals, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence with stage advancement and separate receipt acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, public-domain and URL-revision metric invalidation, and denied direct wallet writes.");
 } catch (error) {
   console.error(`Local RLS smoke failed while ${phase}; any open synthetic-data transaction will be rolled back.`);
