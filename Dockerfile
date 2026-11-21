@@ -1,7 +1,7 @@
 FROM postgres:17-alpine AS database
 COPY infrastructure/docker/staging/roles.sql /docker-entrypoint-initdb.d/01-staging-roles.sql
 
-FROM node:24-bookworm-slim AS dependencies
+FROM node:24-trixie-slim AS dependencies
 WORKDIR /app
 COPY package.json package-lock.json .npmrc ./
 RUN npm ci --no-fund --no-audit
@@ -26,7 +26,7 @@ RUN NEXT_TELEMETRY_DISABLED=1 GPHKM_STANDALONE_BUILD=true \
     DATABASE_URL=postgres://gphkm_runtime@127.0.0.1:1/build \
     MFA_PROOF_DATABASE_URL=postgres://gphkm_mfa_proof@127.0.0.1:1/build npm run build
 
-FROM node:24-bookworm-slim AS web
+FROM node:24-trixie-slim AS web
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 HOSTNAME=0.0.0.0 PORT=3000
 COPY --from=build /app/.next/standalone ./

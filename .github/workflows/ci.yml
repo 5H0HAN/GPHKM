@@ -215,6 +215,9 @@ jobs:
           npm run db:check-staff-auth:local
           # Keep the rate-limit-heavy recovery exercise after sign-in probes so
           # it cannot exhaust their shared disposable test budget.
+          # Better Auth allows three customer sign-ins per 10 seconds; the
+          # session-guard probe shares that disposable database and IP bucket.
+          sleep 11
           npm run db:check-auth-recovery:local
           stop_next
           migration_password="$(sed -n 's/^POSTGRES_MIGRATION_PASSWORD=//p' .env)"
