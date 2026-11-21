@@ -74,6 +74,16 @@ async function expectAssignmentAuthorityRejected(query: Promise<{ rows: unknown[
   }
 }
 
+async function expectCheckoutMembershipRejected(query: Promise<{ rows: unknown[] }>) {
+  try {
+    await query;
+    assert.fail("checkout must fail after membership removal commits");
+  } catch (error) {
+    assert.equal(typeof error === "object" && error !== null && "code" in error ? error.code : null, "42501",
+      "checkout must recheck active membership after waiting for the member row lock");
+  }
+}
+
 async function expectSupplierHandoffRejected(query: Promise<{ rows: unknown[] }>) {
   try {
     await query;
@@ -502,7 +512,131 @@ try {
   ], "only an untouched pre-checkout supplier contact backfills for a platform-owned external route");
   await setup.query("alter table customer_order_item enable trigger customer_order_item_pending_only");
   await setup.query("alter table customer_order enable trigger customer_order_requires_debit");
+
+  // Valid, funded orders exercise checkout and member removal through their
+  // real SECURITY DEFINER functions in both lock orderings below.
+  const checkoutMemberIds = [randomUUID(), randomUUID()];
+  const checkoutOrderIds = [randomUUID(), randomUUID()];
+  const checkoutListingId = randomUUID();
+  await setup.query(
+    "insert into auth_user (id, name, email, email_verified) values ($1, 'Checkout race member A', $2, true), ($3, 'Checkout race member B', $4, true)",
+    [checkoutMemberIds[0], `${checkoutMemberIds[0]}@fixture.invalid`, checkoutMemberIds[1], `${checkoutMemberIds[1]}@fixture.invalid`],
+  );
+  await setup.query(
+    "insert into organization_member (id, organization_id, user_id, role, active) values ($1, $2, $3, 'MEMBER', true), ($4, $2, $5, 'MEMBER', true)",
+    [randomUUID(), organizationId, checkoutMemberIds[0], randomUUID(), checkoutMemberIds[1]],
+  );
+  await setup.query(
+    `insert into wallet_ledger_entry (id, organization_id, actor_user_id, kind, delta_minor, currency, operation, idempotency_key)
+     values ($1, $2, $3, 'TOP_UP', 2000, 'USD', 'CHECKOUT_MEMBERSHIP_RACE_FIXTURE', $4)`,
+    [randomUUID(), organizationId, ownerId, randomUUID()],
+  );
+  await setup.query(
+    `insert into marketplace_listing (id, title, description, country_code, primary_language, categories,
+       retail_price_cents, link_type, link_validity, turnaround_days, sponsored_content_marking,
+       allows_sports_and_gaming, allows_pharmacy, allows_crypto, allows_foreign_language)
+     values ($1, 'Checkout membership race listing', 'Synthetic valid checkout fixture', 'US', 'English', ARRAY['General'],
+       1000, 'DOFOLLOW', 'PERMANENT', 30, false, false, false, false, false)`, [checkoutListingId],
+  );
+  await setup.query(
+    "insert into marketplace_listing_sourcing (listing_id, commercial_source, created_by_user_id) values ($1, 'PLATFORM_OWNED', $2)",
+    [checkoutListingId, adminId],
+  );
+  await setup.query(
+    "insert into marketplace_listing_url (listing_id, website_url) values ($1, 'https://checkout-race.fixture.invalid/')", [checkoutListingId],
+  );
+  await setup.query("update marketplace_listing set status = 'LIVE' where id = $1", [checkoutListingId]);
+  await setup.query("alter table customer_order disable trigger customer_order_requires_debit");
+  for (let index = 0; index < checkoutOrderIds.length; index += 1) {
+    const orderIdForMember = checkoutOrderIds[index]!;
+    const memberId = checkoutMemberIds[index]!;
+    await setup.query(
+      `insert into customer_order (id, organization_id, actor_user_id, idempotency_key, request_hash,
+         placement_total_minor, writing_total_minor, total_minor, content_sharing_notice_version,
+         content_policy_version, content_policy_accepted_at)
+       values ($1, $2, $3, $4, repeat('e', 64), 1000, 0, 1000, 'gphkm-content-sharing-v1',
+         'gphkm-content-policy-v1', now())`,
+      [orderIdForMember, organizationId, memberId, `checkout-race-${orderIdForMember}`],
+    );
+  }
+  await setup.query("alter table customer_order enable trigger customer_order_requires_debit");
+  for (let index = 0; index < checkoutOrderIds.length; index += 1) {
+    const orderIdForMember = checkoutOrderIds[index]!;
+    await setup.query(
+      "select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)",
+      [checkoutMemberIds[index], organizationId],
+    );
+    await setup.query(
+      `insert into customer_order_item (id, order_id, listing_id, listing_revision, customer_listing_snapshot,
+         placement_price_minor, writing_selected, target_url, anchor_text, article_text,
+         supplier_sharing_consented, consent_notice_version, placement_disclosure_version)
+       select $1, $2, l.id, l.revision, jsonb_build_object(
+         'listingId', l.id, 'revision', l.revision, 'title', l.title, 'description', l.description,
+         'countryCode', l.country_code, 'primaryLanguage', l.primary_language, 'categories', l.categories,
+         'retailPriceCents', l.retail_price_cents, 'linkType', l.link_type, 'linkValidity', l.link_validity,
+         'turnaroundDays', l.turnaround_days, 'allowsSportsAndGaming', l.allows_sports_and_gaming,
+         'allowsPharmacy', l.allows_pharmacy, 'allowsCrypto', l.allows_crypto,
+         'allowsForeignLanguage', l.allows_foreign_language, 'sponsoredContentMarking', l.sponsored_content_marking,
+         'writingEnabled', l.writing_enabled, 'writingPriceCents', l.writing_price_cents,
+         'writingTurnaroundDays', l.writing_turnaround_days, 'writingFirstDraftCents', l.writing_first_draft_cents,
+         'writingFinalDraftCents', l.writing_final_draft_cents, 'buyerRequirements', l.buyer_requirements),
+         1000, false, 'https://example.invalid/checkout-race', 'race fixture',
+         'Synthetic checkout membership race article', true, 'gphkm-content-sharing-v1', 'gphkm-placement-disclosure-v1'
+       from marketplace_listing l where l.id = $3`,
+      [randomUUID(), orderIdForMember, checkoutListingId],
+    );
+  }
   await setup.query("commit");
+
+  // Membership removal wins: checkout waits for the row lock, then fails
+  // closed without changing the pending order or creating a debit.
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
+  await handoff.query("select public.gphkm_remove_organization_member($1, $2)", [organizationId, checkoutMemberIds[0]]);
+  const checkoutBackend = await consent.query<{ pid: number }>("select pg_backend_pid() as pid");
+  await consent.query("begin");
+  await consent.query("set local role gphkm_runtime");
+  await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [checkoutMemberIds[0], organizationId]);
+  const blockedCheckout = consent.query("select public.gphkm_finalize_order_checkout($1)", [checkoutOrderIds[0]]);
+  await waitUntilBlocked(observer, checkoutBackend.rows[0]!.pid, "Checkout waits for membership removal");
+  await handoff.query("commit");
+  await expectCheckoutMembershipRejected(blockedCheckout);
+  await consent.query("rollback");
+  const rejectedCheckout = await setup.query<{ checkout_state: string; paid_ledger_entry_id: string | null; debit_count: number }>(
+    `select o.checkout_state, o.paid_ledger_entry_id,
+       (select count(*)::int from wallet_ledger_entry e where e.related_type = 'CUSTOMER_ORDER' and e.related_id = o.id) as debit_count
+     from customer_order o where o.id = $1`, [checkoutOrderIds[0]],
+  );
+  assert.deepEqual(rejectedCheckout.rows[0], { checkout_state: "PENDING_POST", paid_ledger_entry_id: null, debit_count: 0 },
+    "removal-first leaves no checkout debit or paid order");
+
+  // Checkout wins: removal waits for the shared membership lock, then
+  // completes only after the exact debit and paid order commit together.
+  await consent.query("begin");
+  await consent.query("set local role gphkm_runtime");
+  await consent.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [checkoutMemberIds[1], organizationId]);
+  const paidDuringRace = await consent.query<{ ledger_id: string }>(
+    "select public.gphkm_finalize_order_checkout($1) as ledger_id", [checkoutOrderIds[1]],
+  );
+  assert.ok(paidDuringRace.rows[0]?.ledger_id, "checkout-first returns the exact wallet debit id");
+  const removalBackend = await handoff.query<{ pid: number }>("select pg_backend_pid() as pid");
+  await handoff.query("begin");
+  await handoff.query("set local role gphkm_runtime");
+  await handoff.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [ownerId, organizationId]);
+  const blockedRemoval = handoff.query("select public.gphkm_remove_organization_member($1, $2)", [organizationId, checkoutMemberIds[1]]);
+  await waitUntilBlocked(observer, removalBackend.rows[0]!.pid, "Membership removal waits for checkout");
+  await consent.query("commit");
+  await blockedRemoval;
+  await handoff.query("commit");
+  const committedCheckout = await setup.query<{ checkout_state: string; paid_ledger_entry_id: string; delta_minor: string; member_active: boolean }>(
+    `select o.checkout_state, o.paid_ledger_entry_id, debit.delta_minor::text,
+       (select m.active from organization_member m where m.organization_id = o.organization_id and m.user_id = o.actor_user_id) as member_active
+     from customer_order o join wallet_ledger_entry debit on debit.id = o.paid_ledger_entry_id where o.id = $1`, [checkoutOrderIds[1]],
+  );
+  assert.deepEqual(committedCheckout.rows[0], {
+    checkout_state: "PAID", paid_ledger_entry_id: paidDuringRace.rows[0]!.ledger_id, delta_minor: "-1000", member_active: false,
+  }, "checkout-first commits one exact debit before membership removal");
 
   // Create a supplier item in the committed fixture and exercise membership
   // insertion as the actual runtime role. The same role must not be able to
