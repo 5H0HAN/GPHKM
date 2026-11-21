@@ -7,7 +7,7 @@ registerHooks({ resolve(specifier, context, next) {
   return next(specifier, context);
 } });
 
-test("auth email delivery returns its task to Better Auth's background handler", async (t) => {
+test("auth email delivery does not block auth responses and handles failures safely", async (t) => {
   const originalEnv = Object.fromEntries(["RESEND_API_KEY", "RESEND_SYSTEM_FROM_EMAIL", "RESEND_SUPPORT_FROM_EMAIL", "GPHKM_RESEND_DATA_HANDLING_APPROVED"].map((key) => [key, process.env[key]]));
   const originalFetch = globalThis.fetch;
   process.env.RESEND_API_KEY = "synthetic-resend-key";
@@ -24,25 +24,27 @@ test("auth email delivery returns its task to Better Auth's background handler",
 
   const { sendAuthEmailInBackground } = await import("../src/server/auth/email-delivery.ts");
   let requestBody;
-  globalThis.fetch = async (_url, init) => {
+  let resolveSend;
+  globalThis.fetch = (_url, init) => {
     requestBody = JSON.parse(init.body);
-    return new Response(null, { status: 200 });
+    return new Promise((resolve) => { resolveSend = resolve; });
   };
   const success = sendAuthEmailInBackground({ to: "customer@example.test", subject: "Verify", text: "synthetic-link" });
-  assert.ok(success instanceof Promise);
-  await success;
+  assert.equal(success, undefined);
   assert.equal(requestBody.from, "no-reply@example.test");
   assert.deepEqual(requestBody.to, ["customer@example.test"]);
+  resolveSend(new Response(null, { status: 200 }));
+  await new Promise((resolve) => setImmediate(resolve));
 
   const originalError = console.error;
   const logged = [];
-  console.error = (message) => logged.push(message);
+  let resolveLogged;
+  const failureLogged = new Promise((resolve) => { resolveLogged = resolve; });
+  console.error = (message) => { logged.push(message); resolveLogged(); };
   t.after(() => { console.error = originalError; });
   globalThis.fetch = async () => new Response(null, { status: 503 });
-  await assert.rejects(
-    sendAuthEmailInBackground({ to: "customer@example.test", subject: "Reset", text: "sensitive-reset-link" }),
-    /Customer authentication email delivery failed/,
-  );
+  assert.equal(sendAuthEmailInBackground({ to: "customer@example.test", subject: "Reset", text: "sensitive-reset-link" }), undefined);
+  await failureLogged;
   assert.deepEqual(logged, [JSON.stringify({ event: "customer_auth_email_failed" })]);
   assert.ok(!logged.join(" ").includes("sensitive-reset-link"));
 });

@@ -16,7 +16,7 @@ The team wants a small, manageable production setup with a tested database recov
 
 ## Decision
 
-Use self-managed PostgreSQL for the initial production direction, subject to private deployment and recovery configuration. Do not store host, provider, location, schedule, retention, credential, or recovery evidence in this public ADR. Before production, complete an isolated restore rehearsal and obtain approval for the applicable data-retention policy.
+Use self-managed PostgreSQL for the initial production direction, subject to private deployment and recovery configuration. Keep exact host, provider, location, schedule, retention, credential, and recovery evidence in private operations records. At least one database recovery copy must be stored in a failure domain separate from the production database host. Before production, complete an isolated restore rehearsal and obtain approval for the applicable data-retention policy.
 
 ## Consequences
 
@@ -27,4 +27,4 @@ Use self-managed PostgreSQL for the initial production direction, subject to pri
 
 ## Revisit trigger
 
-Revisit the database placement if measured load, recovery requirements, or operational incidents justify separating PostgreSQL from the Coolify host or using a managed database.
+Revisit the database placement if measured load, recovery requirements, or operational incidents justify separating database infrastructure or using a managed database.

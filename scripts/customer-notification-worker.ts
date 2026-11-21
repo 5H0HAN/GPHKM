@@ -53,7 +53,8 @@ const required = (name: string) => {
   return value;
 };
 const workerUrl = required("WORKER_DATABASE_URL");
-const privateFileCleanupEnabled = Boolean(process.env.GPHKM_PRIVATE_STORAGE_DRIVER?.trim());
+const privateFileCleanupEnabled = Boolean(process.env.GPHKM_PRIVATE_STORAGE_DRIVER?.trim()
+  || (process.env.NODE_ENV === "development" && process.env.GPHKM_PRIVATE_STORAGE_PATH?.trim()));
 const mailSettings: MailSettings | null = process.env.GPHKM_RESEND_DATA_HANDLING_APPROVED === "true" ? (() => {
   const apiKey = required("RESEND_API_KEY");
   const senders = mailSenders(process.env);

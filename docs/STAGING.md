@@ -37,7 +37,7 @@ Overall staging demo checks: PASS. Expanded signup and mail acceptance: PENDING.
 4. Confirm the background worker and its restricted database role are healthy before testing. The worker must not expose a public port.
 5. Test a non-listed Google account, a new email/password account, verification, sign-in, password reset, customer invitation, and staff invitation. For staff, verify invitation email, password setup, authenticator enrollment, and Super Admin activation. Keep passwords and authenticator codes private.
 6. Use sandbox payment credentials, synthetic organization/order data, and fictional content. Staging acceptance of review drafts does not approve them for production.
-7. To close general signup, disable the staging review-notice flag and redeploy. Keep tester-notice mode disabled unless a separately approved allow-listed test requires it.
+7. To close general signup, disable the staging review-notice flag, clear `GPHKM_TERMS_URL`, `GPHKM_TERMS_VERSION`, `GPHKM_PRIVACY_URL`, and `GPHKM_PRIVACY_VERSION`, then redeploy. Disabling the review flag alone can leave signup open if fallback legal values remain configured. Keep tester-notice mode disabled unless a separately approved allow-listed test requires it.
 
 Google's OAuth testing mode may show a testing warning and has a limited test-user list. Production must use a separate Google project and complete applicable branding and policy review. See [Google OAuth app states](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview).
 
@@ -48,3 +48,4 @@ Google's OAuth testing mode may show a testing warning and has a limited test-us
 3. Keep the restored database isolated while checking readiness, migrations, and seed state.
 4. Remove temporary restore resources after the drill is complete.
 5. Before production, configure independently protected recovery storage and complete a separate recovery review.
+6. Keep at least one database recovery copy in a failure domain separate from the production database host.

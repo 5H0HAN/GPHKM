@@ -31,9 +31,8 @@ export async function sendAuthEmail(input: { to: string; subject: string; text: 
 }
 
 export function sendAuthEmailInBackground(input: { to: string; subject: string; text: string }) {
-  return sendAuthEmail(input).catch(() => {
+  void sendAuthEmail(input).catch(() => {
     // Never log email addresses, tokens, message bodies, or provider secrets.
     console.error(JSON.stringify({ event: "customer_auth_email_failed" }));
-    throw new Error("Customer authentication email delivery failed");
   });
 }

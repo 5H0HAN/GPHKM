@@ -29,13 +29,12 @@ BEGIN
           last_error_code = NULL, updated_at = now()
       FROM candidates c, public.customer_notification n, public.auth_user u
       WHERE q.id = c.id AND n.id = q.notification_id AND u.id = n.recipient_user_id
-      RETURNING q.id
+      RETURNING q.id, q.notification_id, q.recipient_email, q.attempts, q.first_attempt_at
   )
-  SELECT q.id, q.recipient_email, u.email_verified,
-    coalesce(pref.transactional_email_enabled, true), n.title, n.body, n.kind, q.attempts, q.first_attempt_at
+  SELECT c.id, c.recipient_email, u.email_verified,
+    coalesce(pref.transactional_email_enabled, true), n.title, n.body, n.kind, c.attempts, c.first_attempt_at
   FROM claimed c
-  JOIN public.customer_notification_email_outbox q ON q.id = c.id
-  JOIN public.customer_notification n ON n.id = q.notification_id
+  JOIN public.customer_notification n ON n.id = c.notification_id
   JOIN public.auth_user u ON u.id = n.recipient_user_id
   LEFT JOIN public.customer_notification_preference pref ON pref.user_id = n.recipient_user_id;
 END;
