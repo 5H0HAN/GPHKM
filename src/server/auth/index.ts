@@ -181,11 +181,15 @@ function createAuth(surface: AuthSurface) {
     disabledPaths: ["/delete-user", "/change-email", "/two-factor/get-totp-uri", "/two-factor/send-otp", "/two-factor/verify-otp", ...(surface === "staff" ? ["/set-password", "/change-password", "/two-factor/disable"] : [])],
     hooks: {
       before: createAuthMiddleware(async (context) => {
+        const body = asRecord(context.body);
+        if (surface === "customer" && context.path === "/sign-in/social" && body.provider === "google"
+          && body.scopes !== undefined && (!Array.isArray(body.scopes) || body.scopes.length > 0)) {
+          throw APIError.from("BAD_REQUEST", { code: "GOOGLE_CUSTOM_SCOPES_UNSUPPORTED", message: "Google sign-in supports basic identity scopes only" });
+        }
         if (stagingSignInClosed && context.path !== "/get-session" && context.path !== "/sign-out") {
           throw APIError.from("FORBIDDEN", { code: "STAGING_SIGN_IN_CLOSED", message: "Customer sign-in is closed for this staging environment." });
         }
         if (testerOnly) {
-          const body = asRecord(context.body);
           const googleSignIn = context.path === "/sign-in/social" && body.provider === "google" && !body.idToken && !body.scopes;
           const googleCallback = context.path === "/callback/:id" && context.params?.id === "google";
           if (googleSignIn || googleCallback) {
