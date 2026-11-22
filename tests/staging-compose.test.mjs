@@ -18,6 +18,11 @@ test("staging Compose keeps migration credentials, provider gates and port expos
     RESEND_SYSTEM_FROM_EMAIL: "no-reply@example.invalid",
     RESEND_SUPPORT_FROM_EMAIL: "support@example.invalid",
     RESEND_WEBHOOK_SECRET: "fixture-webhook-secret",
+    GPHKM_PRIVATE_STORAGE_DRIVER: "r2",
+    GPHKM_R2_ACCOUNT_ID: "fixture-account",
+    GPHKM_R2_BUCKET: "gphkm-staging",
+    GPHKM_R2_ACCESS_KEY_ID: "fixture-r2-access-key",
+    GPHKM_R2_SECRET_ACCESS_KEY: "fixture-r2-secret-key",
     GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY: "a".repeat(64),
   };
   for (const role of ["POSTGRES", "MIGRATION", "RUNTIME", "MFAPROOF", "STRIPEWEBHOOK", "RESEND_WEBHOOK", "WORKER", "64_AUTH"]) {
@@ -90,6 +95,9 @@ test("staging Compose keeps migration credentials, provider gates and port expos
       assert.equal(service.environment[key] !== "unavailable", allowed, key);
     }
     assert.equal(service.environment.RESEND_WEBHOOK_DATABASE_URL !== "unavailable", service === services.web);
+    for (const key of ["GPHKM_PRIVATE_STORAGE_DRIVER", "GPHKM_R2_ACCOUNT_ID", "GPHKM_R2_BUCKET", "GPHKM_R2_ACCESS_KEY_ID", "GPHKM_R2_SECRET_ACCESS_KEY"]) {
+      assert.equal(service.environment[key] !== "unavailable", service === services.web || service === services.worker, key);
+    }
     for (const flag of ["GPHKM_LOCAL_AUTH_ENABLED", "GPHKM_LOCAL_MFA_DISABLED", "GPHKM_REAL_MONEY_ENABLED", "GPHKM_LAUNCH_GATES_VERIFIED"]) {
       assert.equal(service.environment[flag], "false", flag);
     }
@@ -101,4 +109,9 @@ test("staging Compose keeps migration credentials, provider gates and port expos
   assert.equal(services.web.environment.GPHKM_RESEND_DATA_HANDLING_APPROVED, "false");
   assert.equal(services.worker.environment.GPHKM_RESEND_DATA_HANDLING_APPROVED, "false");
   assert.equal(services.worker.environment.RESEND_WEBHOOK_SECRET, "unavailable");
+  assert.equal(services.web.environment.GPHKM_PRIVATE_STORAGE_DRIVER, "r2");
+  assert.equal(services.worker.environment.GPHKM_PRIVATE_STORAGE_DRIVER, "r2");
+  assert.equal(services.db.environment.GPHKM_R2_SECRET_ACCESS_KEY, "unavailable");
+  assert.equal(services.migrate.environment.GPHKM_R2_SECRET_ACCESS_KEY, "unavailable");
+  assert.equal(services["worker-role"].environment.GPHKM_R2_SECRET_ACCESS_KEY, "unavailable");
 });
