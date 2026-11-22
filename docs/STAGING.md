@@ -15,11 +15,11 @@ This runbook is for the isolated demo and test environment. Do not use productio
 | Database backup procedure and isolated restore rehearsal | PASS |
 | Desktop and mobile review | PASS |
 | Staging review Terms and Privacy pages | PASS |
-| Open customer email/Google signup, email reset, and staff invitation rollout | PENDING |
-| Live Resend delivery and invitation acceptance | PENDING |
+| Open customer email/Google signup, email reset, and staff invitation rollout | FAIL |
+| Live Resend delivery and invitation acceptance | FAIL |
 | Approved production Terms and Privacy | FAIL |
 
-Overall staging demo checks: PASS. Expanded signup and mail acceptance: PENDING. Production readiness: FAIL.
+Overall staging demo checks: PASS. Expanded signup and mail acceptance: FAIL. Production readiness: FAIL.
 
 ## Deploy and verify
 
