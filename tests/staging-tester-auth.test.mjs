@@ -63,13 +63,22 @@ test("only currently designated verified Google testers receive customer access 
     ["/sign-in/email", {email, password:"synthetic-password"}],
     ["/sign-up/email", {name:"Tester", email, password:"synthetic-password"}],
     ["/sign-in/social", {provider:"google", idToken:{token:"synthetic"}}],
-    ["/sign-in/social", {provider:"google", scopes:["unused-scope"]}],
   ]) {
     const result = await auth.handler(new Request(origin + "/api/auth" + path, {
       method:"POST", headers:{"content-type":"application/json", origin}, body:JSON.stringify(body),
     }));
     assert.equal(result.status, 403, path);
   }
+  const customScopes = await auth.handler(new Request(origin + "/api/auth/sign-in/social", {
+    method:"POST", headers:{"content-type":"application/json", origin},
+    body:JSON.stringify({provider:"google", scopes:["https://www.googleapis.com/auth/drive.readonly"]}),
+  }));
+  assert.equal(customScopes.status, 400, "Google sign-in must reject custom scopes outside the basic identity set");
+  const customLinkScopes = await auth.handler(new Request(origin + "/api/auth/link-social", {
+    method:"POST", headers:{"content-type":"application/json", origin},
+    body:JSON.stringify({provider:"google", scopes:["https://www.googleapis.com/auth/drive.readonly"]}),
+  }));
+  assert.equal(customLinkScopes.status, 400, "Google account linking must reject custom scopes before building an OAuth URL");
   await assert.rejects(auth.api.setPassword({ headers, body:{newPassword:"synthetic-password"} }), /designated Google/);
   process.env.GPHKM_STAGING_GOOGLE_TEST_EMAILS = "replacement@example.test";
   assert.throws(() => checkProfile({ email, email_verified:true }), /designated Google/);
