@@ -47,8 +47,8 @@ Keep the staging Google OAuth project in Testing. The shipped Google sign-in flo
 
 1. Use a private R2 bucket with public development access, custom public domains, and browser CORS disabled. Create an account API token with Object Read & Write limited to that bucket; do not grant account-wide bucket administration.
 2. Set `GPHKM_PRIVATE_STORAGE_DRIVER=r2`, `GPHKM_R2_ACCOUNT_ID`, `GPHKM_R2_BUCKET`, `GPHKM_R2_ACCESS_KEY_ID`, and `GPHKM_R2_SECRET_ACCESS_KEY` in the deployment secret store. The account ID and bucket name are configuration; both access keys are secrets.
-3. Keep those settings runtime-only, with build-time injection disabled. The application and notification worker need them; database, migration, and role-provisioning services do not. Keep preview environment copies disabled unless a separate preview storage bucket is reviewed and configured.
-4. After deployment, verify one synthetic private-file upload, authorized read, and cleanup through the app. Confirm the object is unavailable through public URLs. Do not upload real customer, supplier, or payment data during staging acceptance.
+3. Keep those settings runtime-only, with build-time injection disabled. Compose masks resource-wide values from the database, migration, and role-provisioning services, and explicitly passes them only to the application and notification worker. Keep preview environment copies disabled unless a separate preview storage bucket is reviewed and configured.
+4. After deployment, upload one synthetic private file through the app. While it exists, confirm the bucket's public development URL and custom domain are disabled and the app exposes no public object URL; verify an authorized app read succeeds. Then delete it through the app and confirm it can no longer be read. Do not upload real customer, supplier, or payment data during staging acceptance.
 
 
 ## Backup and restore
