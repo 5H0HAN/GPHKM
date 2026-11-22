@@ -41,7 +41,7 @@ FAIL means the requirement is not currently demonstrated. This includes acceptan
 6. Use sandbox payment credentials, synthetic organization/order data, and fictional content. Staging acceptance of review drafts does not approve them for production.
 7. To close general signup, disable the staging review-notice flag, clear `GPHKM_TERMS_URL`, `GPHKM_TERMS_VERSION`, `GPHKM_PRIVACY_URL`, and `GPHKM_PRIVACY_VERSION`, then redeploy. Disabling the review flag alone can leave signup open if fallback legal values remain configured. Keep tester-notice mode disabled unless a separately approved allow-listed test requires it.
 
-Google's OAuth testing mode may show a testing warning and has a limited test-user list. Production must use a separate Google project and complete applicable branding and policy review. See [Google OAuth app states](https://developers.google.com/identity/protocols/oauth2/production-readiness/overview).
+Keep the staging Google OAuth project in Testing. This app requests only the basic identity scopes `openid`, `email`, and `profile`; [Google's audience guidance](https://support.google.com/cloud/answer/15549945) allows accounts outside the test-user list for this scope set. Do not publish the staging project as In Production. Recheck Google's current audience and verification requirements before adding any scopes. Production must use a separate Google project and complete applicable branding and policy review.
 
 ## Backup and restore
 
