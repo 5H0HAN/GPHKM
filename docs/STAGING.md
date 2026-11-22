@@ -21,6 +21,8 @@ This runbook is for the isolated demo and test environment. Do not use productio
 
 Overall staging demo checks: PASS. Expanded signup and mail acceptance: FAIL. Production readiness: FAIL.
 
+FAIL means the requirement is not currently demonstrated. This includes acceptance that has not yet been verified.
+
 ## Deploy and verify
 
 1. Merge a reviewed pull request to `main` after all required quality checks pass.
