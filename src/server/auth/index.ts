@@ -182,7 +182,7 @@ function createAuth(surface: AuthSurface) {
     hooks: {
       before: createAuthMiddleware(async (context) => {
         const body = asRecord(context.body);
-        if (surface === "customer" && context.path === "/sign-in/social" && body.provider === "google"
+        if (surface === "customer" && ["/sign-in/social", "/link-social"].includes(context.path ?? "") && body.provider === "google"
           && body.scopes !== undefined && (!Array.isArray(body.scopes) || body.scopes.length > 0)) {
           throw APIError.from("BAD_REQUEST", { code: "GOOGLE_CUSTOM_SCOPES_UNSUPPORTED", message: "Google sign-in supports basic identity scopes only" });
         }
