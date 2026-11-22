@@ -43,6 +43,14 @@ FAIL means the requirement is not currently demonstrated. This includes acceptan
 
 Keep the staging Google OAuth project in Testing. The shipped Google sign-in flow requests only the basic identity scopes `openid`, `email`, and `profile`, and the customer auth endpoint rejects caller-supplied custom Google scopes. [Google's audience guidance](https://support.google.com/cloud/answer/15549945) allows accounts outside the test-user list for this scope set. Do not publish the staging project as In Production. Recheck Google's current audience and verification requirements before changing this scope policy. Production must use a separate Google project and complete applicable branding and policy review.
 
+## Private file storage
+
+1. Use a private R2 bucket with public development access, custom public domains, and browser CORS disabled. Create an account API token with Object Read & Write limited to that bucket; do not grant account-wide bucket administration.
+2. Set `GPHKM_PRIVATE_STORAGE_DRIVER=r2`, `GPHKM_R2_ACCOUNT_ID`, `GPHKM_R2_BUCKET`, `GPHKM_R2_ACCESS_KEY_ID`, and `GPHKM_R2_SECRET_ACCESS_KEY` in the deployment secret store. The account ID and bucket name are configuration; both access keys are secrets.
+3. Keep those settings runtime-only, with build-time injection disabled. The application and notification worker need them; database, migration, and role-provisioning services do not. Keep preview environment copies disabled unless a separate preview storage bucket is reviewed and configured.
+4. After deployment, verify one synthetic private-file upload, authorized read, and cleanup through the app. Confirm the object is unavailable through public URLs. Do not upload real customer, supplier, or payment data during staging acceptance.
+
+
 ## Backup and restore
 
 1. Confirm the database backup schedule is enabled and the latest run reports success.
