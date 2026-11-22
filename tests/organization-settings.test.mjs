@@ -28,6 +28,19 @@ test("organization names are normalized and bounded", () => {
 test("email invitation creation stays disabled without a secure sender and expiry is explicit", () => {
   assert.equal(organizationInvitationDeliveryStatus().available, false);
   assert.throws(assertOrganizationInvitationDeliveryAvailable, /Secure invitation email delivery is unavailable/);
+  const deliveryEnv = {
+    GPHKM_RESEND_DATA_HANDLING_APPROVED: "true",
+    RESEND_API_KEY: "restricted-sending-key",
+    RESEND_SYSTEM_FROM_EMAIL: "no-reply@gphkm.asf.run",
+    RESEND_SUPPORT_FROM_EMAIL: "support@gphkm.asf.run",
+    GPHKM_PUBLIC_BASE_URL: "https://gphkm.asf.run",
+    CUSTOMER_APP_URL: "https://app.gphkm.asf.run",
+    STAFF_APP_URL: "https://staff.gphkm.asf.run",
+    GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY: "a".repeat(64),
+  };
+  assert.equal(organizationInvitationDeliveryStatus(deliveryEnv).available, true);
+  assert.equal(organizationInvitationDeliveryStatus({ ...deliveryEnv, RESEND_WEBHOOK_SECRET: undefined }).available, true);
+  assert.equal(organizationInvitationDeliveryStatus({ ...deliveryEnv, GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY: undefined }).available, false);
   const now = new Date("2026-10-28T12:00:00Z");
   assert.equal(invitationDisplayStatus("PENDING", now, now), "EXPIRED");
   assert.equal(invitationDisplayStatus("PENDING", new Date("2026-10-29T00:00:00Z"), now), "PENDING");

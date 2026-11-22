@@ -41,3 +41,17 @@ test("staging customer host serves review GET and HEAD without sign-in, other ho
   delete process.env.GPHKM_DEPLOYMENT_ENV;
   assert.equal(request("app.example.test", "GET").status, 404);
 });
+
+test("staging review notices are routable only on the customer host over read methods", async (t) => {
+  t.mock.property(process, "env", { ...origins, GPHKM_DEPLOYMENT_ENV: "staging" });
+  const { proxy } = await tsImport("../src/proxy.ts", import.meta.url);
+  const request = (host, method) => proxy(new NextRequest(`https://${host}/legal/staging/terms`, { method, headers: { host } }));
+  for (const method of ["GET", "HEAD"]) {
+    assert.equal(request("app.example.test", method).headers.get("x-middleware-next"), "1");
+    assert.equal(request("staff.example.test", method).status, 404);
+    assert.equal(request("example.test", method).status, 404);
+  }
+  assert.equal(request("app.example.test", "POST").status, 404);
+  delete process.env.GPHKM_DEPLOYMENT_ENV;
+  assert.equal(request("app.example.test", "GET").status, 404);
+});

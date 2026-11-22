@@ -11,7 +11,7 @@ import { appendAuditEvent } from "@/server/audit/append";
 import { requireStaffAccess } from "@/server/auth/staff";
 import { buildSupplierNotice, renderSupplierNoticeEml } from "@/modules/fulfillment/supplier-notice";
 import { resendEnvConfigured } from "@/server/fulfillment/packets";
-import { readSmallJsonResponse } from "@/modules/security/small-json-response";
+import { mailSenders } from "@/modules/email/senders";
 import { isDefinitiveResendRejection, readResendMessageId } from "@/modules/fulfillment/resend-send-result";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -106,21 +106,11 @@ export async function exportSupplierItemNotice(headers: Headers, noticeId: strin
 
 function mailConfig() {
   const apiKey = process.env.RESEND_API_KEY?.trim();
-  const from = process.env.RESEND_FROM_EMAIL?.trim();
-  const address = /<([^<>]+)>/.exec(from ?? "")?.[1] ?? from;
-  if (!resendEnvConfigured() || !apiKey || !from || !address || /[\r\n\0]/.test(from) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address)) return null;
-  return { apiKey, from, senderDomain: address.slice(address.lastIndexOf("@") + 1).toLowerCase() };
+  let senders: ReturnType<typeof mailSenders>;
+  try { senders = mailSenders(process.env); } catch { return null; }
+  if (!resendEnvConfigured() || !apiKey) return null;
+  return { apiKey, from: senders.system };
 }
-
-async function verifyNoticeSenderDomain(config: NonNullable<ReturnType<typeof mailConfig>>) {
-  if (Date.now() - verifiedSenderDomainAt < 60_000) return;
-  const response = await fetch("https://api.resend.com/domains", { headers: { Authorization: `Bearer ${config.apiKey}`, Accept: "application/json" }, redirect: "error", signal: AbortSignal.timeout(10_000) });
-  if (!response.ok) throw new Error("Resend sender domain check failed");
-  const payload = await readSmallJsonResponse<{ data?: Array<{ name?: string; status?: string; capabilities?: { sending?: string } }> }>(response);
-  if (!payload.data?.some((domain) => domain.name?.toLowerCase() === config.senderDomain && domain.status === "verified" && domain.capabilities?.sending === "enabled")) throw new Error("Resend sender domain is not verified");
-  verifiedSenderDomainAt = Date.now();
-}
-let verifiedSenderDomainAt = 0;
 
 export async function sendSupplierItemNotice(headers: Headers, noticeId: string) {
   if (!validId(noticeId)) throw new Error("Notice unavailable");
@@ -128,7 +118,6 @@ export async function sendSupplierItemNotice(headers: Headers, noticeId: string)
   if (authorized.role === "FINANCE") throw new Error("Forbidden");
   const config = mailConfig();
   if (!config) throw new Error("Supplier email is not configured and approved");
-  await verifyNoticeSenderDomain(config);
   const prepared = await staffTx(headers, async (tx, actor) => {
     const row = await getNotice(tx, noticeId, actor, true);
     const prior = await tx.select().from(supplierItemNoticeAttempt).where(eq(supplierItemNoticeAttempt.noticeId, noticeId));

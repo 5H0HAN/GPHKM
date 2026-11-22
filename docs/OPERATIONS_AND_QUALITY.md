@@ -60,11 +60,11 @@ The staff overview shows role-scoped live queue alerts for overdue customer upda
 
 ## 6. Backup, recovery, and retention
 
-Production is planned on the selected Coolify VM with PostgreSQL on that deployment. The owner-selected backup direction is a local backup set with finite retention plus a copy of every database backup in a separate private R2/S3 bucket with no automatic expiry. Exact local retention, bucket/account, credentials, encryption, monitoring, and RPO/RTO remain launch values. Indefinite database archives retain personal and financial data after application-level deletion; Legal/Finance must resolve that policy under L-09 before production backups containing live data are retained. A restore procedure must reapply any deletion decisions recorded since the backup before restored data is used.
+Keep deployment topology, backup destinations, schedules, retention, credentials, and recovery evidence in the private operations record. Public runbooks describe the recovery procedure without exposing environment-specific infrastructure details. Resolve personal and financial data retention with Legal/Finance before production data is retained in backups; apply deletion decisions recorded after a backup before restored data is used.
 
-For the current staging schedule and first-run status, see [the staging runbook](STAGING.md). Its on-host copy does not protect against VM loss. Keep a protected copy of the matching `BETTER_AUTH_SECRET` with recovery material. Restore to an isolated instance first, confirm migrations and restricted roles, and reconcile wallet ledger, orders, imports, and provider events before any live restore.
+For the current staging backup procedure and status, see [the staging runbook](STAGING.md). Keep a protected copy of the matching `BETTER_AUTH_SECRET` with recovery material. Restore to an isolated instance first, confirm migrations and restricted roles, and reconcile wallet ledger, orders, imports, and provider events before any live restore.
 
-Back up private object-store import/evidence objects separately from the PostgreSQL database. Rehearse restoration of both stores together before production.
+Back up private object-store import/evidence objects separately from PostgreSQL. Rehearse restoration of both stores together before production.
 
 Retain financial and audit evidence as required by law. Retain final order/publication records as needed. Customer order content is text-only; there are no customer-uploaded order attachments in v1. Minimize or delete private briefs and drafts when fulfillment/dispute needs end. Apply separate retention rules to staff inventory uploads, staff-only handoff evidence, and generated packet PDFs. Set exact retention periods with legal/finance before production.
 

@@ -1,4 +1,5 @@
 import { isRoutablePublicBase } from "../../server/auth/url-policy.ts";
+import { mailSenders } from "../email/senders.ts";
 
 export const ACTIVE_ORGANIZATION_COOKIE = "gphkm-active-organization";
 
@@ -29,13 +30,16 @@ export function invitationDisplayStatus(status: string, expiresAt: Date, now = n
 }
 
 export function organizationInvitationDeliveryStatus(env: Record<string, string | undefined> = process.env) {
+  let sendersAvailable = false;
+  try { mailSenders(env); sendersAvailable = true; } catch { /* Keep invitations disabled for invalid sender configuration. */ }
   const configured = env.GPHKM_RESEND_DATA_HANDLING_APPROVED === "true"
-    && Boolean(env.RESEND_API_KEY && env.RESEND_FROM_EMAIL && env.RESEND_WEBHOOK_ID && env.RESEND_WEBHOOK_SECRET)
+    && sendersAvailable
+    && Boolean(env.RESEND_API_KEY)
     && Boolean(isRoutablePublicBase(env.GPHKM_PUBLIC_BASE_URL, env) && env.CUSTOMER_APP_URL && env.STAFF_APP_URL)
     && /^[a-fA-F0-9]{64}$/.test(env.GPHKM_INVITATION_TOKEN_ENCRYPTION_KEY ?? "");
   return configured
     ? { available: true as const, message: "Invitation email is queued for secure delivery." }
-    : { available: false as const, message: "Invitation email is unavailable until the sender, webhook, encryption key, and data-handling approval are configured." };
+    : { available: false as const, message: "Invitation email is unavailable until the sender, encryption key, and data-handling approval are configured." };
 }
 
 export function assertOrganizationInvitationDeliveryAvailable(env: Record<string, string | undefined> = process.env): void {

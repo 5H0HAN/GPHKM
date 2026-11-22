@@ -20,6 +20,14 @@ test("notification worker is isolated, leased, idempotent, and avoids blind retr
   assert.match(worker, /IDEMPOTENCY_WINDOW_REVIEW/);
   assert.match(worker, /EMAIL_PREFERENCE_DISABLED/);
   assert.match(worker, /RECIPIENT_UNVERIFIED/);
+  assert.match(worker, /GPHKM_PRIVATE_STORAGE_DRIVER\?\.trim\(\)[\s\S]*NODE_ENV === "development" && process\.env\.GPHKM_PRIVATE_STORAGE_PATH\?\.trim\(\)/);
+});
+
+test("notification claim returns the updated recipient and attempt fields", async () => {
+  const migration = await read("../src/db/migrations/0200_support_notification_sender.sql");
+  assert.match(migration, /RETURNING q\.id, q\.notification_id, q\.recipient_email, q\.attempts, q\.first_attempt_at/);
+  assert.match(migration, /SELECT c\.id, c\.recipient_email, u\.email_verified,[\s\S]*?c\.attempts, c\.first_attempt_at[\s\S]*?FROM claimed c[\s\S]*?JOIN public\.customer_notification n ON n\.id = c\.notification_id/);
+  assert.doesNotMatch(migration, /SELECT q\.id, q\.recipient_email[\s\S]*?FROM claimed c[\s\S]*?JOIN public\.customer_notification_email_outbox q ON q\.id = c\.id/);
 });
 
 test("email preference is per-user and reconciliation is Super Admin audited", async () => {

@@ -1,12 +1,13 @@
 import "server-only";
+import { mailSenders } from "../../modules/email/senders.ts";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function configuration() {
   const apiKey = process.env.RESEND_API_KEY?.trim();
-  const from = process.env.RESEND_FROM_EMAIL?.trim();
-  const address = /<([^<>]+)>/.exec(from ?? "")?.[1] ?? from;
-  if (process.env.GPHKM_RESEND_DATA_HANDLING_APPROVED !== "true" || !apiKey || !from || !address || !EMAIL_RE.test(address) || /[\r\n\0]/.test(from)) return null;
+  let from: string;
+  try { from = mailSenders(process.env).system; } catch { return null; }
+  if (process.env.GPHKM_RESEND_DATA_HANDLING_APPROVED !== "true" || !apiKey || !EMAIL_RE.test(from)) return null;
   return { apiKey, from };
 }
 

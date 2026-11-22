@@ -33,6 +33,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - name: Verify notification worker bundle
+        run: |
+          ./node_modules/.bin/esbuild scripts/customer-notification-worker.ts \
+            --bundle --platform=node --format=esm --target=node24 \
+            --conditions=react-server --packages=external --outfile="$RUNNER_TEMP/gphkm-worker.mjs"
+          node --check "$RUNNER_TEMP/gphkm-worker.mjs"
       - name: Audit dependency advisories
         run: npm audit --audit-level=high
       - name: Prepare ephemeral build configuration

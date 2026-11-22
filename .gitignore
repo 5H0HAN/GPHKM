@@ -17,6 +17,7 @@
 /.next/
 /out/
 /.private-storage/
+/.private-ops/
 /.impeccable/review/
 /.impeccable/hook.cache.json
 /.impeccable/questions/

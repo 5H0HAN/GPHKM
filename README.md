@@ -64,7 +64,7 @@ Store and back up a stable `BETTER_AUTH_SECRET` in the secret manager. Changing 
 
 ## Demo staging
 
-Coolify deploys the GitHub App’s `main` branch using [the staging Compose definition](compose.staging.yaml). The [staging runbook](docs/STAGING.md) covers origins, provider setup, migration, safe seeds and operator bootstrap. Designated Google testers can accept preliminary notices on the customer host and use the Stripe sandbox.
+Coolify deploys the GitHub App’s `main` branch using [the staging Compose definition](compose.staging.yaml). The [staging runbook](docs/STAGING.md) covers provider setup, migration, safe seeds and operator bootstrap. Staging supports open customer signup with review-draft Terms and Privacy, verified email/password, basic-scope Google sign-in, and sandbox payments. Production remains gated on approved legal documents, provider review, and the launch checks.
 
 ## Local development
 

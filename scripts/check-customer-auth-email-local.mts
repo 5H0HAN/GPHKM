@@ -145,7 +145,8 @@ try {
       GOOGLE_CLIENT_ID: "synthetic-test.apps.googleusercontent.com", GOOGLE_CLIENT_SECRET: "synthetic-test-only",
       GPHKM_TERMS_VERSION: termsVersion, GPHKM_PRIVACY_VERSION: privacyVersion,
       GPHKM_TERMS_URL: `${customerOrigin}/legal/terms`, GPHKM_PRIVACY_URL: `${customerOrigin}/legal/privacy`,
-      RESEND_API_KEY: "re_local_auth_fixture", RESEND_FROM_EMAIL: "fixture@gphkm.test",
+      RESEND_API_KEY: "re_local_auth_fixture", RESEND_SYSTEM_FROM_EMAIL: "no-reply@gphkm.test",
+      RESEND_SUPPORT_FROM_EMAIL: "support@gphkm.test",
       GPHKM_RESEND_DATA_HANDLING_APPROVED: "true", GPHKM_AUTH_EMAIL_CHECK_CHILD: "true",
     },
   });
