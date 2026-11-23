@@ -192,7 +192,7 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
         </>
       ) : (
         <>
-          {mode === "sign-up" && legalDocuments ? <LegalConsentCheckbox documents={legalDocuments} disabled={busy} inputRef={legalConsentRef} form={emailSignupEnabled ? "customer-signup-form" : undefined} /> : null}
+          {mode === "sign-up" && legalDocuments ? <LegalConsentCheckbox documents={legalDocuments} disabled={busy} inputRef={legalConsentRef} form={emailSignupEnabled ? "customer-signup-form" : undefined} onInvalid={() => setError("Please accept the staging Terms and Privacy drafts before creating your account.")} /> : null}
           {showGoogle && (mode !== "sign-up" || googleSignupEnabled) ? <button className={styles.secondary} type="button" disabled={busy} onClick={google}>
             {busy ? "Please wait…" : mode === "sign-up" ? "Create account with Google" : "Continue with Google"}
           </button> : null}
