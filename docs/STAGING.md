@@ -17,7 +17,8 @@ This runbook is for the isolated demo and test environment. Do not use productio
 | Staging review Terms and Privacy pages | PASS |
 | Restricted Resend key and one direct test send | PASS |
 | Open customer email/Google signup, password reset flow, and staff invitation rollout | FAIL |
-| App-triggered verification/reset/welcome mail | FAIL |
+| App-triggered password-reset email delivery | PASS |
+| App-triggered verification and welcome email | FAIL |
 | Staff invitation delivery and acceptance | FAIL |
 | Approved production Terms and Privacy | FAIL |
 
