@@ -91,7 +91,7 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
           return;
         }
         form.reset();
-        setNotice("If your account is new, check your email for a verification link. If an account already exists, check for sign-in guidance. Sign-in can resend verification for unverified accounts.");
+        setNotice("New accounts receive a verification email. If you already have an account, sign in with your existing method; email/password sign-in resends verification for unverified accounts. Use Google for Google accounts.");
         return;
       } else if (verify) {
         const code = String(values.get("code") ?? "").trim();
