@@ -252,7 +252,11 @@ try {
   const verificationMarker = await db.query<{ value: string; expires_at: Date }>(
     "SELECT value,expires_at FROM auth_verification WHERE identifier=$1", [verificationIdentifier],
   );
-  stage = "verification one-time marker exists";
+  const userVerificationMarkers = await db.query<{ identifier: string; expires_at: Date }>(
+    "SELECT identifier,expires_at FROM auth_verification WHERE value=$1 AND identifier LIKE 'gphkm:email-verification:customer:%'", [userId],
+  );
+  const targetMarkerFound = userVerificationMarkers.rows.some((row) => row.identifier === verificationIdentifier);
+  stage = `verification markers for test user: ${userVerificationMarkers.rowCount}; target digest match: ${targetMarkerFound}`;
   assert.equal(verificationMarker.rowCount, 1);
   stage = "verification marker is bound to user";
   assert.equal(verificationMarker.rows[0]?.value, userId);
