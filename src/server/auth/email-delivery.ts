@@ -44,3 +44,11 @@ export function sendCustomerWelcomeEmail(to: string, signInUrl: string) {
     text: `Your GPHKM account is ready. Sign in to continue:\n\n${signInUrl}\n`,
   });
 }
+
+export function sendExistingCustomerAccountEmail(to: string, signInUrl: string) {
+  sendAuthEmailInBackground({
+    to,
+    subject: "An account already exists for this email",
+    text: `An attempt was made to create a GPHKM account using this email address, but an account already exists. Sign in with your existing method. If your email is not verified, sign-in will send a fresh verification link. If you cannot sign in, use the password reset option on the sign-in page.\\n\\n${signInUrl}\\n\\nIf you did not request this, you can ignore this message.`,
+  });
+}
