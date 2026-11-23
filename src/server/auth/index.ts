@@ -118,6 +118,9 @@ function createAuth(surface: AuthSurface) {
     await db.execute(sql`DELETE FROM public.auth_verification WHERE identifier LIKE 'gphkm:email-verification:%' AND expires_at <= now()`);
     await db.insert(schema.verification).values({
       id: randomUUID(), identifier, value: userId, expiresAt: new Date(expiresAtSeconds * 1000),
+    }).onConflictDoNothing({
+      target: schema.verification.identifier,
+      where: sql`${schema.verification.identifier} LIKE 'gphkm:email-verification:%'`,
     });
   };
   const origins = authSurfaceOrigins(process.env);
@@ -275,12 +278,13 @@ function createAuth(surface: AuthSurface) {
             throw APIError.from("BAD_REQUEST", { code: "INVALID_TOKEN", message: "Invalid or expired verification link" });
           }
           const consumed = await db.execute(sql`
-            DELETE FROM public.auth_verification
-            WHERE identifier = ${emailVerificationIdentifier(token)} AND expires_at > now()
-            RETURNING value
+            UPDATE public.auth_verification
+            SET value = ''
+            WHERE identifier = ${emailVerificationIdentifier(token)} AND expires_at > now() AND value <> ''
+            RETURNING id
           `);
-          const userId = (consumed as unknown as { rows?: Array<{ value: string }> }).rows?.[0]?.value;
-          if (!userId) {
+          const consumedMarker = (consumed as unknown as { rows?: Array<{ id: string }> }).rows?.[0];
+          if (!consumedMarker) {
             throw APIError.from("BAD_REQUEST", { code: "INVALID_TOKEN", message: "Invalid or expired verification link" });
           }
         }
