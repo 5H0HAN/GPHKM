@@ -41,6 +41,6 @@ export function sendCustomerWelcomeEmail(to: string, signInUrl: string) {
   sendAuthEmailInBackground({
     to,
     subject: "Welcome to GPHKM",
-    text: `Your GPHKM account is ready. Sign in to continue:\\n\\n${signInUrl}\\n`,
+    text: `Your GPHKM account is ready. Sign in to continue:\n\n${signInUrl}\n`,
   });
 }
