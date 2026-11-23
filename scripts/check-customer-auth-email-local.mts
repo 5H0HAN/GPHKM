@@ -269,10 +269,11 @@ try {
   assert.equal((await db.query("SELECT 1 FROM auth_user WHERE id=$1 AND NOT email_verified", [userId])).rowCount, 1);
 
   stage = "fresh verification request";
+  const previousVerificationMailCount = outbox.filter((mail) => mail.to === email && mail.subject === "Verify your GPHKM email").length;
   const resendVerification = await customer.send("/api/auth/send-verification-email", { email, callbackURL: "/sign-in" });
   stage = "fresh verification request accepted";
   assert.equal(resendVerification.status, 200);
-  const freshVerificationLink = mailUrl(await waitForMailCount(outbox, "Verify your GPHKM email", 2));
+  const freshVerificationLink = mailUrl(await waitForMailCount(outbox, "Verify your GPHKM email", previousVerificationMailCount + 1));
   stage = "fresh verification origin";
   assert.equal(freshVerificationLink.origin, customerOrigin);
   stage = "fresh verification confirmation path";
