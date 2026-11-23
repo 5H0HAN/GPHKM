@@ -36,3 +36,11 @@ export function sendAuthEmailInBackground(input: { to: string; subject: string; 
     console.error(JSON.stringify({ event: "customer_auth_email_failed" }));
   });
 }
+
+export function sendCustomerWelcomeEmail(to: string, signInUrl: string) {
+  sendAuthEmailInBackground({
+    to,
+    subject: "Welcome to GPHKM",
+    text: `Your GPHKM account is ready. Sign in to continue:\\n\\n${signInUrl}\\n`,
+  });
+}
