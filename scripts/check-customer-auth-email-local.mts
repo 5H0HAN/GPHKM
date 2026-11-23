@@ -219,6 +219,7 @@ try {
 
   stage = "verification mail and unverified sign-in denial";
   const verificationLink = mailUrl(await waitForMail(outbox, "Verify your GPHKM email"));
+  stage = "verification confirmation link routing";
   assert.equal(verificationLink.origin, customerOrigin);
   assert.equal(verificationLink.pathname, "/api/auth/verify-email");
   assert.ok(verificationLink.searchParams.get("token"));
