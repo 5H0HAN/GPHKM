@@ -239,21 +239,28 @@ try {
   assert.equal(signInErrorCode, "EMAIL_NOT_VERIFIED");
   stage = customer.hasSession() ? "unverified sign-in created a session" : "unverified sign-in created no session";
   assert.equal(customer.hasSession(), false);
-  stage = "verification confirmation link remains available";
+  stage = "verification confirmation route remains correct";
   assert.equal(verificationLink.pathname, "/sign-in/confirm-email");
+  stage = "verification token remains present";
   assert.ok(verificationLink.searchParams.get("token"));
   const verificationUrl = verificationEndpoint(verificationLink);
   const verificationToken = verificationLink.searchParams.get("token");
+  stage = "verification token parses";
   assert.ok(verificationToken);
   const verificationIdentifier = `gphkm:email-verification:customer:${createHash("sha256").update(verificationToken).digest("hex")}`;
   const tokenExpiresAt = (JSON.parse(Buffer.from(verificationToken.split(".")[1]!, "base64url").toString("utf8")) as { exp: number }).exp;
   const verificationMarker = await db.query<{ value: string; expires_at: Date }>(
     "SELECT value,expires_at FROM auth_verification WHERE identifier=$1", [verificationIdentifier],
   );
+  stage = "verification one-time marker exists";
   assert.equal(verificationMarker.rowCount, 1);
+  stage = "verification marker is bound to user";
   assert.equal(verificationMarker.rows[0]?.value, userId);
+  stage = "verification marker expiry matches signed token";
   assert.equal(Math.floor(verificationMarker.rows[0]!.expires_at.getTime() / 1000), tokenExpiresAt);
+  stage = "verification token is not stored as plaintext";
   assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE value=$1 OR identifier=$1", [verificationToken])).rowCount, 0);
+  stage = "verification marker can be expired for negative test";
   await db.query("UPDATE auth_verification SET expires_at=now()-interval '1 second' WHERE identifier=$1", [verificationIdentifier]);
   const expiredVerification = await browser(port, customerOrigin).send(verificationUrl.pathname + verificationUrl.search);
   assert.equal(expiredVerification.status, 400);
