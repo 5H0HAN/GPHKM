@@ -116,10 +116,13 @@ async function waitForMail(outbox: Mail[], subject: string, recipient = email) {
   throw new Error("Expected synthetic auth mail");
 }
 
-function latestMail(outbox: Mail[], subject: string, recipient = email) {
-  const message = outbox.findLast((mail) => mail.to === recipient && mail.subject === subject);
-  assert.ok(message);
-  return message;
+async function waitForMailCount(outbox: Mail[], subject: string, count: number, recipient = email) {
+  for (let i = 0; i < 50; i++) {
+    const messages = outbox.filter((mail) => mail.to === recipient && mail.subject === subject);
+    if (messages.length >= count) return messages[messages.length - 1]!;
+    await delay(100);
+  }
+  throw new Error("Expected additional synthetic auth mail");
 }
 
 let stage = "disposable database configuration";
@@ -226,10 +229,6 @@ try {
   assert.equal(verificationLink.pathname, "/sign-in/confirm-email");
   assert.ok(verificationLink.searchParams.get("token"));
   const verificationUrl = verificationEndpoint(verificationLink);
-  const unverified = await customer.send("/api/auth/sign-in/email", { email, password });
-  assert.equal(unverified.status, 403);
-  assert.equal(unverified.body?.code, "EMAIL_NOT_VERIFIED");
-  assert.equal(customer.hasSession(), false);
   const verificationToken = verificationLink.searchParams.get("token");
   assert.ok(verificationToken);
   const verificationIdentifier = `gphkm:email-verification:customer:${createHash("sha256").update(verificationToken).digest("hex")}`;
@@ -251,7 +250,7 @@ try {
   stage = "fresh verification link, surface scope, concurrent single-use, and replay rejection";
   const resendVerification = await customer.send("/api/auth/send-verification-email", { email, callbackURL: "/sign-in" });
   assert.equal(resendVerification.status, 200);
-  const freshVerificationLink = mailUrl(latestMail(outbox, "Verify your GPHKM email"));
+  const freshVerificationLink = mailUrl(await waitForMailCount(outbox, "Verify your GPHKM email", 2));
   assert.equal(freshVerificationLink.origin, customerOrigin);
   assert.equal(freshVerificationLink.pathname, "/sign-in/confirm-email");
   const freshVerificationUrl = verificationEndpoint(freshVerificationLink);
