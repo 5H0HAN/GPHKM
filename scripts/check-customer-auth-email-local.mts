@@ -221,7 +221,7 @@ try {
   const verificationLink = mailUrl(await waitForMail(outbox, "Verify your GPHKM email"));
   stage = "verification confirmation link origin";
   assert.equal(verificationLink.origin, customerOrigin);
-  stage = "verification confirmation link path";
+  stage = `verification confirmation path ${verificationLink.pathname}`;
   assert.equal(verificationLink.pathname, "/sign-in/confirm-email");
   assert.ok(verificationLink.searchParams.get("token"));
   const unverified = await customer.send("/api/auth/sign-in/email", { email, password });
