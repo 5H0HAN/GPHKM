@@ -237,7 +237,9 @@ try {
       : /^[A-Z0-9_]{1,64}$/.test(signInErrorCode) ? `unverified sign-in error code ${signInErrorCode}`
         : "unverified sign-in unexpected error code format";
   assert.equal(signInErrorCode, "EMAIL_NOT_VERIFIED");
+  stage = customer.hasSession() ? "unverified sign-in created a session" : "unverified sign-in created no session";
   assert.equal(customer.hasSession(), false);
+  stage = "verification confirmation link remains available";
   assert.equal(verificationLink.pathname, "/sign-in/confirm-email");
   assert.ok(verificationLink.searchParams.get("token"));
   const verificationUrl = verificationEndpoint(verificationLink);
