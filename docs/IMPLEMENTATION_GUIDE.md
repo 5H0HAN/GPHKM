@@ -98,7 +98,7 @@ To run the local customer email auth check, migrate a fresh disposable PostgreSQ
 npm run db:check-customer-auth-email:local
 ```
 
-This check captures synthetic messages in memory, verifies legal consent, completes email verification, and checks that password reset consumes a surface-scoped token and revokes existing sessions. It does not prove external provider delivery or a Google callback. Discard the disposable database after the check.
+This check captures synthetic messages in memory, verifies legal consent, and exercises customer verification-link expiry, surface binding, concurrent redemption, replay rejection, and session creation. It also checks that concurrent password reset consumes a surface-scoped token once and revokes existing sessions. It does not prove external provider delivery or a Google callback. Discard the disposable database after the check.
 
 Current acceptance checks cover invitation-bound staff signup, TOTP enrollment and challenge, exact-session proof, local-only password bypass, DB activation/promotion requirements, customer TOTP, password recovery, and reset-token surface isolation. [ADR-0036](adr/ADR-0036-staff-authentication-mandatory-totp.md) is the current staff authentication policy.
 

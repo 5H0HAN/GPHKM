@@ -97,6 +97,16 @@ function mailUrl(mail: Mail) {
   return new URL(link);
 }
 
+function verificationEndpoint(link: URL) {
+  const endpoint = new URL("/api/auth/verify-email", link.origin);
+  const token = link.searchParams.get("token");
+  assert.ok(token);
+  endpoint.searchParams.set("token", token);
+  const callbackURL = link.searchParams.get("callbackURL");
+  if (callbackURL) endpoint.searchParams.set("callbackURL", callbackURL);
+  return endpoint;
+}
+
 async function waitForMail(outbox: Mail[], subject: string, recipient = email) {
   for (let i = 0; i < 50; i++) {
     const message = outbox.find((mail) => mail.to === recipient && mail.subject === subject);
@@ -104,6 +114,12 @@ async function waitForMail(outbox: Mail[], subject: string, recipient = email) {
     await delay(100);
   }
   throw new Error("Expected synthetic auth mail");
+}
+
+function latestMail(outbox: Mail[], subject: string, recipient = email) {
+  const message = outbox.findLast((mail) => mail.to === recipient && mail.subject === subject);
+  assert.ok(message);
+  return message;
 }
 
 let stage = "disposable database configuration";
@@ -207,11 +223,65 @@ try {
   assert.equal(unverified.status, 403);
   assert.equal(unverified.body?.code, "EMAIL_NOT_VERIFIED");
   assert.equal(customer.hasSession(), false);
-  const verified = await customer.send(verificationLink.pathname + verificationLink.search);
-  assert.ok(verified.status >= 300 && verified.status < 400 && verified.redirect);
-  assert.equal(new URL(verified.redirect, customerOrigin).origin, customerOrigin);
-  assert.equal((await customer.send("/api/auth/get-session")).body?.user?.id, userId);
+  assert.equal(verificationLink.pathname, "/sign-in/confirm-email");
+  assert.ok(verificationLink.searchParams.get("token"));
+  const verificationUrl = verificationEndpoint(verificationLink);
+  const unverified = await customer.send("/api/auth/sign-in/email", { email, password });
+  assert.equal(unverified.status, 403);
+  assert.equal(unverified.body?.code, "EMAIL_NOT_VERIFIED");
+  assert.equal(customer.hasSession(), false);
+  const verificationToken = verificationLink.searchParams.get("token");
+  assert.ok(verificationToken);
+  const verificationIdentifier = `gphkm:email-verification:customer:${createHash("sha256").update(verificationToken).digest("hex")}`;
+  const tokenExpiresAt = (JSON.parse(Buffer.from(verificationToken.split(".")[1]!, "base64url").toString("utf8")) as { exp: number }).exp;
+  const verificationMarker = await db.query<{ value: string; expires_at: Date }>(
+    "SELECT value,expires_at FROM auth_verification WHERE identifier=$1", [verificationIdentifier],
+  );
+  assert.equal(verificationMarker.rowCount, 1);
+  assert.equal(verificationMarker.rows[0]?.value, userId);
+  assert.equal(Math.floor(verificationMarker.rows[0]!.expires_at.getTime() / 1000), tokenExpiresAt);
+  assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE value=$1 OR identifier=$1", [verificationToken])).rowCount, 0);
+  await db.query("UPDATE auth_verification SET expires_at=now()-interval '1 second' WHERE identifier=$1", [verificationIdentifier]);
+  const expiredVerification = await browser(port, customerOrigin).send(verificationUrl.pathname + verificationUrl.search);
+  assert.equal(expiredVerification.status, 400);
+  assert.equal(expiredVerification.body?.code, "INVALID_TOKEN");
+  assert.equal(expiredVerification.body?.user, undefined);
+  assert.equal((await db.query("SELECT 1 FROM auth_user WHERE id=$1 AND NOT email_verified", [userId])).rowCount, 1);
+
+  stage = "fresh verification link, surface scope, concurrent single-use, and replay rejection";
+  const resendVerification = await customer.send("/api/auth/send-verification-email", { email, callbackURL: "/sign-in" });
+  assert.equal(resendVerification.status, 200);
+  const freshVerificationLink = mailUrl(latestMail(outbox, "Verify your GPHKM email"));
+  assert.equal(freshVerificationLink.origin, customerOrigin);
+  assert.equal(freshVerificationLink.pathname, "/sign-in/confirm-email");
+  const freshVerificationUrl = verificationEndpoint(freshVerificationLink);
+  const freshVerificationToken = freshVerificationLink.searchParams.get("token");
+  assert.ok(freshVerificationToken);
+  const freshVerificationIdentifier = `gphkm:email-verification:customer:${createHash("sha256").update(freshVerificationToken).digest("hex")}`;
+  assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE identifier=$1 AND value=$2 AND expires_at>now()", [freshVerificationIdentifier, userId])).rowCount, 1);
+  const confirmationPage = await browser(port, customerOrigin).send(freshVerificationLink.pathname + freshVerificationLink.search);
+  assert.equal(confirmationPage.status, 200);
+  assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE identifier=$1", [freshVerificationIdentifier])).rowCount, 1);
+  const wrongSurfaceVerification = await browser(port, staffOrigin).send(freshVerificationUrl.pathname + freshVerificationUrl.search);
+  assert.equal(wrongSurfaceVerification.status, 400);
+  assert.equal(wrongSurfaceVerification.body?.code, "INVALID_TOKEN");
+  assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE identifier=$1", [freshVerificationIdentifier])).rowCount, 1);
+
+  const verificationBrowsers = [browser(port, customerOrigin), browser(port, customerOrigin)];
+  const concurrentVerification = await Promise.all(verificationBrowsers.map((tab) => tab.send(freshVerificationUrl.pathname + freshVerificationUrl.search)));
+  assert.deepEqual(concurrentVerification.map((response) => response.status).sort(), [302, 400]);
+  const winnerIndex = concurrentVerification.findIndex((response) => response.status >= 300 && response.status < 400);
+  assert.ok(winnerIndex >= 0 && concurrentVerification[winnerIndex]?.redirect);
+  assert.equal(new URL(concurrentVerification[winnerIndex]!.redirect!, customerOrigin).origin, customerOrigin);
+  assert.equal((await verificationBrowsers[winnerIndex]!.send("/api/auth/get-session")).body?.user?.id, userId);
+  assert.equal((await verificationBrowsers[1 - winnerIndex]!.send("/api/auth/get-session")).body, null);
+  const verificationReplay = await browser(port, customerOrigin).send(freshVerificationUrl.pathname + freshVerificationUrl.search);
+  assert.equal(verificationReplay.status, 400);
+  assert.equal(verificationReplay.body?.code, "INVALID_TOKEN");
+  assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE identifier=$1", [freshVerificationIdentifier])).rowCount, 0);
   assert.equal((await db.query("SELECT 1 FROM auth_user WHERE id=$1 AND email_verified", [userId])).rowCount, 1);
+  await delay(100);
+  assert.equal(outbox.filter((mail) => mail.to === email && mail.subject === "Welcome to GPHKM").length, 1);
 
   stage = "separate active credential session before reset";
   const secondSession = browser(port, customerOrigin);
@@ -236,12 +306,16 @@ try {
   assert.equal(resetPage.status, 200);
   assert.equal(resetPage.referrerPolicy, "no-referrer");
 
-  stage = "wrong-surface rejection, successful reset, and replay rejection";
-  const changedPassword = makePassword();
-  const wrongSurface = await staff.send("/api/auth/reset-password", { token, newPassword: changedPassword });
+  stage = "wrong-surface rejection, concurrent one-time reset, and replay rejection";
+  const changedPasswords = [makePassword(), makePassword()];
+  const wrongSurface = await staff.send("/api/auth/reset-password", { token, newPassword: changedPasswords[0] });
   assert.equal(wrongSurface.status, 400);
   assert.equal(wrongSurface.body?.code, "INVALID_TOKEN");
-  assert.equal((await signedOut.send("/api/auth/reset-password", { token, newPassword: changedPassword })).status, 200);
+  const resetBrowsers = [browser(port, customerOrigin), browser(port, customerOrigin)];
+  const concurrentReset = await Promise.all(resetBrowsers.map((tab, index) => tab.send("/api/auth/reset-password", { token, newPassword: changedPasswords[index] })));
+  assert.deepEqual(concurrentReset.map((response) => response.status).sort(), [200, 400]);
+  const resetWinnerIndex = concurrentReset.findIndex((response) => response.status === 200);
+  const changedPassword = changedPasswords[resetWinnerIndex]!;
   const replay = await signedOut.send("/api/auth/reset-password", { token, newPassword: makePassword() });
   assert.equal(replay.status, 400);
   assert.equal(replay.body?.code, "INVALID_TOKEN");
@@ -333,7 +407,7 @@ try {
   assert.equal(deniedGoogle.status, 404);
   assert.equal(deniedGoogle.body?.code, "PROVIDER_NOT_FOUND");
 
-  console.log("Customer and staff auth passed in production mode with captured mail: legal consent, email verification, surface-scoped one-time resets, session revocation, and Google redirect initiation.");
+  console.log("Customer and staff auth passed in production mode with captured mail: legal consent, one-time surface-bound email verification, concurrent single-use resets, session revocation, and Google redirect initiation.");
 } catch {
   // Never print response objects, mail payloads, assertion details, or driver errors.
   console.error(`Customer email auth check failed during ${stage}.`);
