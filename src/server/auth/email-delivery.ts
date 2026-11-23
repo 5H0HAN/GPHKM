@@ -44,4 +44,3 @@ export function sendCustomerWelcomeEmail(to: string, signInUrl: string) {
     text: `Your GPHKM account is ready. Sign in to continue:\n\n${signInUrl}\n`,
   });
 }
-
