@@ -86,6 +86,7 @@ test("legal evidence is append-only and common customer commands cannot skip the
   assert.match(signup, /legalConsent: \{ accepted: true, termsVersion: legalDocuments\.termsVersion, privacyVersion: legalDocuments\.privacyVersion \}/);
   assert.match(signup, /name="confirmPassword"/);
   assert.match(signup, /accept the staging Terms and Privacy drafts/i);
+  assert.match(signup, /onInvalid=\\{\\(\\) => setError\\("Please accept the staging Terms and Privacy drafts before creating your account\\."\\)\\}/);
   assert.match(signup, /password !== String\(values\.get\("confirmPassword"\)\)[\s\S]*Passwords do not match\.[\s\S]*return;/);
   assert.ok(signup.indexOf("password !== String(values.get(\"confirmPassword\"))") < signup.indexOf('client.$fetch("/sign-up/email"'));
   assert.match(signup, /requestSignUp: signingUp/);
