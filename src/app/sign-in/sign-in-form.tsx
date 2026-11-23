@@ -91,7 +91,7 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
           return;
         }
         form.reset();
-        setNotice("Check your email for a verification link. Your Terms and Privacy Policy acceptance is recorded with this account.");
+        setNotice("If your account is new, check your email for a verification link. If an account already exists, check for sign-in guidance. Sign-in can resend verification for unverified accounts.");
         return;
       } else if (verify) {
         const code = String(values.get("code") ?? "").trim();
