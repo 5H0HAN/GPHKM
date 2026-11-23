@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, check, index, integer, jsonb, numeric, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, index, integer, jsonb, numeric, pgTable, text, timestamp, unique, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const user = pgTable("auth_user", {
   id: text("id").primaryKey(),
@@ -50,7 +50,11 @@ export const verification = pgTable("auth_verification", {
   expiresAt: timestamp("expires_at").notNull(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
-}, (table) => [index("auth_verification_identifier_idx").on(table.identifier)]);
+}, (table) => [
+  index("auth_verification_identifier_idx").on(table.identifier),
+  uniqueIndex("auth_verification_gphkm_email_verification_uq").on(table.identifier)
+    .where(sql`${table.identifier} LIKE 'gphkm:email-verification:%'`),
+]);
 
 export const twoFactor = pgTable("auth_two_factor", {
   id: text("id").primaryKey(),

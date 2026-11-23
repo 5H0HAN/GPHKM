@@ -97,6 +97,16 @@ function mailUrl(mail: Mail) {
   return new URL(link);
 }
 
+function verificationEndpoint(link: URL) {
+  const endpoint = new URL("/api/auth/verify-email", link.origin);
+  const token = link.searchParams.get("token");
+  assert.ok(token);
+  endpoint.searchParams.set("token", token);
+  const callbackURL = link.searchParams.get("callbackURL");
+  if (callbackURL) endpoint.searchParams.set("callbackURL", callbackURL);
+  return endpoint;
+}
+
 async function waitForMail(outbox: Mail[], subject: string, recipient = email) {
   for (let i = 0; i < 50; i++) {
     const message = outbox.find((mail) => mail.to === recipient && mail.subject === subject);
@@ -104,6 +114,15 @@ async function waitForMail(outbox: Mail[], subject: string, recipient = email) {
     await delay(100);
   }
   throw new Error("Expected synthetic auth mail");
+}
+
+async function waitForMailCount(outbox: Mail[], subject: string, count: number, recipient = email) {
+  for (let i = 0; i < 50; i++) {
+    const messages = outbox.filter((mail) => mail.to === recipient && mail.subject === subject);
+    if (messages.length >= count) return messages[messages.length - 1]!;
+    await delay(100);
+  }
+  throw new Error("Expected additional synthetic auth mail");
 }
 
 let stage = "disposable database configuration";
@@ -200,18 +219,120 @@ try {
 
   stage = "verification mail and unverified sign-in denial";
   const verificationLink = mailUrl(await waitForMail(outbox, "Verify your GPHKM email"));
+  stage = "verification confirmation link origin";
   assert.equal(verificationLink.origin, customerOrigin);
-  assert.equal(verificationLink.pathname, "/api/auth/verify-email");
-  assert.ok(verificationLink.searchParams.get("token"));
+  stage = `verification confirmation path ${verificationLink.pathname}`;
+  assert.equal(verificationLink.pathname, "/sign-in/confirm-email");
+  const linkToken = verificationLink.searchParams.get("token");
+  stage = `verification token query state ${verificationLink.searchParams.has("token") ? "present" : "missing"}/${Boolean(linkToken) ? "nonempty" : "empty"}`;
+  assert.ok(linkToken);
+  stage = "unverified sign-in denial";
+  stage = "unverified sign-in request";
   const unverified = await customer.send("/api/auth/sign-in/email", { email, password });
+  stage = "unverified sign-in status";
   assert.equal(unverified.status, 403);
-  assert.equal(unverified.body?.code, "EMAIL_NOT_VERIFIED");
+  const signInErrorCode = unverified.body?.code;
+  stage = signInErrorCode === "EMAIL_NOT_VERIFIED" ? "unverified sign-in expected error code"
+    : signInErrorCode === undefined ? "unverified sign-in missing error code"
+      : /^[A-Z0-9_]{1,64}$/.test(signInErrorCode) ? `unverified sign-in error code ${signInErrorCode}`
+        : "unverified sign-in unexpected error code format";
+  assert.equal(signInErrorCode, "EMAIL_NOT_VERIFIED");
+  stage = customer.hasSession() ? "unverified sign-in created a session" : "unverified sign-in created no session";
   assert.equal(customer.hasSession(), false);
-  const verified = await customer.send(verificationLink.pathname + verificationLink.search);
-  assert.ok(verified.status >= 300 && verified.status < 400 && verified.redirect);
-  assert.equal(new URL(verified.redirect, customerOrigin).origin, customerOrigin);
-  assert.equal((await customer.send("/api/auth/get-session")).body?.user?.id, userId);
+  stage = "verification confirmation route remains correct";
+  assert.equal(verificationLink.pathname, "/sign-in/confirm-email");
+  stage = "verification token remains present";
+  assert.ok(verificationLink.searchParams.get("token"));
+  const verificationUrl = verificationEndpoint(verificationLink);
+  const verificationToken = verificationLink.searchParams.get("token");
+  stage = "verification token parses";
+  assert.ok(verificationToken);
+  const verificationIdentifier = `gphkm:email-verification:customer:${createHash("sha256").update(verificationToken).digest("hex")}`;
+  const tokenExpiresAt = (JSON.parse(Buffer.from(verificationToken.split(".")[1]!, "base64url").toString("utf8")) as { exp: number }).exp;
+  const verificationMarker = await db.query<{ value: string; expires_at: Date }>(
+    "SELECT value,expires_at FROM auth_verification WHERE identifier=$1", [verificationIdentifier],
+  );
+  const userVerificationMarkers = await db.query<{ identifier: string; expires_at: Date }>(
+    "SELECT identifier,expires_at FROM auth_verification WHERE value=$1 AND identifier LIKE 'gphkm:email-verification:customer:%'", [userId],
+  );
+  const targetMarkerFound = userVerificationMarkers.rows.some((row) => row.identifier === verificationIdentifier);
+  stage = `verification markers for test user: ${userVerificationMarkers.rowCount}; target digest match: ${targetMarkerFound}`;
+  assert.equal(verificationMarker.rowCount, 1);
+  stage = "verification marker is bound to user";
+  assert.equal(verificationMarker.rows[0]?.value, userId);
+  stage = "verification marker expiry matches signed token";
+  assert.equal(Math.floor(verificationMarker.rows[0]!.expires_at.getTime() / 1000), tokenExpiresAt);
+  stage = "verification token is not stored as plaintext";
+  assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE value=$1 OR identifier=$1", [verificationToken])).rowCount, 0);
+  stage = "verification marker can be expired for negative test";
+  await db.query("UPDATE auth_verification SET expires_at=now()-interval '1 second' WHERE identifier=$1", [verificationIdentifier]);
+  const expiredVerification = await browser(port, customerOrigin).send(verificationUrl.pathname + verificationUrl.search);
+  assert.equal(expiredVerification.status, 400);
+  assert.equal(expiredVerification.body?.code, "INVALID_TOKEN");
+  assert.equal(expiredVerification.body?.user, undefined);
+  assert.equal((await db.query("SELECT 1 FROM auth_user WHERE id=$1 AND NOT email_verified", [userId])).rowCount, 1);
+
+  stage = "fresh verification request";
+  const previousVerificationMailCount = outbox.filter((mail) => mail.to === email && mail.subject === "Verify your GPHKM email").length;
+  const resendVerification = await customer.send("/api/auth/send-verification-email", { email, callbackURL: "/sign-in" });
+  stage = "fresh verification request accepted";
+  assert.equal(resendVerification.status, 200);
+  const freshVerificationLink = mailUrl(await waitForMailCount(outbox, "Verify your GPHKM email", previousVerificationMailCount + 1));
+  stage = "fresh verification origin";
+  assert.equal(freshVerificationLink.origin, customerOrigin);
+  stage = "fresh verification confirmation path";
+  assert.equal(freshVerificationLink.pathname, "/sign-in/confirm-email");
+  const freshVerificationUrl = verificationEndpoint(freshVerificationLink);
+  const freshVerificationToken = freshVerificationLink.searchParams.get("token");
+  stage = "fresh verification token present";
+  assert.ok(freshVerificationToken);
+  const freshVerificationIdentifier = `gphkm:email-verification:customer:${createHash("sha256").update(freshVerificationToken).digest("hex")}`;
+  stage = "fresh verification marker persisted";
+  assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE identifier=$1 AND value=$2 AND expires_at>now()", [freshVerificationIdentifier, userId])).rowCount, 1);
+  const confirmationPage = await browser(port, customerOrigin).send(freshVerificationLink.pathname + freshVerificationLink.search);
+  stage = "confirmation landing page displays";
+  assert.equal(confirmationPage.status, 200);
+  stage = "passive landing page leaves token unused";
+  assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE identifier=$1", [freshVerificationIdentifier])).rowCount, 1);
+  const wrongSurfaceVerification = await browser(port, staffOrigin).send(freshVerificationUrl.pathname + freshVerificationUrl.search);
+  stage = "wrong surface is rejected";
+  assert.equal(wrongSurfaceVerification.status, 400);
+  stage = "wrong surface reports invalid token";
+  assert.equal(wrongSurfaceVerification.body?.code, "INVALID_TOKEN");
+  stage = "wrong surface does not consume customer token";
+  assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE identifier=$1", [freshVerificationIdentifier])).rowCount, 1);
+
+  const verificationBrowsers = [browser(port, customerOrigin), browser(port, customerOrigin)];
+  stage = "concurrent verification requests";
+  const concurrentVerification = await Promise.all(verificationBrowsers.map((tab) => tab.send(freshVerificationUrl.pathname + freshVerificationUrl.search)));
+  stage = "exactly one concurrent verification succeeds";
+  assert.deepEqual(concurrentVerification.map((response) => response.status).sort(), [302, 400]);
+  const winnerIndex = concurrentVerification.findIndex((response) => response.status >= 300 && response.status < 400);
+  stage = "successful verification response redirects";
+  assert.ok(winnerIndex >= 0 && concurrentVerification[winnerIndex]?.redirect);
+  stage = "verification redirect stays on customer origin";
+  assert.equal(new URL(concurrentVerification[winnerIndex]!.redirect!, customerOrigin).origin, customerOrigin);
+  stage = "only successful verifier receives a session";
+  assert.equal((await verificationBrowsers[winnerIndex]!.send("/api/auth/get-session")).body?.user?.id, userId);
+  stage = "losing verifier receives no session";
+  assert.equal((await verificationBrowsers[1 - winnerIndex]!.send("/api/auth/get-session")).body, null);
+  const verificationReplay = await browser(port, customerOrigin).send(freshVerificationUrl.pathname + freshVerificationUrl.search);
+  stage = "verification replay is rejected";
+  assert.equal(verificationReplay.status, 400);
+  stage = "verification replay reports invalid token";
+  assert.equal(verificationReplay.body?.code, "INVALID_TOKEN");
+  stage = "verification marker remains as a consumed tombstone";
+  const consumedVerificationMarker = await db.query<{ value: string }>(
+    "SELECT value FROM auth_verification WHERE identifier=$1", [freshVerificationIdentifier],
+  );
+  assert.equal(consumedVerificationMarker.rowCount, 1);
+  stage = "consumed verification marker cannot be used again";
+  assert.equal(consumedVerificationMarker.rows[0]?.value, "");
+  stage = "verification marks the user as verified";
   assert.equal((await db.query("SELECT 1 FROM auth_user WHERE id=$1 AND email_verified", [userId])).rowCount, 1);
+  await delay(100);
+  stage = "exactly one welcome email is sent";
+  assert.equal(outbox.filter((mail) => mail.to === email && mail.subject === "Welcome to GPHKM").length, 1);
 
   stage = "separate active credential session before reset";
   const secondSession = browser(port, customerOrigin);
@@ -236,12 +357,16 @@ try {
   assert.equal(resetPage.status, 200);
   assert.equal(resetPage.referrerPolicy, "no-referrer");
 
-  stage = "wrong-surface rejection, successful reset, and replay rejection";
-  const changedPassword = makePassword();
-  const wrongSurface = await staff.send("/api/auth/reset-password", { token, newPassword: changedPassword });
+  stage = "wrong-surface rejection, concurrent one-time reset, and replay rejection";
+  const changedPasswords = [makePassword(), makePassword()];
+  const wrongSurface = await staff.send("/api/auth/reset-password", { token, newPassword: changedPasswords[0] });
   assert.equal(wrongSurface.status, 400);
   assert.equal(wrongSurface.body?.code, "INVALID_TOKEN");
-  assert.equal((await signedOut.send("/api/auth/reset-password", { token, newPassword: changedPassword })).status, 200);
+  const resetBrowsers = [browser(port, customerOrigin), browser(port, customerOrigin)];
+  const concurrentReset = await Promise.all(resetBrowsers.map((tab, index) => tab.send("/api/auth/reset-password", { token, newPassword: changedPasswords[index] })));
+  assert.deepEqual(concurrentReset.map((response) => response.status).sort(), [200, 400]);
+  const resetWinnerIndex = concurrentReset.findIndex((response) => response.status === 200);
+  const changedPassword = changedPasswords[resetWinnerIndex]!;
   const replay = await signedOut.send("/api/auth/reset-password", { token, newPassword: makePassword() });
   assert.equal(replay.status, 400);
   assert.equal(replay.body?.code, "INVALID_TOKEN");
@@ -333,7 +458,7 @@ try {
   assert.equal(deniedGoogle.status, 404);
   assert.equal(deniedGoogle.body?.code, "PROVIDER_NOT_FOUND");
 
-  console.log("Customer and staff auth passed in production mode with captured mail: legal consent, email verification, surface-scoped one-time resets, session revocation, and Google redirect initiation.");
+  console.log("Customer and staff auth passed in production mode with captured mail: legal consent, one-time surface-bound email verification, concurrent single-use resets, session revocation, and Google redirect initiation.");
 } catch {
   // Never print response objects, mail payloads, assertion details, or driver errors.
   console.error(`Customer email auth check failed during ${stage}.`);

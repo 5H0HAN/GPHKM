@@ -24,7 +24,7 @@ const nextConfig: NextConfig = {
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
         ],
       },
-      ...["/invitations/accept", "/staff/invitations/accept"].map((source) => ({
+      ...["/invitations/accept", "/staff/invitations/accept", "/sign-in/confirm-email", "/staff/sign-in/confirm-email"].map((source) => ({
         source,
         headers: [
           { key: "Cache-Control", value: "no-store" },

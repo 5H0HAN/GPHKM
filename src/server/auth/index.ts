@@ -28,6 +28,7 @@ const CUSTOMER_SESSION_REVOCATION_PATHS = new Set([
 ]);
 const CUSTOMER_SESSION_FRESH_AGE_MS = 10 * 60 * 1000;
 const CUSTOMER_LEGAL_OAUTH_CONTEXT = "gphkmCustomerLegalConsent";
+const EMAIL_VERIFICATION_TTL_SECONDS = 60 * 60;
 const TESTER_SESSION_ACTIONS = new Set(["/list-accounts", "/list-sessions", "/update-user", ...CUSTOMER_SESSION_REVOCATION_PATHS]);
 
 function stagingTesterAllowed(email: unknown, verified: unknown): boolean {
@@ -100,6 +101,28 @@ function createAuth(surface: AuthSurface) {
   if (surface === "staff" && !staffMfaBypassed) requiredMfaProofDatabaseUrl(process.env);
   const publicCustomerCredentials = surface === "customer" && customerEmailSignupEnabled(process.env) && authEmailAvailable();
   const resetIdentifier = (identifier: string) => createHash("sha256").update(`gphkm:${surface}:${identifier}`).digest("hex");
+  const emailVerificationIdentifier = (token: string) => `gphkm:email-verification:${surface}:${createHash("sha256").update(token).digest("hex")}`;
+  const storeEmailVerificationToken = async (userId: string, token: string) => {
+    const payloadPart = token.split(".")[1];
+    if (!payloadPart) throw new Error("Better Auth returned an invalid email verification token");
+    let expiresAtSeconds: unknown;
+    try {
+      expiresAtSeconds = (JSON.parse(Buffer.from(payloadPart, "base64url").toString("utf8")) as { exp?: unknown }).exp;
+    } catch {
+      throw new Error("Better Auth returned an invalid email verification token");
+    }
+    if (typeof expiresAtSeconds !== "number" || !Number.isSafeInteger(expiresAtSeconds) || expiresAtSeconds <= Math.floor(Date.now() / 1000)) {
+      throw new Error("Better Auth returned an expired email verification token");
+    }
+    const identifier = emailVerificationIdentifier(token);
+    await db.execute(sql`DELETE FROM public.auth_verification WHERE identifier LIKE 'gphkm:email-verification:%' AND expires_at <= now()`);
+    await db.insert(schema.verification).values({
+      id: randomUUID(), identifier, value: userId, expiresAt: new Date(expiresAtSeconds * 1000),
+    }).onConflictDoNothing({
+      target: schema.verification.identifier,
+      where: sql`${schema.verification.identifier} LIKE 'gphkm:email-verification:%'`,
+    });
+  };
   const origins = authSurfaceOrigins(process.env);
   const baseURL = origins[surface];
   let url: URL;
@@ -157,16 +180,25 @@ function createAuth(surface: AuthSurface) {
       },
     },
     emailVerification: {
+      expiresIn: EMAIL_VERIFICATION_TTL_SECONDS,
       sendOnSignUp: publicCustomerCredentials,
       sendOnSignIn: publicCustomerCredentials,
       autoSignInAfterVerification: true,
       afterEmailVerification: async (user) => {
         if (surface === "customer") sendCustomerWelcomeEmail(user.email, customerUrl(process.env, "/sign-in"));
       },
-      sendVerificationEmail: async ({ user, url }) => {
+      sendVerificationEmail: async ({ user, url, token }) => {
+        const generatedVerificationUrl = new URL(url);
+        const verificationToken = generatedVerificationUrl.searchParams.get("token");
+        if (!verificationToken || verificationToken !== token) throw new Error("Better Auth returned a mismatched email verification token");
+        await storeEmailVerificationToken(user.id, verificationToken);
+        const confirmationUrl = new URL(surface === "staff" ? "/staff/sign-in/confirm-email" : "/sign-in/confirm-email", baseURL);
+        confirmationUrl.searchParams.set("token", verificationToken);
+        const callbackURL = generatedVerificationUrl.searchParams.get("callbackURL");
+        if (callbackURL) confirmationUrl.searchParams.set("callbackURL", callbackURL);
         const subject = surface === "staff" ? "Verify your GPHKM staff email" : "Verify your GPHKM email";
         const purpose = surface === "staff" ? "accepting your staff invitation" : "setting up your GPHKM account";
-        sendAuthEmailInBackground({ kind: "verification", to: user.email, subject, text: `Verify your email address before ${purpose}:\n\n${url}\n\nIf you did not create this account, ignore this email.` });
+        sendAuthEmailInBackground({ kind: "verification", to: user.email, subject, text: `Verify your email address before ${purpose}:\n\n${confirmationUrl.toString()}\n\nIf you did not create this account, ignore this email.` });
       },
     },
     socialProviders: surface === "customer" && googleId && googleSecret ? { google: {
@@ -238,6 +270,23 @@ function createAuth(surface: AuthSurface) {
           if (typeof token !== "string" || !/^[A-Za-z0-9_-]{16,128}$/.test(token)) throw APIError.from("BAD_REQUEST", { code: "INVALID_TOKEN", message: "Invalid or expired reset link" });
           const [record] = await db.select({ userId: schema.verification.value, expiresAt: schema.verification.expiresAt }).from(schema.verification).where(eq(schema.verification.identifier, resetIdentifier(`reset-password:${token}`))).limit(1);
           if (!record || record.expiresAt.getTime() <= Date.now() || !await resetTokenAllowedForSurface(record.userId, surface)) throw APIError.from("BAD_REQUEST", { code: "INVALID_TOKEN", message: "Invalid or expired reset link" });
+        }
+        if (context.path === "/verify-email") {
+          const verificationUrl = new URL(context.request?.url ?? "", baseURL);
+          const token = verificationUrl.searchParams.get("token");
+          if (!token || token.length > 2048 || !/^[A-Za-z0-9_.-]{20,2048}$/.test(token)) {
+            throw APIError.from("BAD_REQUEST", { code: "INVALID_TOKEN", message: "Invalid or expired verification link" });
+          }
+          const consumed = await db.execute(sql`
+            UPDATE public.auth_verification
+            SET value = ''
+            WHERE identifier = ${emailVerificationIdentifier(token)} AND expires_at > now() AND value <> ''
+            RETURNING id
+          `);
+          const consumedMarker = (consumed as unknown as { rows?: Array<{ id: string }> }).rows?.[0];
+          if (!consumedMarker) {
+            throw APIError.from("BAD_REQUEST", { code: "INVALID_TOKEN", message: "Invalid or expired verification link" });
+          }
         }
         if (context.path.startsWith("/two-factor/") && asRecord(context.body).trustDevice === true) throw APIError.from("BAD_REQUEST", { code: "TRUSTED_DEVICE_DISABLED", message: "Trusted devices are unavailable" });
         if (surface === "customer" && context.path === "/sign-in/social" && asRecord(context.body).requestSignUp === true) {
