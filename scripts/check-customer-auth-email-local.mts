@@ -321,8 +321,13 @@ try {
   assert.equal(verificationReplay.status, 400);
   stage = "verification replay reports invalid token";
   assert.equal(verificationReplay.body?.code, "INVALID_TOKEN");
-  stage = "verification marker consumed";
-  assert.equal((await db.query("SELECT 1 FROM auth_verification WHERE identifier=$1", [freshVerificationIdentifier])).rowCount, 0);
+  stage = "verification marker remains as a consumed tombstone";
+  const consumedVerificationMarker = await db.query<{ value: string }>(
+    "SELECT value FROM auth_verification WHERE identifier=$1", [freshVerificationIdentifier],
+  );
+  assert.equal(consumedVerificationMarker.rowCount, 1);
+  stage = "consumed verification marker cannot be used again";
+  assert.equal(consumedVerificationMarker.rows[0]?.value, "");
   stage = "verification marks the user as verified";
   assert.equal((await db.query("SELECT 1 FROM auth_user WHERE id=$1 AND email_verified", [userId])).rowCount, 1);
   await delay(100);
