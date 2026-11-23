@@ -17,6 +17,10 @@ test("duplicate signup has no email hook and unverified email sign-in resends ve
     GPHKM_TERMS_URL: "https://app.example.test/legal/staging/terms",
     GPHKM_PRIVACY_VERSION: "privacy-staging-review",
     GPHKM_PRIVACY_URL: "https://app.example.test/legal/staging/privacy",
+    GPHKM_RESEND_DATA_HANDLING_APPROVED: "true",
+    RESEND_API_KEY: "synthetic-resend-key",
+    RESEND_SYSTEM_FROM_EMAIL: "no-reply@example.test",
+    RESEND_SUPPORT_FROM_EMAIL: "support@example.test",
     BETTER_AUTH_SECRET: Buffer.from(Array.from({ length: 32 }, (_, index) => index)).toString("base64"),
     DATABASE_URL: "postgresql://gphkm_runtime@127.0.0.1:1/synthetic",
   });
