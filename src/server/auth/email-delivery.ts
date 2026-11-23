@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mailSenders } from "../../modules/email/senders.ts";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const AUTH_EMAIL_KINDS = new Set(["verification", "password_reset", "welcome"]);
 
 function configuration() {
   const apiKey = process.env.RESEND_API_KEY?.trim();
@@ -48,6 +49,7 @@ export function sendAuthEmailInBackground(input: { kind: AuthEmailKind; to: stri
   const emailAttemptId = randomUUID();
   void sendAuthEmail(input).catch((error: unknown) => {
     // Keep provider details useful but allowlisted; never log recipient, content, links, or credentials.
+    const emailType = AUTH_EMAIL_KINDS.has(input.kind) ? input.kind : "unknown";
     const failureClass = error instanceof AuthEmailDeliveryError
       ? error.failureClass
       : error instanceof Error && ["AbortError", "TimeoutError"].includes(error.name) ? "timeout" : "network_error";
@@ -55,7 +57,7 @@ export function sendAuthEmailInBackground(input: { kind: AuthEmailKind; to: stri
     console.error(JSON.stringify({
       event: "customer_auth_email_failed",
       emailAttemptId,
-      emailType: input.kind,
+      emailType,
       failureClass,
       ...(providerStatus ? { providerStatus } : {}),
     }));

@@ -42,7 +42,7 @@ test("auth email delivery does not block auth responses and handles failures saf
   const failureLogged = new Promise((resolve) => { resolveLogged = resolve; });
   console.error = (message) => { logged.push(message); resolveLogged(); };
   t.after(() => { console.error = originalError; });
-  globalThis.fetch = async () => new Response(null, { status: 401 });
+  globalThis.fetch = async () => new Response("provider-private-error-marker", { status: 401 });
   assert.equal(sendAuthEmailInBackground({ kind: "password_reset", to: "customer@example.test", subject: "Reset", text: "sensitive-reset-link" }), undefined);
   await failureLogged;
   const failure = JSON.parse(logged[0]);
@@ -51,7 +51,11 @@ test("auth email delivery does not block auth responses and handles failures saf
   assert.equal(failure.failureClass, "provider_rejected");
   assert.equal(failure.providerStatus, 401);
   assert.match(failure.emailAttemptId, /^[0-9a-f-]{36}$/);
+  assert.deepEqual(Object.keys(failure).sort(), ["emailAttemptId", "emailType", "event", "failureClass", "providerStatus"]);
+  assert.ok(!logged.join(" ").includes("customer@example.test"));
+  assert.ok(!logged.join(" ").includes("Reset"));
   assert.ok(!logged.join(" ").includes("sensitive-reset-link"));
+  assert.ok(!logged.join(" ").includes("provider-private-error-marker"));
 
   let networkFailureLogged;
   const networkFailure = new Promise((resolve) => { networkFailureLogged = resolve; });
@@ -62,8 +66,22 @@ test("auth email delivery does not block auth responses and handles failures saf
   const networkEvent = JSON.parse(logged[1]);
   assert.equal(networkEvent.failureClass, "network_error");
   assert.equal(networkEvent.providerStatus, undefined);
+  assert.deepEqual(Object.keys(networkEvent).sort(), ["emailAttemptId", "emailType", "event", "failureClass"]);
+  assert.ok(!logged.join(" ").includes("customer@example.test"));
+  assert.ok(!logged.join(" ").includes("Reset"));
   assert.ok(!logged.join(" ").includes("network failure"));
   assert.ok(!logged.join(" ").includes("sensitive-reset-link"));
+
+  let unsafeKindLogged;
+  const unsafeKindFailure = new Promise((resolve) => { unsafeKindLogged = resolve; });
+  console.error = (message) => { logged.push(message); unsafeKindLogged(message); };
+  globalThis.fetch = async () => new Response(null, { status: 401 });
+  sendAuthEmailInBackground({ kind: "unexpected-recipient@example.test", to: "customer@example.test", subject: "Reset", text: "sensitive-reset-link" });
+  await unsafeKindFailure;
+  const unsafeKindEvent = JSON.parse(logged[2]);
+  assert.equal(unsafeKindEvent.emailType, "unknown");
+  assert.deepEqual(Object.keys(unsafeKindEvent).sort(), ["emailAttemptId", "emailType", "event", "failureClass", "providerStatus"]);
+  assert.ok(!logged.join(" ").includes("unexpected-recipient@example.test"));
 });
 
 test("verified customer welcome email uses the configured system sender", async (t) => {
