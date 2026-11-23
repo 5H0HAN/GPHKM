@@ -76,5 +76,5 @@ test("verified customer welcome email uses the configured system sender", async 
   assert.equal(requestBody.from, "no-reply@example.test");
   assert.deepEqual(requestBody.to, ["customer@example.test"]);
   assert.equal(requestBody.subject, "Welcome to GPHKM");
-  assert.match(requestBody.text, /https:\\/\\/app\\.example\\.test\\/sign-in/);
+  assert.match(requestBody.text, /https:\/\/app\.example\.test\/sign-in/);
 });
