@@ -13,7 +13,7 @@ import { authSurfaceOrigins, type AuthSurface } from "./surfaces";
 import { assertExplicitLegalAcceptance, currentLegalDocuments, LegalAcceptanceRequiredError, type LegalAcceptanceInput } from "@/modules/legal/policy";
 import { stagingTesterEmails } from "@/modules/legal/staging-testers";
 import { recordLegalAcceptance, requireCurrentLegalAcceptance } from "@/server/legal/acceptance";
-import { authEmailAvailable, sendAuthEmailInBackground, sendCustomerWelcomeEmail, sendExistingCustomerAccountEmail } from "./email-delivery";
+import { authEmailAvailable, sendAuthEmailInBackground, sendCustomerWelcomeEmail } from "./email-delivery";
 import { isCustomerAccountSuspended } from "@/server/identity/customer-access";
 import { hashInvitationSecret } from "@/server/identity/invitation-token";
 import { hasPendingStaffInvitation, resetTokenAllowedForSurface } from "./identity-domain";
@@ -139,9 +139,6 @@ function createAuth(surface: AuthSurface) {
       enabled: !testerOnly,
       disableSignUp: surface === "staff" ? false : !publicCustomerCredentials,
       requireEmailVerification: surface === "customer",
-      onExistingUserSignUp: async ({ user }) => {
-        if (surface === "customer") sendExistingCustomerAccountEmail(user.email, customerUrl(process.env, "/sign-in"));
-      },
       minPasswordLength: 16,
       revokeSessionsOnPasswordReset: true,
       sendResetPassword: async ({ user, token }) => {
