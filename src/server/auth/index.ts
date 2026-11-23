@@ -13,11 +13,11 @@ import { authSurfaceOrigins, type AuthSurface } from "./surfaces";
 import { assertExplicitLegalAcceptance, currentLegalDocuments, LegalAcceptanceRequiredError, type LegalAcceptanceInput } from "@/modules/legal/policy";
 import { stagingTesterEmails } from "@/modules/legal/staging-testers";
 import { recordLegalAcceptance, requireCurrentLegalAcceptance } from "@/server/legal/acceptance";
-import { authEmailAvailable, sendAuthEmailInBackground } from "./email-delivery";
+import { authEmailAvailable, sendAuthEmailInBackground, sendCustomerWelcomeEmail } from "./email-delivery";
 import { isCustomerAccountSuspended } from "@/server/identity/customer-access";
 import { hashInvitationSecret } from "@/server/identity/invitation-token";
 import { hasPendingStaffInvitation, resetTokenAllowedForSurface } from "./identity-domain";
-import { resetPasswordUrl } from "./urls";
+import { customerUrl, resetPasswordUrl } from "./urls";
 import { appendAuditEvent } from "@/server/audit/append";
 import { logSafeEvent } from "@/server/observability/safe-log";
 
@@ -160,6 +160,9 @@ function createAuth(surface: AuthSurface) {
       sendOnSignUp: publicCustomerCredentials,
       sendOnSignIn: publicCustomerCredentials,
       autoSignInAfterVerification: true,
+      afterEmailVerification: async (user) => {
+        if (surface === "customer") sendCustomerWelcomeEmail(user.email, customerUrl(process.env, "/sign-in"));
+      },
       sendVerificationEmail: async ({ user, url }) => {
         const subject = surface === "staff" ? "Verify your GPHKM staff email" : "Verify your GPHKM email";
         const purpose = surface === "staff" ? "accepting your staff invitation" : "setting up your GPHKM account";
@@ -282,6 +285,7 @@ function createAuth(surface: AuthSurface) {
             await tx.execute(sql`select set_config('app.user_id', ${newUser.id}, true)`);
             await recordLegalAcceptance(tx, newUser.id, accepted);
           });
+          if (newUser.emailVerified) sendCustomerWelcomeEmail(newUser.email, customerUrl(process.env, "/sign-in"));
         },
       } },
       session: { create: { before: async (session, context) => {

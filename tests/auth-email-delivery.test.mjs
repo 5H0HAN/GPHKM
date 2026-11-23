@@ -48,3 +48,33 @@ test("auth email delivery does not block auth responses and handles failures saf
   assert.deepEqual(logged, [JSON.stringify({ event: "customer_auth_email_failed" })]);
   assert.ok(!logged.join(" ").includes("sensitive-reset-link"));
 });
+
+test("verified customer welcome email uses the configured system sender", async (t) => {
+  const originalEnv = Object.fromEntries(["RESEND_API_KEY", "RESEND_SYSTEM_FROM_EMAIL", "RESEND_SUPPORT_FROM_EMAIL", "GPHKM_RESEND_DATA_HANDLING_APPROVED"].map((key) => [key, process.env[key]]));
+  const originalFetch = globalThis.fetch;
+  process.env.RESEND_API_KEY = "synthetic-resend-key";
+  process.env.RESEND_SYSTEM_FROM_EMAIL = "no-reply@example.test";
+  process.env.RESEND_SUPPORT_FROM_EMAIL = "support@example.test";
+  process.env.GPHKM_RESEND_DATA_HANDLING_APPROVED = "true";
+  t.after(() => {
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    globalThis.fetch = originalFetch;
+  });
+
+  const { sendCustomerWelcomeEmail } = await import("../src/server/auth/email-delivery.ts");
+  let requestBody;
+  globalThis.fetch = async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return new Response(null, { status: 200 });
+  };
+  sendCustomerWelcomeEmail("customer@example.test", "https://app.example.test/sign-in");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(requestBody.from, "no-reply@example.test");
+  assert.deepEqual(requestBody.to, ["customer@example.test"]);
+  assert.equal(requestBody.subject, "Welcome to GPHKM");
+  assert.match(requestBody.text, /https:\/\/app\.example\.test\/sign-in/);
+});
