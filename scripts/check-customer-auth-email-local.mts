@@ -223,6 +223,7 @@ try {
   assert.equal(verificationLink.origin, customerOrigin);
   stage = `verification confirmation path ${verificationLink.pathname}`;
   assert.equal(verificationLink.pathname, "/sign-in/confirm-email");
+  stage = "verification token present in confirmation link";
   assert.ok(verificationLink.searchParams.get("token"));
   const unverified = await customer.send("/api/auth/sign-in/email", { email, password });
   assert.equal(unverified.status, 403);
