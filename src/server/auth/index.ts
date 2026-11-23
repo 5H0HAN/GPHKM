@@ -185,10 +185,13 @@ function createAuth(surface: AuthSurface) {
         if (surface === "customer") sendCustomerWelcomeEmail(user.email, customerUrl(process.env, "/sign-in"));
       },
       sendVerificationEmail: async ({ user, url, token }) => {
-        await storeEmailVerificationToken(user.id, token);
+        const generatedVerificationUrl = new URL(url);
+        const verificationToken = generatedVerificationUrl.searchParams.get("token");
+        if (!verificationToken || verificationToken !== token) throw new Error("Better Auth returned a mismatched email verification token");
+        await storeEmailVerificationToken(user.id, verificationToken);
         const confirmationUrl = new URL(surface === "staff" ? "/staff/sign-in/confirm-email" : "/sign-in/confirm-email", baseURL);
-        confirmationUrl.searchParams.set("token", token);
-        const callbackURL = new URL(url).searchParams.get("callbackURL");
+        confirmationUrl.searchParams.set("token", verificationToken);
+        const callbackURL = generatedVerificationUrl.searchParams.get("callbackURL");
         if (callbackURL) confirmationUrl.searchParams.set("callbackURL", callbackURL);
         const subject = surface === "staff" ? "Verify your GPHKM staff email" : "Verify your GPHKM email";
         const purpose = surface === "staff" ? "accepting your staff invitation" : "setting up your GPHKM account";
