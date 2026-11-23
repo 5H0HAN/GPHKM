@@ -15,6 +15,7 @@ This runbook is for the isolated demo and test environment. Do not use productio
 | Database backup procedure and isolated restore rehearsal | PASS |
 | Desktop and mobile review | PASS |
 | Staging review Terms and Privacy pages | PASS |
+| Resend sending credential and direct delivery | PASS |
 | Open customer email/Google signup, email reset, and staff invitation rollout | FAIL |
 | Live Resend delivery and invitation acceptance | FAIL |
 | Approved production Terms and Privacy | FAIL |
