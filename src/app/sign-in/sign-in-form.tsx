@@ -62,7 +62,15 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
         setNotice("If the address can receive a password reset link, we’ll send one.");
         return;
       } else if (mode === "sign-up") {
-        if (!legalConsentRef.current?.reportValidity() || !legalConsentRef.current.checked || !legalDocuments) return;
+        if (!legalDocuments) {
+          setError("Customer registration is temporarily unavailable. Please try again later.");
+          return;
+        }
+        if (!legalConsentRef.current?.checked) {
+          setError("Please accept the staging Terms and Privacy drafts before creating your account.");
+          legalConsentRef.current?.reportValidity();
+          return;
+        }
         const password = String(values.get("password"));
         if (password !== String(values.get("confirmPassword"))) {
           setError("Passwords do not match.");
@@ -121,7 +129,12 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
   async function google() {
     if (!showGoogle || busy) return;
     const signingUp = mode === "sign-up";
-    if (signingUp && (!googleSignupEnabled || !legalDocuments || !legalConsentRef.current?.reportValidity() || !legalConsentRef.current.checked)) return;
+    if (signingUp && (!googleSignupEnabled || !legalDocuments)) return;
+    if (signingUp && !legalConsentRef.current?.checked) {
+      setError("Please accept the staging Terms and Privacy drafts before creating your account.");
+      legalConsentRef.current?.reportValidity();
+      return;
+    }
     setBusy(true);
     setError("");
     try {
