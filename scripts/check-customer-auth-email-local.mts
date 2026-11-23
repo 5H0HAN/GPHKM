@@ -227,8 +227,11 @@ try {
   stage = `verification token query state ${verificationLink.searchParams.has("token") ? "present" : "missing"}/${Boolean(linkToken) ? "nonempty" : "empty"}`;
   assert.ok(linkToken);
   stage = "unverified sign-in denial";
+  stage = "unverified sign-in request";
   const unverified = await customer.send("/api/auth/sign-in/email", { email, password });
+  stage = "unverified sign-in status";
   assert.equal(unverified.status, 403);
+  stage = "unverified sign-in error code";
   assert.equal(unverified.body?.code, "EMAIL_NOT_VERIFIED");
   assert.equal(customer.hasSession(), false);
   assert.equal(verificationLink.pathname, "/sign-in/confirm-email");
