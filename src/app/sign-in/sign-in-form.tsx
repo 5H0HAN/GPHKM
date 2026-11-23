@@ -62,7 +62,15 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
         setNotice("If the address can receive a password reset link, we’ll send one.");
         return;
       } else if (mode === "sign-up") {
-        if (!legalConsentRef.current?.reportValidity() || !legalConsentRef.current.checked || !legalDocuments) return;
+        if (!legalDocuments) {
+          setError("Customer registration is temporarily unavailable. Please try again later.");
+          return;
+        }
+        if (!legalConsentRef.current?.checked) {
+          setError("Please accept the staging Terms and Privacy drafts before creating your account.");
+          legalConsentRef.current?.reportValidity();
+          return;
+        }
         const password = String(values.get("password"));
         if (password !== String(values.get("confirmPassword"))) {
           setError("Passwords do not match.");
@@ -83,7 +91,7 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
           return;
         }
         form.reset();
-        setNotice("Check your email for a verification link. Your Terms and Privacy Policy acceptance is recorded with this account.");
+        setNotice("New accounts receive a verification email. If you already have an account, sign in with your existing method; email/password sign-in resends verification for unverified accounts. Use Google for Google accounts.");
         return;
       } else if (verify) {
         const code = String(values.get("code") ?? "").trim();
@@ -121,7 +129,12 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
   async function google() {
     if (!showGoogle || busy) return;
     const signingUp = mode === "sign-up";
-    if (signingUp && (!googleSignupEnabled || !legalDocuments || !legalConsentRef.current?.reportValidity() || !legalConsentRef.current.checked)) return;
+    if (signingUp && (!googleSignupEnabled || !legalDocuments)) return;
+    if (signingUp && !legalConsentRef.current?.checked) {
+      setError("Please accept the staging Terms and Privacy drafts before creating your account.");
+      legalConsentRef.current?.reportValidity();
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -179,7 +192,7 @@ export default function SignInForm({ oauthError, session = null, localEnabled, e
         </>
       ) : (
         <>
-          {mode === "sign-up" && legalDocuments ? <LegalConsentCheckbox documents={legalDocuments} disabled={busy} inputRef={legalConsentRef} form={emailSignupEnabled ? "customer-signup-form" : undefined} /> : null}
+          {mode === "sign-up" && legalDocuments ? <LegalConsentCheckbox documents={legalDocuments} disabled={busy} inputRef={legalConsentRef} form={emailSignupEnabled ? "customer-signup-form" : undefined} onInvalid={() => setError("Please accept the staging Terms and Privacy drafts before creating your account.")} /> : null}
           {showGoogle && (mode !== "sign-up" || googleSignupEnabled) ? <button className={styles.secondary} type="button" disabled={busy} onClick={google}>
             {busy ? "Please wait…" : mode === "sign-up" ? "Create account with Google" : "Continue with Google"}
           </button> : null}
