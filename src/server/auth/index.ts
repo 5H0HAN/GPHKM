@@ -144,7 +144,7 @@ function createAuth(surface: AuthSurface) {
       sendResetPassword: async ({ user, token }) => {
         if (!await resetTokenAllowedForSurface(user.id, surface)) return;
         const link = resetPasswordUrl(process.env, surface, token);
-        sendAuthEmailInBackground({ to: user.email, subject: surface === "staff" ? "Reset your GPHKM staff password" : "Reset your GPHKM password", text: `Use this one-time link to reset your GPHKM password:\n\n${link}\n\nIf you did not request this, ignore this email. The link expires automatically.` });
+        sendAuthEmailInBackground({ kind: "password_reset", to: user.email, subject: surface === "staff" ? "Reset your GPHKM staff password" : "Reset your GPHKM password", text: `Use this one-time link to reset your GPHKM password:\n\n${link}\n\nIf you did not request this, ignore this email. The link expires automatically.` });
       },
       onPasswordReset: async ({ user }) => {
         await db.update(schema.user).set({ emailVerified: true }).where(eq(schema.user.id, user.id));
@@ -166,7 +166,7 @@ function createAuth(surface: AuthSurface) {
       sendVerificationEmail: async ({ user, url }) => {
         const subject = surface === "staff" ? "Verify your GPHKM staff email" : "Verify your GPHKM email";
         const purpose = surface === "staff" ? "accepting your staff invitation" : "setting up your GPHKM account";
-        sendAuthEmailInBackground({ to: user.email, subject, text: `Verify your email address before ${purpose}:\n\n${url}\n\nIf you did not create this account, ignore this email.` });
+        sendAuthEmailInBackground({ kind: "verification", to: user.email, subject, text: `Verify your email address before ${purpose}:\n\n${url}\n\nIf you did not create this account, ignore this email.` });
       },
     },
     socialProviders: surface === "customer" && googleId && googleSecret ? { google: {
