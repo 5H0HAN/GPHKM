@@ -231,8 +231,12 @@ try {
   const unverified = await customer.send("/api/auth/sign-in/email", { email, password });
   stage = "unverified sign-in status";
   assert.equal(unverified.status, 403);
-  stage = "unverified sign-in error code";
-  assert.equal(unverified.body?.code, "EMAIL_NOT_VERIFIED");
+  const signInErrorCode = unverified.body?.code;
+  stage = signInErrorCode === "EMAIL_NOT_VERIFIED" ? "unverified sign-in expected error code"
+    : signInErrorCode === undefined ? "unverified sign-in missing error code"
+      : /^[A-Z0-9_]{1,64}$/.test(signInErrorCode) ? `unverified sign-in error code ${signInErrorCode}`
+        : "unverified sign-in unexpected error code format";
+  assert.equal(signInErrorCode, "EMAIL_NOT_VERIFIED");
   assert.equal(customer.hasSession(), false);
   assert.equal(verificationLink.pathname, "/sign-in/confirm-email");
   assert.ok(verificationLink.searchParams.get("token"));
