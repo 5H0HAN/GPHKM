@@ -853,12 +853,18 @@
 :global(.catalogOrderTray strong),:global(.catalogOrderTray > div span) { color: var(--text-primary); font-variant-numeric: tabular-nums; }
 :global(.catalogOrderTray p) { grid-column: 1; margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 :global(.catalogCartSaveState) { grid-column: 1; color: var(--text-muted); font-size: 11px; line-height: 1.4; }
-:global(.catalogCartActions) { display: flex; grid-column: 2; grid-row: 1 / span 3; align-items: center; justify-content: flex-end; gap: 8px; }
-:global(.catalogClearCartConfirmation) { display: flex; align-items: center; gap: 8px; }
-:global(.catalogCartActions > span) { max-width: 180px; color: var(--text-secondary); font-size: 11px; line-height: 1.4; }
-:global(.catalogClearCartConfirmation > span) { max-width: 180px; color: var(--text-secondary); font-size: 11px; line-height: 1.4; }
+:global(.catalogCartActions) { display: flex; min-width: 0; grid-column: 2; grid-row: 1 / span 3; align-items: center; justify-content: flex-end; gap: 8px; }
 :global(.catalogCartActions .catalogClearCart) { min-height: 42px; padding: 0 10px; border: 1px solid var(--border-strong); background: transparent; color: var(--text-primary); font: inherit; font-size: 11px; cursor: pointer; }
 :global(.catalogCartActions .catalogClearCart:hover) { background: var(--surface-2); }
+:global(.catalogClearCartConfirmation) { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
+:global(.catalogClearCartCopy) { display: grid; min-width: 0; gap: 4px; }
+:global(.catalogClearCartCopy strong) { color: var(--text-primary); font-size: 13px; line-height: 1.35; }
+:global(.catalogClearCartCopy p) { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+:global(.catalogClearCartConfirmationActions) { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+:global(.catalogOrderTray .catalogClearCartCancel),:global(.catalogOrderTray .catalogClearCartConfirm) { min-height: 44px; padding: 0 12px; font: inherit; font-size: 12px; cursor: pointer; }
+:global(.catalogOrderTray .catalogClearCartCancel) { border: 1px solid var(--border-strong); background: var(--surface-1); color: var(--text-primary); }
+:global(.catalogOrderTray .catalogClearCartConfirm) { border: 1px solid var(--error); background: var(--error-soft); color: var(--error); font-weight: 600; }
+:global(.catalogOrderTray .catalogClearCartConfirm:hover:not(:disabled)) { background: color-mix(in srgb, var(--error-soft) 78%, var(--error)); }
 :global(.catalogCartChanged) { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
 :global(.catalogCartChanged button) { min-height: 38px; flex: 0 0 auto; padding: 0 10px; border: 1px solid var(--border-strong); background: var(--surface-1); color: var(--text-primary); font: inherit; font-size: 11px; cursor: pointer; }
 :global(.catalogCartChanged button:focus-visible),:global(.catalogCartActions button:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
@@ -931,7 +937,9 @@
   :global(.catalogOrderTray) { grid-template-columns: 1fr; gap: 9px; margin: 14px 0 18px; padding: 14px; }
   :global(.catalogOrderTray p),:global(.catalogOrderTray button) { grid-column: 1; grid-row: auto; }
   :global(.catalogCartActions) { grid-column: 1; grid-row: auto; justify-content: flex-start; flex-wrap: wrap; }
-  :global(.catalogClearCartConfirmation) { flex-wrap: wrap; }
+  :global(.catalogClearCartConfirmation) { grid-column: 1; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 2px; }
+  :global(.catalogClearCartConfirmationActions) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  :global(.catalogClearCartConfirmationActions button) { grid-column: auto; width: 100%; }
   :global(.catalogCartSaveState) { grid-column: 1; }
   :global(.catalogCartChanged) { align-items: flex-start; flex-direction: column; }
   :global(.catalogCartChanged button) { width: 100%; }

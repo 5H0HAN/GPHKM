@@ -102,7 +102,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   const idempotencyKeyRef = useRef("");
   const errorRef = useRef<HTMLParagraphElement>(null);
   const clearCartTriggerRef = useRef<HTMLButtonElement>(null);
-  const clearCartConfirmRef = useRef<HTMLButtonElement>(null);
+  const clearCartCancelRef = useRef<HTMLButtonElement>(null);
   const outdatedDisclosureRef = useRef<HTMLDivElement>(null);
   const catalogFlowHeadingRef = useRef<HTMLHeadingElement>(null);
   const selectedRef = useRef(selected);
@@ -114,7 +114,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   const cartSaveErrorRef = useRef("");
   const flushCartItemRef = useRef<(listingId: string) => Promise<void>>(async () => undefined);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
-  useEffect(() => { if (confirmClearCart) clearCartConfirmRef.current?.focus(); }, [confirmClearCart]);
+  useEffect(() => { if (confirmClearCart) clearCartCancelRef.current?.focus(); }, [confirmClearCart]);
   useEffect(() => { if (disclosuresOutdated) outdatedDisclosureRef.current?.focus(); }, [disclosuresOutdated]);
   useEffect(() => { if (step !== "browse") catalogFlowHeadingRef.current?.focus(); }, [step]);
   const selectedListings = Object.values(selected).flatMap((item) => item.listing ? [item.listing] : []);
@@ -567,13 +567,20 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
         <span className="catalogCartSaveState" role="status">{cartError ? `Cart issue: ${cartError}` : cartSaveState === "saving" ? "Saving shared cart…" : "Shared cart saved"}</span>
         <div className="catalogCartActions">
           <button ref={clearCartTriggerRef} type="button" className="catalogClearCart" aria-expanded={confirmClearCart} aria-controls={confirmClearCart ? "catalog-clear-cart-confirmation" : undefined} disabled={cartBusy} onClick={() => setConfirmClearCart(true)}>Clear cart</button>
-          {confirmClearCart && <div className="catalogClearCartConfirmation" id="catalog-clear-cart-confirmation" role="group" aria-label="Confirm clearing the shared cart">
-            <span>Remove every placement and its saved details?</span>
-            <button ref={clearCartConfirmRef} type="button" className="catalogClearCart" disabled={cartBusy} onClick={() => void clearCart()}>Confirm clear</button>
-            <button type="button" className="catalogClearCart" disabled={cartBusy} onClick={() => { setConfirmClearCart(false); clearCartTriggerRef.current?.focus(); }}>Keep cart</button>
-          </div>}
           <button type="button" disabled={!cartLoaded || cartBusy} onClick={() => { setError(""); setStep("details"); }}>Add order details <span aria-hidden="true">→</span></button>
         </div>
+        {confirmClearCart && <div className="catalogClearCartConfirmation" id="catalog-clear-cart-confirmation" role="group" aria-labelledby="catalog-clear-cart-title" aria-describedby="catalog-clear-cart-description">
+          <div className="catalogClearCartCopy">
+            <strong id="catalog-clear-cart-title">Clear the shared cart?</strong>
+            <p id="catalog-clear-cart-description">{selectedCount === 1
+              ? "This removes the placement and its saved details for everyone in your organization."
+              : `This removes all ${selectedCount} placements and their saved details for everyone in your organization.`}</p>
+          </div>
+          <div className="catalogClearCartConfirmationActions">
+            <button ref={clearCartCancelRef} type="button" className="catalogClearCartCancel" disabled={cartBusy} onClick={() => { setConfirmClearCart(false); clearCartTriggerRef.current?.focus(); }}>Keep cart</button>
+            <button type="button" className="catalogClearCartConfirm" disabled={cartBusy} onClick={() => void clearCart()}>{cartBusy ? "Clearing cart…" : selectedCount === 1 ? "Remove placement" : "Remove all placements"}</button>
+          </div>
+        </div>}
       </section>}
       {error && <p ref={errorRef} role="alert" tabIndex={-1} className="catalogError">{error}</p>}
     </>}
