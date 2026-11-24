@@ -52,7 +52,7 @@ The staging Google OAuth project uses the In production audience so non-listed G
 
 1. Keep the R2 bucket private. Disable its public development URL and custom public domains, and keep browser CORS disabled. Restrict the access token to Object Read & Write on this bucket only; do not grant account-wide bucket administration.
 2. Set `GPHKM_PRIVATE_STORAGE_DRIVER=r2`, `GPHKM_R2_ACCOUNT_ID`, `GPHKM_R2_BUCKET`, `GPHKM_R2_ACCESS_KEY_ID`, and `GPHKM_R2_SECRET_ACCESS_KEY` in the deployment secret store. Treat the access keys as secrets.
-3. Keep these settings runtime-only, with build-time injection disabled. Pass them only to the application and notification worker. Keep preview environment copies disabled unless a separate preview bucket is reviewed and configured.
+3. Keep these settings runtime-only, with build-time injection disabled. The staging Compose configuration masks the R2 variables from the database, migration, and role-provisioning services, and explicitly passes them only to the web app and notification worker. Keep preview environment copies disabled unless a separate preview bucket is reviewed and configured.
 4. After deployment, upload one synthetic private file through the app. While it exists, if a public URL is configured, verify an unauthenticated request is denied; do not enable public access for this test. Otherwise, confirm the bucket's public endpoints are disabled and the app exposes no public object URL. Verify an authorized app read succeeds, then delete it and confirm it can no longer be read. Do not use real customer, supplier, or payment data for this check.
 
 ## Backup and restore
