@@ -939,7 +939,7 @@
   :global(.catalogCartActions) { grid-column: 1; grid-row: auto; justify-content: flex-start; flex-wrap: wrap; }
   :global(.catalogClearCartConfirmation) { grid-column: 1; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 2px; }
   :global(.catalogClearCartConfirmationActions) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  :global(.catalogClearCartConfirmationActions button) { width: 100%; }
+  :global(.catalogClearCartConfirmationActions button) { grid-column: auto; width: 100%; }
   :global(.catalogCartSaveState) { grid-column: 1; }
   :global(.catalogCartChanged) { align-items: flex-start; flex-direction: column; }
   :global(.catalogCartChanged button) { width: 100%; }

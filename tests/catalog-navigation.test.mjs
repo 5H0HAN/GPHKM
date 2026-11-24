@@ -77,4 +77,5 @@ test("clear-cart confirmation uses a full-width review row and defaults focus to
   assert.match(styles, /catalogClearCartConfirmation\) \{ display: grid; grid-column: 1 \/ -1;/);
   assert.match(styles, /catalogClearCartConfirm\) \{ border: 1px solid var\(--error\); background: var\(--error-soft\);/);
   assert.match(styles, /catalogClearCartConfirmationActions\) \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+  assert.match(styles, /catalogClearCartConfirmationActions button\) \{ grid-column: auto; width: 100%; \}/);
 });
