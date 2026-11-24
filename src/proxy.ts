@@ -8,6 +8,7 @@ function pageResponse(request: NextRequest, surface: "public" | "customer" | "st
   const policy = buildContentSecurityPolicy(nonce, {
     development: process.env.NODE_ENV === "development",
     customerSurface: surface === "customer",
+    staging: process.env.GPHKM_DEPLOYMENT_ENV === "staging",
   });
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
