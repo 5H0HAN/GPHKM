@@ -15,7 +15,7 @@ type ItemDraft = {
   writingBrief: string;
   useWriting: boolean;
 };
-type SelectedItem = { listing?: CustomerListing; listingRevision: number; version: number; draft: ItemDraft; unavailable?: boolean };
+type SelectedItem = { listing?: CustomerListing; listingRevision: number; version: number; generationId: string | null; draft: ItemDraft; unavailable?: boolean };
 type SelectedItems = Record<string, SelectedItem>;
 
 const emptyDraft = (): ItemDraft => ({ targetUrl: "", anchorText: "", instructions: "", articleText: "", writingBrief: "", useWriting: false });
@@ -107,7 +107,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   const catalogFlowHeadingRef = useRef<HTMLHeadingElement>(null);
   const selectedRef = useRef(selected);
   useLayoutEffect(() => { selectedRef.current = selected; }, [selected]);
-  const cartVersionsRef = useRef<Record<string, number>>({});
+  const cartVersionsRef = useRef<Record<string, { version: number; generationId: string | null }>>({});
   const cartTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const cartSavingRef = useRef(new Map<string, Promise<void>>());
   const cartDirtyRef = useRef(new Set<string>());
@@ -131,7 +131,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
       credentials: "same-origin", cache: "no-store", signal: controller.signal,
     }).then(async (response) => {
       const result = await response.json() as { items?: Array<{
-        listingId: string; listingRevision: number; version: number; draft: ItemDraft; listing: CustomerListing | null;
+        listingId: string; listingRevision: number; version: number; generationId: string; draft: ItemDraft; listing: CustomerListing | null;
       }>; error?: string };
       if (!response.ok) throw new Error(result.error ?? "The shared cart could not be loaded.");
       if (!active || controller.signal.aborted) return;
@@ -139,10 +139,14 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
         listing: item.listing ?? undefined,
         listingRevision: item.listingRevision,
         version: item.version,
+        generationId: item.generationId,
         draft: item.draft,
         unavailable: !item.listing,
       }]));
-      cartVersionsRef.current = Object.fromEntries((result.items ?? []).map((item) => [item.listingId, item.version]));
+      cartVersionsRef.current = Object.fromEntries((result.items ?? []).map((item) => [item.listingId, {
+        version: item.version,
+        generationId: item.generationId,
+      }]));
       setSelected(restored);
       setCartError("");
       setCartLoadedOrganization(organizationId);
@@ -182,7 +186,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
     cartDirtyRef.current.delete(listingId);
     const item = selectedRef.current[listingId];
     if (!item?.listing) return;
-    const version = cartVersionsRef.current[listingId] ?? item.version;
+    const token = cartVersionsRef.current[listingId] ?? { version: item.version, generationId: item.generationId };
     const saving = (async () => {
       const response = await fetch("/api/customer/cart", {
         method: "POST",
@@ -193,15 +197,18 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
           action: "save",
           listingId,
           listingRevision: item.listingRevision,
-          version,
+          version: token.version,
+          generationId: token.generationId,
           draft: item.draft,
         }),
       });
-      const result = await response.json() as { version?: number; error?: string };
-      if (!response.ok || !Number.isSafeInteger(result.version)) throw new Error(result.error ?? "Cart details could not be saved.");
-      cartVersionsRef.current[listingId] = result.version!;
+      const result = await response.json() as { version?: number; generationId?: string; error?: string };
+      if (!response.ok || !Number.isSafeInteger(result.version) || typeof result.generationId !== "string") {
+        throw new Error(result.error ?? "Cart details could not be saved.");
+      }
+      cartVersionsRef.current[listingId] = { version: result.version!, generationId: result.generationId };
       setSelected((current) => current[listingId]
-        ? { ...current, [listingId]: { ...current[listingId], version: result.version! } }
+        ? { ...current, [listingId]: { ...current[listingId], version: result.version!, generationId: result.generationId! } }
         : current);
       notifyCartUpdated();
     })();
@@ -285,8 +292,8 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
     if (!checked) { void removeSelected(listingId); return; }
     const listing = listings.find((item) => item.id === listingId);
     if (!listing) return;
-    setSelected((current) => ({ ...current, [listingId]: { listing, listingRevision: listing.revision, version: 0, draft: emptyDraft() } }));
-    cartVersionsRef.current[listingId] = 0;
+    setSelected((current) => ({ ...current, [listingId]: { listing, listingRevision: listing.revision, version: 0, generationId: null, draft: emptyDraft() } }));
+    cartVersionsRef.current[listingId] = { version: 0, generationId: null };
     scheduleCartSave(listingId);
   }
 
@@ -295,13 +302,19 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
     idempotencyKeyRef.current = "";
     setError("");
     setCartBusy(true);
+    const hadUnsavedDraft = cartDirtyRef.current.has(listingId);
     const timer = cartTimersRef.current.get(listingId);
     if (timer) clearTimeout(timer);
     cartTimersRef.current.delete(listingId);
     cartDirtyRef.current.delete(listingId);
     try {
       await cartSavingRef.current.get(listingId)?.catch(() => undefined);
-      await sendCartAction({ action: "remove", listingId });
+      const token = cartVersionsRef.current[listingId] ?? {
+        version: selectedRef.current[listingId]?.version ?? 0,
+        generationId: selectedRef.current[listingId]?.generationId ?? null,
+      };
+      await sendCartAction({ action: "remove", listingId, ...token });
+      cartDirtyRef.current.delete(listingId);
       cartVersionsRef.current = Object.fromEntries(Object.entries(cartVersionsRef.current).filter(([id]) => id !== listingId));
       setSelected((current) => {
         const next = { ...current };
@@ -314,6 +327,15 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
       notifyCartUpdated();
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "This placement could not be removed.";
+      if (hadUnsavedDraft || cartDirtyRef.current.has(listingId)) {
+        cartDirtyRef.current.add(listingId);
+        setCartSaveState("saving");
+        const retryTimer = setTimeout(() => {
+          cartTimersRef.current.delete(listingId);
+          void flushCartItem(listingId);
+        }, 450);
+        cartTimersRef.current.set(listingId, retryTimer);
+      }
       setCartError(message);
       cartSaveErrorRef.current = message;
     } finally {
@@ -429,7 +451,10 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
     try {
       await flushAllCartItems();
       const cartVersions = Object.fromEntries(selectedListings.map((listing) => [listing.id, cartVersionsRef.current[listing.id]]));
-      if (selectedListings.some((listing) => !Number.isSafeInteger(cartVersions[listing.id]))) {
+      if (selectedListings.some((listing) => {
+        const token = cartVersions[listing.id];
+        return !token || !Number.isSafeInteger(token.version) || token.version < 1 || typeof token.generationId !== "string";
+      })) {
         throw new Error("The shared cart is still saving. Try again when it shows Saved.");
       }
       const response = await fetch("/api/customer/orders", {

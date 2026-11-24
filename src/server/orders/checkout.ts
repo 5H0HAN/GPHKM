@@ -13,6 +13,7 @@ import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganiza
 import { appendAuditEvent } from "@/server/audit/append";
 import { clearCheckedOutCustomerCartItems } from "./cart";
 import { validateCustomerCartDraft } from "@/modules/orders/cart";
+import type { CustomerCartVersion } from "@/modules/orders/cart";
 
 const MAX_NUMERIC_20 = 10n ** 20n - 1n;
 
@@ -72,15 +73,20 @@ function listingSnapshot(row: typeof listing.$inferSelect) {
   };
 }
 
-function parseCartVersions(raw: unknown, items: CheckoutInput["items"]): Record<string, number> {
+function parseCartVersions(raw: unknown, items: CheckoutInput["items"]): Record<string, CustomerCartVersion> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid order details");
   const versions = raw as Record<string, unknown>;
   if (Object.keys(versions).length !== items.length) throw new Error("Invalid order details");
-  const result: Record<string, number> = Object.create(null) as Record<string, number>;
+  const result: Record<string, CustomerCartVersion> = Object.create(null) as Record<string, CustomerCartVersion>;
   for (const item of items) {
-    const version = versions[item.listingId];
-    if (!Number.isSafeInteger(version) || (version as number) < 1) throw new Error("Invalid order details");
-    result[item.listingId] = version as number;
+    const token = versions[item.listingId];
+    if (!token || typeof token !== "object" || Array.isArray(token)) throw new Error("Invalid order details");
+    const value = token as Record<string, unknown>;
+    if (Object.keys(value).length !== 2 || !Number.isSafeInteger(value.version) || (value.version as number) < 1 ||
+        typeof value.generationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.generationId)) {
+      throw new Error("Invalid order details");
+    }
+    result[item.listingId] = { version: value.version as number, generationId: value.generationId };
   }
   if (Object.keys(versions).some((listingId) => !items.some((item) => item.listingId === listingId))) {
     throw new Error("Invalid order details");
@@ -121,7 +127,9 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
     const savedById = new Map(savedRows.map((row) => [row.listingId, row]));
     for (const item of input.items) {
       const saved = savedById.get(item.listingId);
-      if (!saved || saved.version !== cartVersions[item.listingId] || saved.listingRevision !== item.expectedRevision) {
+      const cartVersion = cartVersions[item.listingId];
+      if (!saved || saved.version !== cartVersion.version || saved.generationId !== cartVersion.generationId ||
+          saved.listingRevision !== item.expectedRevision) {
         throw new Error("Cart has changed. Refresh the shared cart before placing the order.");
       }
       const draft = validateCustomerCartDraft(saved.draft);

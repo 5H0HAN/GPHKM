@@ -11,6 +11,7 @@ import styles from "./customer.module.css";
 type CartItem = {
   listingId: string;
   listingRevision: number;
+  generationId: string;
   version: number;
   draft: CustomerCartDraft;
   listing: CustomerListing | null;
@@ -109,7 +110,7 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
     const update = () => { void refreshCount(); if (open) void refreshItems(); };
     const onVisibility = () => { if (document.visibilityState === "visible") update(); };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && open) {
         updateUi({ open: false, confirmClear: false });
         cartButtonRef.current?.focus();
       }
@@ -129,9 +130,13 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
 
   async function removeItem(listingId: string) {
     if (mutationBusy) return;
+    const item = items.find((candidate) => candidate.listingId === listingId);
+    if (!item) return;
     updateUi({ mutationBusy: true, error: "" });
     try {
-      const response = await cartRequest(organizationId, { action: "remove", listingId });
+      const response = await cartRequest(organizationId, {
+        action: "remove", listingId, generationId: item.generationId, version: item.version,
+      });
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "This placement could not be removed.");
       if (organizationIdRef.current !== organizationId) return;

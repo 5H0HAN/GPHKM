@@ -22,6 +22,7 @@ test("cart accepts unfinished placement details without treating them as checkou
   });
   assert.equal(validateCustomerCartDraft({ articleText: "First line\nSecond line" }).articleText, "First line\nSecond line");
   assert.equal(validateCustomerCartDraft({ targetUrl: " https://example.org/page " }).targetUrl, "https://example.org/page");
+  assert.throws(() => validateCustomerCartDraft({ targetUrl: "https://example.org/a b" }), /cart details/);
 });
 
 test("cart draft validation rejects unsafe or oversized customer text", () => {
@@ -35,6 +36,7 @@ test("cart draft validation rejects unsafe or oversized customer text", () => {
 test("cart storage is organization-scoped with database-enforced active-member RLS", async () => {
   const migration = await readFile(new URL("../src/db/migrations/0202_customer_organization_cart.sql", import.meta.url), "utf8");
   const listingRetentionMigration = await readFile(new URL("../src/db/migrations/0205_protect_customer_cart_listing_deletion.sql", import.meta.url), "utf8");
+  const generationMigration = await readFile(new URL("../src/db/migrations/0206_customer_cart_generation_tokens.sql", import.meta.url), "utf8");
   const schema = await readFile(new URL("../src/db/cart-schema.ts", import.meta.url), "utf8");
   const service = await readFile(new URL("../src/server/orders/cart.ts", import.meta.url), "utf8");
   assert.match(schema, /primaryKey\(\{ columns: \[table\.organizationId, table\.listingId\] \}\)/);
@@ -46,6 +48,8 @@ test("cart storage is organization-scoped with database-enforced active-member R
   assert.match(service, /withProtectedOrganizationContext/);
   assert.match(service, /pg_advisory_xact_lock/);
   assert.match(service, /version/);
+  assert.match(schema, /generationId: uuid\("generation_id"\)/);
+  assert.match(generationMigration, /ADD COLUMN "generation_id" uuid DEFAULT gen_random_uuid\(\) NOT NULL/i);
 });
 
 test("checkout clears the saved organization cart in the successful order transaction", async () => {
@@ -54,7 +58,8 @@ test("checkout clears the saved organization cart in the successful order transa
   const finalize = checkout.indexOf("gphkm_finalize_order_checkout");
   const clear = checkout.lastIndexOf("clearCheckedOutCustomerCartItems");
   assert.ok(clear > finalize);
-  assert.match(cartService, /eq\(customerCartItem\.version, version\)/);
+  assert.match(cartService, /eq\(customerCartItem\.version, token\.version\)/);
+  assert.match(cartService, /eq\(customerCartItem\.generationId, token\.generationId\)/);
   assert.match(cartService, /deleted\.rowCount !== 1/);
   assert.match(checkout, /parseCartVersions\(rawCartVersions, input\.items\)/);
   assert.doesNotMatch(checkout, /rawCartVersions\?: unknown/);
@@ -68,4 +73,7 @@ test("cart accepts updated terms for off-page saved listings and protects pendin
   assert.doesNotMatch(catalog, /keepalive:\s*true/);
   assert.match(catalog, /beforeunload/);
   assert.match(catalog, /!cartDirtyRef\.current\.size && !cartSavingRef\.current\.size/);
+  assert.match(catalog, /generationId: token\.generationId/);
+  assert.match(catalog, /generationId: result\.generationId/);
+  assert.match(catalog, /await cartSavingRef\.current\.get\(listingId\)/);
 });

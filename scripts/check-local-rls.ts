@@ -973,6 +973,24 @@ try {
   assert.equal(revokedCart.rowCount, 0, "membership revocation immediately removes cart access");
   await migration.query("RESET ROLE");
   await migration.query("update organization_member set active = true where organization_id = $1 and user_id = $2", [organizationA, memberA]);
+  const [oldCartGeneration] = (await migration.query<{ generation_id: string }>(
+    "select generation_id from customer_cart_item where organization_id = $1 and listing_id = $2",
+    [organizationA, listingFixture],
+  )).rows;
+  assert.ok(oldCartGeneration?.generation_id, "saved cart item receives a generation token");
+  await migration.query("delete from customer_cart_item where organization_id = $1 and listing_id = $2", [organizationA, listingFixture]);
+  await migration.query(
+    `insert into customer_cart_item (organization_id, listing_id, listing_revision, version, draft)
+     values ($1, $2, 1, 1, $3::jsonb)`,
+    [organizationA, listingFixture, cartDraft],
+  );
+  const [newCartGeneration] = (await migration.query<{ generation_id: string }>(
+    "select generation_id from customer_cart_item where organization_id = $1 and listing_id = $2",
+    [organizationA, listingFixture],
+  )).rows;
+  assert.ok(newCartGeneration?.generation_id, "re-added cart item receives a generation token");
+  assert.notEqual(newCartGeneration.generation_id, oldCartGeneration.generation_id,
+    "re-adding the same listing cannot reuse a stale tab's generation token");
   phase = "checking category migration, staged-import permissions, discard, and applied-history protection";
   const discardBatchId = randomUUID();
   const discardRowId = randomUUID();

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, integer, jsonb, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
+import { check, integer, jsonb, pgTable, primaryKey, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { organization } from "./schema";
 import { listing } from "./catalog-schema";
 import type { CustomerCartDraft } from "@/modules/orders/cart";
@@ -8,6 +8,7 @@ export const customerCartItem = pgTable("customer_cart_item", {
   organizationId: text("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
   listingId: text("listing_id").notNull().references(() => listing.id, { onDelete: "restrict" }),
   listingRevision: integer("listing_revision").notNull(),
+  generationId: uuid("generation_id").notNull().defaultRandom(),
   version: integer("version").notNull().default(1),
   draft: jsonb("draft").$type<CustomerCartDraft>().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

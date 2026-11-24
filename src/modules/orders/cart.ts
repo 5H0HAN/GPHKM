@@ -7,6 +7,8 @@ export type CustomerCartDraft = {
   useWriting: boolean;
 };
 
+export type CustomerCartVersion = { version: number; generationId: string };
+
 const fields = {
   targetUrl: 2048,
   anchorText: 200,
@@ -31,6 +33,7 @@ export function validateCustomerCartDraft(value: unknown): CustomerCartDraft {
   if (input.useWriting !== undefined && typeof input.useWriting !== "boolean") throw new Error("Invalid cart details");
   const targetUrl = draft.targetUrl.trim();
   if (targetUrl) {
+    if (/\s/.test(targetUrl)) throw new Error("Invalid cart details");
     try {
       const url = new URL(targetUrl);
       if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) throw new Error();

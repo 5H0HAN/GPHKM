@@ -1443,6 +1443,13 @@
       "when": 1795543834088,
       "tag": "0205_protect_customer_cart_listing_deletion",
       "breakpoints": true
+    },
+    {
+      "idx": 206,
+      "version": "7",
+      "when": 1795544699761,
+      "tag": "0206_customer_cart_generation_tokens",
+      "breakpoints": true
     }
   ]
 }

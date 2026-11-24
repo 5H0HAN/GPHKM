@@ -94,22 +94,32 @@ export async function POST(request: Request) {
     if (typeof input.organizationId !== "string" || input.organizationId.length > 128) throw new Error("Invalid cart request");
     organizationId = input.organizationId;
     if (input.action === "save") {
-      if (Object.keys(input).some((key) => !["organizationId", "action", "listingId", "listingRevision", "version", "draft"].includes(key))) {
+      if (Object.keys(input).some((key) => !["organizationId", "action", "listingId", "listingRevision", "generationId", "version", "draft"].includes(key))) {
+        throw new Error("Invalid cart request");
+      }
+      if (typeof input.version !== "number" || !(typeof input.generationId === "string" || input.generationId === null)) {
         throw new Error("Invalid cart request");
       }
       const result = await saveCustomerCartItem(request.headers, organizationId, {
         listingId: typeof input.listingId === "string" ? input.listingId : "",
         listingRevision: typeof input.listingRevision === "number" ? input.listingRevision : 0,
         version: typeof input.version === "number" ? input.version : -1,
+        generationId: typeof input.generationId === "string" ? input.generationId : null,
         draft: input.draft,
       });
       return response(result);
     }
     if (input.action === "remove" && typeof input.listingId === "string") {
-      if (Object.keys(input).some((key) => !["organizationId", "action", "listingId"].includes(key))) {
+      if (Object.keys(input).some((key) => !["organizationId", "action", "listingId", "generationId", "version"].includes(key))) {
         throw new Error("Invalid cart request");
       }
-      return response({ removed: await removeCustomerCartItem(request.headers, organizationId, input.listingId) });
+      if (typeof input.version !== "number" || !(typeof input.generationId === "string" || input.generationId === null)) {
+        throw new Error("Invalid cart request");
+      }
+      return response({ removed: await removeCustomerCartItem(request.headers, organizationId, input.listingId, {
+        generationId: typeof input.generationId === "string" ? input.generationId : null,
+        version: typeof input.version === "number" ? input.version : -1,
+      }) });
     }
     if (input.action === "clear") {
       if (Object.keys(input).some((key) => !["organizationId", "action"].includes(key))) throw new Error("Invalid cart request");
