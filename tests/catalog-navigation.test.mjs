@@ -73,7 +73,8 @@ test("clear-cart confirmation uses a full-width review row and defaults focus to
   assert.match(source, /ref=\{clearCartCancelRef\}[^>]*className="catalogClearCartCancel"/);
   assert.match(source, /for everyone in your organization/);
   assert.match(source, /Remove all placements/);
-  assert.match(source, /if \(confirmClearCart\) clearCartCancelRef\.current\?\.focus\(\)/);
+  assert.match(source, /useLayoutEffect\(\(\) => \{ if \(confirmClearCart\) clearCartCancelRef\.current\?\.focus\(\); \}, \[confirmClearCart\]\)/);
+  assert.match(source, /className="catalogCartSummary"/);
   assert.match(styles, /catalogClearCartConfirmation\) \{ display: grid; grid-column: 1 \/ -1;/);
   assert.match(styles, /catalogClearCartConfirm\) \{ border: 1px solid var\(--error\); background: var\(--error-soft\);/);
   assert.match(styles, /catalogClearCartConfirmationActions\) \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
