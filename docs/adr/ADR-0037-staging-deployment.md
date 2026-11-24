@@ -9,3 +9,5 @@ The host ingress preserves the external Host and scheme and supplies the verifie
 Git-linked Compose runs one web container and PostgreSQL 17 on a persistent, unexposed volume. A one-shot container applies the migration journal and repeatable synthetic seed before web starts. The database owner, request runtime, Stripe webhook and staff MFA proof roles use distinct credentials. The staging definition disables live payments and development auth bypasses. Google uses a dedicated Testing client and Stripe uses a sandbox. The [designated tester exception](ADR-0038-staging-tester-notices.md) permits preliminary notices for sandbox use. Public legal approval and external delivery remain separately gated.
 
 Production hosting, legal approval and sensitive provider delivery decisions remain open under O-01, O-05, O-06 and L-10. See the [staging runbook](../STAGING.md).
+
+Customer staging permits the Ask ChatGPT annotation picker’s three reviewed inline styles by content hash. The desktop browser supplies these styles without the application nonce. The exception is scoped to the customer staging host’s style policy.

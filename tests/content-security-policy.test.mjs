@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { buildContentSecurityPolicy } from "../src/modules/security/content-security-policy.ts";
 
@@ -23,6 +24,23 @@ test("staff CSP excludes Stripe origins and invalid nonce input is rejected", ()
   assert.doesNotMatch(policy, /style-src 'self' 'nonce-/);
   assert.doesNotMatch(policy, /stripe\.com|stripe\.network/);
   assert.throws(() => buildContentSecurityPolicy("bad nonce", { development: false, customerSurface: true }), /Invalid CSP nonce/);
+});
+
+test("only customer staging adds the exact Ask ChatGPT picker styles to the production policy", () => {
+  const overlayHash = "'sha256-62lPaUtpvg47KrxPOXYc0Ki8fkE6PNsbY5I9DpyEwZ4='";
+  const cursorSelector = "html, body, body *, #codex-browser-sidebar-comments-root, #codex-browser-sidebar-comments-root *";
+  const cursorHashes = [" -webkit-user-select: none !important; user-select: none !important;", ""].map(selection => {
+    const css = `${cursorSelector} { cursor: none !important;${selection} }`;
+    return `'sha256-${createHash("sha256").update(css).digest("base64")}'`;
+  });
+  const options = { development: false, customerSurface: true };
+  const standard = buildContentSecurityPolicy(nonce, options);
+  const staging = buildContentSecurityPolicy(nonce, { ...options, staging: true });
+  const style = `style-src 'self' 'nonce-${nonce}'`;
+  assert.equal(staging, standard.replace(style, [style, overlayHash, ...cursorHashes].join(" ")));
+  assert.doesNotMatch(standard, /sha256-|unsafe-inline/);
+  const otherSurface = { ...options, customerSurface: false };
+  assert.equal(buildContentSecurityPolicy(nonce, { ...otherSurface, staging: true }), buildContentSecurityPolicy(nonce, otherSurface));
 });
 
 test("Proxy forwards one generated CSP nonce to Next and returns the same policy", () => {

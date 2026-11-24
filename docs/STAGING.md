@@ -36,6 +36,10 @@ FAIL means the requirement is not currently demonstrated. This includes acceptan
 4. Confirm migrations and staging seed complete before serving application traffic.
 5. Keep preview deployments disabled unless separately reviewed for staging.
 
+### Ask ChatGPT in the customer workspace
+
+The customer staging CSP pins SHA-256 hashes for the desktop browser’s Ask ChatGPT overlay and its item and text cursors. After a desktop app update, a white selection square can indicate a changed stylesheet. Inspect the picker’s style element in its shadow root and the active cursor style in the document head. Review the CSS and hash the exact UTF-8 text, including whitespace, before updating the corresponding entry in `src/modules/security/content-security-policy.ts`. Reload a customer page and verify the selection outline and cursor.
+
 ## Staging access, mail, and payments
 
 1. Keep staging review notices enabled, tester notices disabled, and real-money and launch-gate flags false.
