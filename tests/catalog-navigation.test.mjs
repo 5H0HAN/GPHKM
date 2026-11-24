@@ -65,3 +65,16 @@ test("changed off-page selections reload through the customer projection and req
   assert.match(browser, /Checkout terms changed while this page was open[\s\S]*Reload current terms/);
   assert.match(browser, /window\.location\.reload\(\)/);
 });
+
+test("clear-cart confirmation uses a full-width review row and defaults focus to keeping the cart", async () => {
+  const source = await readFile(new URL("../src/app/customer/catalog-browser.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../src/app/customer/customer.module.css", import.meta.url), "utf8");
+  assert.match(source, /className="catalogClearCartConfirmation"[^>]*aria-labelledby="catalog-clear-cart-title"/);
+  assert.match(source, /ref=\{clearCartCancelRef\}[^>]*className="catalogClearCartCancel"/);
+  assert.match(source, /for everyone in your organization/);
+  assert.match(source, /Remove all placements/);
+  assert.match(source, /if \(confirmClearCart\) clearCartCancelRef\.current\?\.focus\(\)/);
+  assert.match(styles, /catalogClearCartConfirmation\) \{ display: grid; grid-column: 1 \/ -1;/);
+  assert.match(styles, /catalogClearCartConfirm\) \{ border: 1px solid var\(--error\); background: var\(--error-soft\);/);
+  assert.match(styles, /catalogClearCartConfirmationActions\) \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
+});
