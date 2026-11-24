@@ -9,11 +9,14 @@ test("shared cart has an accessible, confirmed per-item remove control on every 
   assert.match(component, /className=\{styles\.cartItemRemoveButton\}/);
   assert.match(component, /aria-label=\{`Remove \$\{title\} from shared cart`\}/);
   assert.doesNotMatch(component, /!isMarketplace && <button/);
-  assert.match(component, /confirmRemoveListingId === item\.listingId/);
+  assert.match(component, /removeConfirmation\?\.listingId === item\.listingId/);
   assert.match(component, /This also removes its saved details for everyone in your organization\./);
   assert.match(component, /ref=\{removeCancelRef\}[^>]*>Keep placement/);
-  assert.match(component, /useLayoutEffect\(\(\) => \{ if \(confirmRemoveListingId\) removeCancelRef\.current\?\.focus\(\); \}, \[confirmRemoveListingId\]\)/);
-  assert.match(component, /action: "remove", listingId, generationId: item\.generationId, version: item\.version/);
+  assert.match(component, /useLayoutEffect\(\(\) => \{ if \(removeConfirmation\) removeCancelRef\.current\?\.focus\(\); \}, \[removeConfirmation\]\)/);
+  assert.match(component, /action: "remove", listingId, generationId: removeConfirmation\.generationId, version: removeConfirmation\.version/);
+  assert.match(component, /removeConfirmation: \{ listingId: item\.listingId, generationId: item\.generationId, version: item\.version \}/);
+  assert.match(component, /loading && items\.length === 0/);
+  assert.match(component, /Updating saved placements…/);
   assert.match(component, /notice: currentItems \? result\.error \?\? "The shared cart changed\. Review the current placements and try again\." : ""/);
   assert.match(component, /notice && <p role="status"/);
   assert.match(styles, /\.cartDock \{ position: relative; z-index: 4; \}/);
