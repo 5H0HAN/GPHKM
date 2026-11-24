@@ -24,6 +24,17 @@ test("shared cart has an accessible, confirmed per-item remove control on every 
   assert.match(styles, /\.cartItemRemoveConfirmActions/);
 });
 
+test("shared detail inputs capture values before deferred state updates", async () => {
+  const source = await readFile(new URL("../src/app/customer/catalog-browser.tsx", import.meta.url), "utf8");
+  const start = source.indexOf('<details className="catalogCopyDetails">');
+  const sharedDetails = source.slice(start, source.indexOf("</details>", start));
+
+  for (const field of ["targetUrl", "anchorText", "instructions", "articleText", "writingBrief"]) {
+    assert.match(sharedDetails, new RegExp(`updateSharedDetail\\("${field}", event\\.currentTarget\\.value\\)`));
+  }
+  assert.match(source, /function updateSharedDetail\(field: keyof typeof sharedDetails, value: string\)\s*\{\s*setSharedDetails\(current => \(\{ \.\.\.current, \[field\]: value \}\)\);\s*\}/);
+  assert.doesNotMatch(sharedDetails, /setSharedDetails\(\(current\).*event\.currentTarget\.value/s);
+});
 test("marketplace selection drops a placement removed from the shared cart", async () => {
   const catalog = await readFile(new URL("../src/app/customer/catalog-browser.tsx", import.meta.url), "utf8");
   const cart = await readFile(new URL("../src/app/customer/customer-cart-button.tsx", import.meta.url), "utf8");

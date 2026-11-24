@@ -75,7 +75,10 @@ test("clear-cart confirmation uses a full-width review row and defaults focus to
   assert.match(source, /Remove all placements/);
   assert.match(source, /useLayoutEffect\(\(\) => \{ if \(confirmClearCart\) clearCartCancelRef\.current\?\.focus\(\); \}, \[confirmClearCart\]\)/);
   assert.match(source, /className="catalogCartSummary"/);
+  assert.match(source, /className="catalogOrderTray" data-clear-confirmation=\{confirmClearCart \? "true" : "false"\}/);
   assert.match(styles, /catalogClearCartConfirmation\) \{ display: grid; grid-column: 1 \/ -1;/);
+  assert.match(styles, /catalogOrderTray\[data-clear-confirmation="true"\]\) \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  assert.match(styles, /catalogOrderTray\[data-clear-confirmation="true"\] \.catalogCartActions\) \{ grid-column: 1; grid-row: auto;/);
   assert.match(styles, /catalogClearCartConfirm\) \{ border: 1px solid var\(--error\); background: var\(--error-soft\);/);
   assert.match(styles, /catalogClearCartConfirmationActions\) \{ display: grid; grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/);
   assert.match(styles, /catalogClearCartConfirmationActions button\) \{ grid-column: auto; width: 100%; \}/);
