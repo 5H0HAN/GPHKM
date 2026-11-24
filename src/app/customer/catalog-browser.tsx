@@ -113,6 +113,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   const cartDirtyRef = useRef(new Set<string>());
   const cartSaveErrorRef = useRef("");
   const flushCartItemRef = useRef<(listingId: string) => Promise<void>>(async () => undefined);
+  const scheduleCartSaveRef = useRef<(listingId: string) => void>(() => undefined);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
   useLayoutEffect(() => { if (confirmClearCart) clearCartCancelRef.current?.focus(); }, [confirmClearCart]);
   useEffect(() => { if (disclosuresOutdated) outdatedDisclosureRef.current?.focus(); }, [disclosuresOutdated]);
@@ -230,7 +231,55 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
     }
   }
 
-  useEffect(() => { flushCartItemRef.current = flushCartItem; });
+  useEffect(() => {
+    flushCartItemRef.current = flushCartItem;
+    scheduleCartSaveRef.current = scheduleCartSave;
+  });
+  useEffect(() => {
+    let active = true;
+    const handleSharedCartUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<{ action?: string; organizationId?: string; listingId?: string }>).detail;
+      if (detail?.action !== "remove" || detail.organizationId !== organizationId || typeof detail.listingId !== "string") return;
+
+      const { listingId } = detail;
+      const timer = cartTimersRef.current.get(listingId);
+      if (timer) clearTimeout(timer);
+      cartTimersRef.current.delete(listingId);
+      cartDirtyRef.current.delete(listingId);
+      const pendingSave = cartSavingRef.current.get(listingId);
+
+      void Promise.resolve(pendingSave).catch(() => undefined).then(() => {
+        if (!active) return;
+        const retryTimer = cartTimersRef.current.get(listingId);
+        if (retryTimer) clearTimeout(retryTimer);
+        cartTimersRef.current.delete(listingId);
+        cartDirtyRef.current.delete(listingId);
+        delete cartVersionsRef.current[listingId];
+        cartSaveErrorRef.current = "";
+        setCartError("");
+        const nextItems = { ...selectedRef.current };
+        delete nextItems[listingId];
+        selectedRef.current = nextItems;
+        setSelected(nextItems);
+        setConsent(false);
+        setPolicyAccepted(false);
+        idempotencyKeyRef.current = "";
+        setError("");
+        if (Object.keys(nextItems).length === 0) setStepForOrganization({ organizationId, step: "browse" });
+        else setStepForOrganization((current) => current.organizationId === organizationId && current.step === "review"
+          ? { ...current, step: "details" }
+          : current);
+        for (const dirtyListingId of cartDirtyRef.current) scheduleCartSaveRef.current(dirtyListingId);
+        setCartSaveState(cartDirtyRef.current.size || cartSavingRef.current.size ? "saving" : "saved");
+      });
+    };
+
+    window.addEventListener("gphkm:customer-cart-updated", handleSharedCartUpdate);
+    return () => {
+      active = false;
+      window.removeEventListener("gphkm:customer-cart-updated", handleSharedCartUpdate);
+    };
+  }, [organizationId, setCartError, setSelected]);
   useEffect(() => () => {
     for (const timer of cartTimersRef.current.values()) clearTimeout(timer);
     cartTimersRef.current.clear();
