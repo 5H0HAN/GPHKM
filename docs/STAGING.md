@@ -16,9 +16,11 @@ This runbook is for the isolated demo and test environment. Do not use productio
 | Desktop and mobile review | PASS |
 | Staging review Terms and Privacy pages | PASS |
 | Restricted Resend key and one direct test send | PASS |
-| Open customer email/Google signup, password reset flow, and staff invitation rollout | FAIL |
+| Customer email/password signup, verification, and password reset | PASS |
+| Google sign-in for non-listed accounts | PASS |
 | App-triggered password-reset email delivery | PASS |
-| App-triggered verification and welcome email | FAIL |
+| App-triggered verification email delivery | PASS |
+| Welcome email after customer verification | FAIL |
 | Staff invitation delivery and acceptance | FAIL |
 | Approved production Terms and Privacy | FAIL |
 
@@ -44,7 +46,14 @@ FAIL means the requirement is not currently demonstrated. This includes acceptan
 6. Use sandbox payment credentials, synthetic organization/order data, and fictional content. Staging acceptance of review drafts does not approve them for production.
 7. To close general signup, disable the staging review-notice flag, clear `GPHKM_TERMS_URL`, `GPHKM_TERMS_VERSION`, `GPHKM_PRIVACY_URL`, and `GPHKM_PRIVACY_VERSION`, then redeploy. Disabling the review flag alone can leave signup open if fallback legal values remain configured. Keep tester-notice mode disabled unless a separately approved allow-listed test requires it.
 
-Keep the staging Google OAuth project in Testing. The shipped Google sign-in flow requests only the basic identity scopes `openid`, `email`, and `profile`, and the customer auth endpoint rejects caller-supplied custom Google scopes. [Google's audience guidance](https://support.google.com/cloud/answer/15549945) allows accounts outside the test-user list for this scope set. Do not publish the staging project as In Production. Recheck Google's current audience and verification requirements before changing this scope policy. Production must use a separate Google project and complete applicable branding and policy review.
+The staging Google OAuth project uses the In production audience so non-listed Google accounts can reach the staging sign-in flow. The shipped Google sign-in flow requests only the basic identity scopes `openid`, `email`, and `profile`, and the customer auth endpoint rejects caller-supplied custom Google scopes. Google may display an unverified-app warning. Keep the production OAuth client separate and complete applicable branding and policy review before production.
+
+## Private file storage
+
+1. Keep the R2 bucket private. Disable its public development URL and custom public domains, and keep browser CORS disabled. Restrict the access token to Object Read & Write on this bucket only; do not grant account-wide bucket administration.
+2. Set `GPHKM_PRIVATE_STORAGE_DRIVER=r2`, `GPHKM_R2_ACCOUNT_ID`, `GPHKM_R2_BUCKET`, `GPHKM_R2_ACCESS_KEY_ID`, and `GPHKM_R2_SECRET_ACCESS_KEY` in the deployment secret store. Treat the access keys as secrets.
+3. Keep these settings runtime-only, with build-time injection disabled. Pass them only to the application and notification worker. Keep preview environment copies disabled unless a separate preview bucket is reviewed and configured.
+4. After deployment, upload one synthetic private file through the app. Confirm it has no public object URL, verify an authorized app read succeeds, then delete it and confirm it can no longer be read. Do not use real customer, supplier, or payment data for this check.
 
 ## Backup and restore
 
