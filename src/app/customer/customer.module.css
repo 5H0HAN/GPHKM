@@ -190,7 +190,7 @@
 }
 
 .topbarActions { display: flex; align-items: center; gap: 9px; }
-.cartDock { position: relative; z-index: 8; }
+.cartDock { position: relative; z-index: 4; }
 .cartButton {
   display: inline-flex;
   min-height: 44px;
@@ -245,11 +245,22 @@
 .cartPopoverError { color: var(--danger, #d76a56); }
 .cartPopoverItems { display: grid; max-height: 290px; gap: 0; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
 .cartPopoverItems li { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border); }
-.cartPopoverItems li > div { display: grid; gap: 4px; min-width: 0; }
+.cartItemDetails { display: grid; gap: 4px; min-width: 0; }
 .cartPopoverItems strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; }
 .cartPopoverItems span { color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .cartPopoverItems button,.cartClearButton,.cartClearConfirm button { min-height: 44px; padding: 0 10px; border: 1px solid var(--border-strong); background: transparent; color: var(--text-primary); font: inherit; font-size: 11px; cursor: pointer; }
 .cartPopoverItems button:hover,.cartClearButton:hover,.cartClearConfirm button:hover { background: var(--surface-2); }
+.cartPopoverItems .cartItemRemoveButton { display: grid; width: 44px; height: 44px; place-items: center; padding: 0; border-color: transparent; color: var(--text-muted); }
+.cartItemRemoveButton svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 1.8; }
+.cartPopoverItems .cartItemRemoveButton:hover { border-color: var(--border-strong); color: var(--accent-text); }
+.cartItemRemoveConfirm { display: grid; grid-column: 1 / -1; gap: 9px; margin-top: 4px; padding: 10px; border: 1px solid var(--border-strong); background: var(--surface-2); }
+.cartItemRemoveConfirmCopy { display: grid; gap: 3px; min-width: 0; }
+.cartPopoverItems .cartItemRemoveConfirmCopy strong { color: var(--text-primary); font-size: 12px; line-height: 1.4; }
+.cartItemRemoveConfirmCopy p { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
+.cartItemRemoveConfirmActions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.cartPopoverItems .cartItemRemoveConfirmActions button { width: 100%; min-height: 44px; padding-inline: 7px; }
+.cartPopoverItems .cartItemRemoveConfirmActions .cartItemRemoveConfirmButton { border-color: var(--error); background: var(--error-soft); color: var(--error); font-weight: 620; }
+.cartPopoverItems .cartItemRemoveConfirmActions .cartItemRemoveConfirmButton:hover:not(:disabled) { background: color-mix(in srgb, var(--error-soft) 78%, var(--error)); }
 .cartClearButton { margin-top: 12px; }
 .cartClearConfirm { margin-top: 12px; padding: 11px; border: 1px solid var(--border-strong); background: var(--surface-2); }
 .cartClearConfirm p { margin: 0 0 10px; color: var(--text-primary); font-size: 12px; line-height: 1.45; }

@@ -27,11 +27,12 @@ type CartUi = {
   loading: boolean;
   error: string;
   confirmClear: boolean;
+  confirmRemoveListingId: string | null;
   mutationBusy: boolean;
 };
 
 function emptyCartUi(organizationId: string): CartUi {
-  return { organizationId, open: false, count: 0, items: [], accessAllowed: true, loading: false, error: "", confirmClear: false, mutationBusy: false };
+  return { organizationId, open: false, count: 0, items: [], accessAllowed: true, loading: false, error: "", confirmClear: false, confirmRemoveListingId: null, mutationBusy: false };
 }
 
 async function cartRequest(organizationId: string, body?: Record<string, unknown>) {
@@ -58,9 +59,12 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
   const isMarketplace = pathname === "/customer/catalog";
   const [ui, setUi] = useState<CartUi>(() => emptyCartUi(organizationId));
   const cartButtonRef = useRef<HTMLButtonElement>(null);
+  const cartCloseRef = useRef<HTMLButtonElement>(null);
   const clearTriggerRef = useRef<HTMLButtonElement>(null);
   const clearConfirmRef = useRef<HTMLButtonElement>(null);
-  const { open, count, items, accessAllowed, loading, error, confirmClear, mutationBusy } =
+  const removeCancelRef = useRef<HTMLButtonElement>(null);
+  const removeTriggerRef = useRef(new Map<string, HTMLButtonElement>());
+  const { open, count, items, accessAllowed, loading, error, confirmClear, confirmRemoveListingId, mutationBusy } =
     ui.organizationId === organizationId ? ui : emptyCartUi(organizationId);
   const updateUi = useCallback((changes: Partial<Omit<CartUi, "organizationId">>) => {
     setUi((current) => ({
@@ -83,8 +87,8 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
     } catch { /* The count refresh must not interrupt navigation. */ }
   }, [organizationId, updateUi]);
 
-  const refreshItems = useCallback(async () => {
-    if (!organizationId) return;
+  const refreshItems = useCallback(async (): Promise<CartItem[] | null> => {
+    if (!organizationId) return null;
     updateUi({ loading: true, error: "" });
     try {
       const response = await fetch(`/api/customer/cart?organizationId=${encodeURIComponent(organizationId)}`, {
@@ -92,11 +96,14 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
       });
       const result = await response.json() as { items?: CartItem[]; accessAllowed?: boolean; error?: string };
       if (!response.ok) throw new Error(result.error ?? "The shared cart could not be loaded.");
-      if (organizationIdRef.current !== organizationId) return;
-      updateUi({ items: result.items ?? [], accessAllowed: result.accessAllowed !== false, count: result.items?.length ?? 0 });
+      if (organizationIdRef.current !== organizationId) return null;
+      const nextItems = result.items ?? [];
+      updateUi({ items: nextItems, accessAllowed: result.accessAllowed !== false, count: nextItems.length });
+      return nextItems;
     } catch (caught) {
-      if (organizationIdRef.current !== organizationId) return;
+      if (organizationIdRef.current !== organizationId) return null;
       updateUi({ error: caught instanceof Error ? caught.message : "The shared cart could not be loaded." });
+      return null;
     } finally {
       if (organizationIdRef.current === organizationId) updateUi({ loading: false });
     }
@@ -111,7 +118,7 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
     const onVisibility = () => { if (document.visibilityState === "visible") update(); };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && open) {
-        updateUi({ open: false, confirmClear: false });
+        updateUi({ open: false, confirmClear: false, confirmRemoveListingId: null });
         cartButtonRef.current?.focus();
       }
     };
@@ -127,20 +134,52 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
     };
   }, [open, refreshCount, refreshItems, updateUi]);
   useEffect(() => { if (confirmClear) clearConfirmRef.current?.focus(); }, [confirmClear]);
+  useLayoutEffect(() => { if (confirmRemoveListingId) removeCancelRef.current?.focus(); }, [confirmRemoveListingId]);
+
+  function cancelRemoveItem() {
+    const listingId = confirmRemoveListingId;
+    updateUi({ confirmRemoveListingId: null });
+    requestAnimationFrame(() => {
+      const trigger = listingId ? removeTriggerRef.current.get(listingId) : undefined;
+      (trigger ?? cartCloseRef.current)?.focus();
+    });
+  }
 
   async function removeItem(listingId: string) {
-    if (mutationBusy) return;
-    const item = items.find((candidate) => candidate.listingId === listingId);
+    if (mutationBusy || confirmRemoveListingId !== listingId) return;
+    const itemIndex = items.findIndex((candidate) => candidate.listingId === listingId);
+    const item = items[itemIndex];
     if (!item) return;
+    const preferredFocusListingId = items[itemIndex + 1]?.listingId ?? items[itemIndex - 1]?.listingId ?? null;
     updateUi({ mutationBusy: true, error: "" });
     try {
       const response = await cartRequest(organizationId, {
         action: "remove", listingId, generationId: item.generationId, version: item.version,
       });
       const result = await response.json() as { error?: string };
-      if (!response.ok) throw new Error(result.error ?? "This placement could not be removed.");
       if (organizationIdRef.current !== organizationId) return;
-      await refreshItems();
+      if (response.status === 409) {
+        const currentItems = await refreshItems();
+        if (organizationIdRef.current !== organizationId) return;
+        updateUi({ confirmRemoveListingId: null, error: result.error ?? "The shared cart changed. Review the current placements and try again." });
+        const focusListingId = preferredFocusListingId && currentItems?.some((candidate) => candidate.listingId === preferredFocusListingId)
+          ? preferredFocusListingId : currentItems?.[0]?.listingId ?? null;
+        requestAnimationFrame(() => {
+          const trigger = focusListingId ? removeTriggerRef.current.get(focusListingId) : undefined;
+          (trigger ?? cartCloseRef.current)?.focus();
+        });
+        return;
+      }
+      if (!response.ok) throw new Error(result.error ?? "This placement could not be removed.");
+      updateUi({ confirmRemoveListingId: null });
+      const currentItems = await refreshItems();
+      if (organizationIdRef.current !== organizationId) return;
+      const focusListingId = preferredFocusListingId && currentItems?.some((candidate) => candidate.listingId === preferredFocusListingId)
+        ? preferredFocusListingId : currentItems?.[0]?.listingId ?? null;
+      requestAnimationFrame(() => {
+        const trigger = focusListingId ? removeTriggerRef.current.get(focusListingId) : undefined;
+        (trigger ?? cartCloseRef.current)?.focus();
+      });
       window.dispatchEvent(new Event("gphkm:customer-cart-updated"));
     } catch (caught) {
       if (organizationIdRef.current === organizationId) updateUi({ error: caught instanceof Error ? caught.message : "This placement could not be removed." });
@@ -157,7 +196,7 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
       const result = await response.json() as { error?: string };
       if (!response.ok) throw new Error(result.error ?? "The shared cart could not be cleared.");
       if (organizationIdRef.current !== organizationId) return;
-      updateUi({ items: [], count: 0, confirmClear: false });
+      updateUi({ items: [], count: 0, confirmClear: false, confirmRemoveListingId: null });
       requestAnimationFrame(() => cartButtonRef.current?.focus());
       window.dispatchEvent(new Event("gphkm:customer-cart-updated"));
     } catch (caught) {
@@ -177,7 +216,7 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
       aria-label={`Shared organization cart, ${count} placement${count === 1 ? "" : "s"}`}
       onClick={() => {
         const nextOpen = !open;
-        updateUi({ open: nextOpen, ...(nextOpen ? {} : { confirmClear: false }) });
+        updateUi({ open: nextOpen, ...(nextOpen ? {} : { confirmClear: false, confirmRemoveListingId: null }) });
         if (nextOpen) void refreshItems();
       }}
     >
@@ -188,7 +227,7 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
     {open && <section className={styles.cartPopover} id="customer-shared-cart" aria-label="Shared organization cart">
       <header className={styles.cartPopoverHeader}>
         <div><h2>Shared cart</h2><p>{organization?.name ?? "Current organization"}</p></div>
-        <button type="button" className={styles.cartCloseButton} aria-label="Close shared cart" onClick={() => { updateUi({ open: false, confirmClear: false }); cartButtonRef.current?.focus(); }}>×</button>
+        <button ref={cartCloseRef} type="button" className={styles.cartCloseButton} aria-label="Close shared cart" onClick={() => { updateUi({ open: false, confirmClear: false, confirmRemoveListingId: null }); cartButtonRef.current?.focus(); }}>×</button>
       </header>
       <p className={styles.cartSharedNotice}>Saved for everyone in this organization. Members can read the placement details and content. Items stay here until removed or submitted in an order.</p>
       {loading ? <p className={styles.cartPopoverStatus}>Loading saved placements…</p>
@@ -196,15 +235,41 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
           : items.length === 0 ? <p className={styles.cartPopoverStatus}>Your shared cart is empty.</p>
             : !accessAllowed ? <p className={styles.cartPopoverStatus}>Marketplace access is unavailable. Your saved cart remains here.</p>
               : <ul className={styles.cartPopoverItems}>
-                {items.map((item) => <li key={item.listingId}>
-                  <div><strong>{item.listing?.title ?? "Unavailable placement"}</strong>
-                    {item.listing && <span>{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(item.listing.retailPriceCents / 100)}</span>}
-                  </div>
-                  {!isMarketplace && <button type="button" disabled={mutationBusy} aria-label={`Remove ${item.listing?.title ?? "unavailable placement"} from shared cart`} onClick={() => void removeItem(item.listingId)}>Remove</button>}
-                </li>)}
+                {items.map((item) => {
+                  const title = item.listing?.title ?? "Unavailable placement";
+                  return <li key={item.listingId}>
+                    <div className={styles.cartItemDetails}>
+                      <strong>{title}</strong>
+                      {item.listing && <span>{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(item.listing.retailPriceCents / 100)}</span>}
+                    </div>
+                    {confirmRemoveListingId === item.listingId ? <div className={styles.cartItemRemoveConfirm} role="group" aria-labelledby="customer-cart-remove-title" aria-describedby="customer-cart-remove-description">
+                      <div className={styles.cartItemRemoveConfirmCopy}>
+                        <strong id="customer-cart-remove-title">Remove {title}?</strong>
+                        <p id="customer-cart-remove-description">This also removes its saved details for everyone in your organization.</p>
+                      </div>
+                      <div className={styles.cartItemRemoveConfirmActions}>
+                        <button ref={removeCancelRef} type="button" disabled={mutationBusy} onClick={cancelRemoveItem}>Keep placement</button>
+                        <button type="button" className={styles.cartItemRemoveConfirmButton} disabled={mutationBusy} onClick={() => void removeItem(item.listingId)}>Remove placement</button>
+                      </div>
+                    </div> : <button
+                      ref={(element) => {
+                        if (element) removeTriggerRef.current.set(item.listingId, element);
+                        else removeTriggerRef.current.delete(item.listingId);
+                      }}
+                      type="button"
+                      className={styles.cartItemRemoveButton}
+                      disabled={mutationBusy}
+                      aria-label={`Remove ${title} from shared cart`}
+                      title="Remove placement"
+                      onClick={() => updateUi({ confirmClear: false, confirmRemoveListingId: item.listingId, error: "" })}
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+                    </button>}
+                  </li>;
+                })}
               </ul>}
-      {isMarketplace ? <p className={styles.cartPopoverStatus}>Manage placements in the marketplace tray.</p> : items.length > 0 && <>
-        <button ref={clearTriggerRef} className={styles.cartClearButton} type="button" aria-expanded={confirmClear} aria-controls={confirmClear ? "customer-cart-clear-confirmation" : undefined} disabled={mutationBusy} onClick={() => updateUi({ confirmClear: true })}>Clear cart</button>
+      {isMarketplace ? <p className={styles.cartPopoverStatus}>Edit placement details in the marketplace tray.</p> : items.length > 0 && <>
+        <button ref={clearTriggerRef} className={styles.cartClearButton} type="button" aria-expanded={confirmClear} aria-controls={confirmClear ? "customer-cart-clear-confirmation" : undefined} disabled={mutationBusy} onClick={() => updateUi({ confirmClear: true, confirmRemoveListingId: null })}>Clear cart</button>
         {confirmClear && <div className={styles.cartClearConfirm} id="customer-cart-clear-confirmation" role="group" aria-label="Confirm clearing the shared cart">
           <p>Remove every saved placement and its entered details?</p>
           <button ref={clearConfirmRef} type="button" disabled={loading || mutationBusy} onClick={() => void clearCart()}>Confirm clear</button>
