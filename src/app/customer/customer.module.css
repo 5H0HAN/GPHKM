@@ -867,6 +867,8 @@
 :global(.catalogCartActions) { display: flex; min-width: 0; grid-column: 2; grid-row: 1 / span 3; align-items: center; justify-content: flex-end; gap: 8px; }
 :global(.catalogCartActions .catalogClearCart) { min-height: 42px; padding: 0 10px; border: 1px solid var(--border-strong); background: transparent; color: var(--text-primary); font: inherit; font-size: 11px; cursor: pointer; }
 :global(.catalogCartActions .catalogClearCart:hover) { background: var(--surface-2); }
+:global(.catalogOrderTray[data-clear-confirmation="true"]) { grid-template-columns: minmax(0, 1fr); }
+:global(.catalogOrderTray[data-clear-confirmation="true"] .catalogCartActions) { grid-column: 1; grid-row: auto; justify-content: flex-end; }
 :global(.catalogClearCartConfirmation) { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--border); }
 :global(.catalogClearCartCopy) { display: grid; min-width: 0; gap: 4px; }
 :global(.catalogClearCartCopy strong) { color: var(--text-primary); font-size: 13px; line-height: 1.35; }
