@@ -187,7 +187,6 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
       const response = await fetch("/api/customer/cart", {
         method: "POST",
         credentials: "same-origin",
-        keepalive: true,
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           organizationId,
@@ -230,6 +229,15 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
     cartTimersRef.current.clear();
     for (const listingId of cartDirtyRef.current) void flushCartItemRef.current(listingId);
   }, [organizationId]);
+  useEffect(() => {
+    const warnBeforeLeavingUnsavedCart = (event: BeforeUnloadEvent) => {
+      if (!cartDirtyRef.current.size && !cartSavingRef.current.size) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeLeavingUnsavedCart);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeavingUnsavedCart);
+  }, []);
 
   async function flushAllCartItems() {
     const listingIds = Object.keys(selectedRef.current);
@@ -367,7 +375,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   }
 
   function acceptUpdatedListing(listingId: string) {
-    const listing = listings.find((item) => item.id === listingId);
+    const listing = listings.find((item) => item.id === listingId) ?? selectedRef.current[listingId]?.listing;
     if (!listing) return;
     idempotencyKeyRef.current = "";
     setSelected((current) => current[listingId]

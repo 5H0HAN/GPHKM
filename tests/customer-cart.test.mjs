@@ -61,3 +61,11 @@ test("checkout clears the saved organization cart in the successful order transa
   assert.match(checkout, /savedRows\.length < input\.items\.length/);
   assert.match(checkout, /input\.items\.map\(\(item\) => item\.listingId\), cartVersions\)/);
 });
+
+test("cart accepts updated terms for off-page saved listings and protects pending saves on full-page exit", async () => {
+  const catalog = await readFile(new URL("../src/app/customer/catalog-browser.tsx", import.meta.url), "utf8");
+  assert.match(catalog, /listings\.find\(\(item\) => item\.id === listingId\) \?\? selectedRef\.current\[listingId\]\?\.listing/);
+  assert.doesNotMatch(catalog, /keepalive:\s*true/);
+  assert.match(catalog, /beforeunload/);
+  assert.match(catalog, /!cartDirtyRef\.current\.size && !cartSavingRef\.current\.size/);
+});
