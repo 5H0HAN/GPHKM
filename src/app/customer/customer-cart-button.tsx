@@ -184,7 +184,9 @@ export function CustomerCartButton({ organizations }: { organizations: Organizat
         const trigger = focusListingId ? removeTriggerRef.current.get(focusListingId) : undefined;
         (trigger ?? cartCloseRef.current)?.focus();
       });
-      window.dispatchEvent(new Event("gphkm:customer-cart-updated"));
+      window.dispatchEvent(new CustomEvent("gphkm:customer-cart-updated", {
+        detail: { action: "remove", organizationId, listingId },
+      }));
     } catch (caught) {
       if (organizationIdRef.current === organizationId) updateUi({ error: caught instanceof Error ? caught.message : "This placement could not be removed." });
     } finally {

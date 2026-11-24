@@ -20,3 +20,15 @@ test("shared cart has an accessible, confirmed per-item remove control on every 
   assert.match(styles, /\.cartItemRemoveButton svg/);
   assert.match(styles, /\.cartItemRemoveConfirmActions/);
 });
+
+test("marketplace selection drops a placement removed from the shared cart", async () => {
+  const catalog = await readFile(new URL("../src/app/customer/catalog-browser.tsx", import.meta.url), "utf8");
+  const cart = await readFile(new URL("../src/app/customer/customer-cart-button.tsx", import.meta.url), "utf8");
+
+  assert.match(catalog, /detail\?\.action !== "remove"/);
+  assert.match(catalog, /detail\.organizationId !== organizationId/);
+  assert.match(catalog, /cartDirtyRef\.current\.delete\(listingId\)/);
+  assert.match(catalog, /delete next\[listingId\]/);
+  assert.match(catalog, /delete cartVersionsRef\.current\[listingId\]/);
+  assert.match(cart, /detail: \{ action: "remove", organizationId, listingId \}/);
+});
