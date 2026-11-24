@@ -1,0 +1,1 @@
+ALTER TABLE "customer_cart_item" ADD COLUMN "generation_id" uuid DEFAULT gen_random_uuid() NOT NULL;

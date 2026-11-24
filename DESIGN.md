@@ -157,10 +157,10 @@ The customer marketplace uses a two-column listing grid on wide screens and one 
 
 ## Elevation & Depth
 
-The visual system is flat at rest. Borders, ruled divisions, and slightly raised tonal surfaces define work areas. The sticky marketplace checkout has a restrained upward shadow so it remains distinguishable from listing content; focus is shown with a visible outline rather than a shadow.
+The visual system is flat at rest. Borders, ruled divisions, and slightly raised tonal surfaces define work areas. The sticky marketplace cart uses a soft two-sided shadow so it reads as a floating layer over listing content; focus is shown with a visible outline rather than a shadow.
 
 ### Shadow Vocabulary
-- **Sticky checkout separation** (`0 -8px 28px color-mix(in srgb, var(--canvas) 90%, transparent)`): separates the persistent checkout action from scrolling catalog content.
+- **Sticky cart separation** (`0 -12px 36px rgb(0 0 0 / 25%), 0 4px 12px rgb(0 0 0 / 14%)`): separates the persistent cart action from scrolling catalog content while keeping the rest of the workspace flat.
 
 ### Named Rules
 **The Rule-Over-Shadow Rule.** Use a border or tonal surface for ordinary structure; reserve the checkout shadow for its sticky overlap.

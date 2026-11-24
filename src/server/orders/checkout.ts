@@ -4,12 +4,16 @@ import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { organization, walletAccount } from "@/db/schema";
 import { listing } from "@/db/catalog-schema";
 import { customerOrder, customerOrderItem, customerOrderItemMilestone, orderItemFulfillment, orderItemWriting } from "@/db/order-schema";
+import { customerCartItem } from "@/db/cart-schema";
 import { CUSTOMER_ORDERS_PAGE_SIZE, checkoutDisclosuresAreCurrent, customerOrderPagination, customerOrderProjection, validateCheckoutInput, type CheckoutInput } from "@/modules/orders/checkout";
 import { mayRequestContentChange } from "@/modules/orders/content-changes";
 import { customerHomeTimestampIso } from "@/modules/orders/home-summary";
 import { isMarketplaceTrialActive } from "@/modules/wallet/marketplace-trial";
 import { requireVerifiedCustomer, withOrganizationContext, withProtectedOrganizationContext } from "@/server/identity/customer-context";
 import { appendAuditEvent } from "@/server/audit/append";
+import { clearCheckedOutCustomerCartItems } from "./cart";
+import { validateCustomerCartDraft } from "@/modules/orders/cart";
+import type { CustomerCartVersion } from "@/modules/orders/cart";
 
 const MAX_NUMERIC_20 = 10n ** 20n - 1n;
 
@@ -69,11 +73,33 @@ function listingSnapshot(row: typeof listing.$inferSelect) {
   };
 }
 
-export async function createWalletFundedOrder(headers: Headers, organizationId: string, rawInput: unknown) {
+function parseCartVersions(raw: unknown, items: CheckoutInput["items"]): Record<string, CustomerCartVersion> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid order details");
+  const versions = raw as Record<string, unknown>;
+  if (Object.keys(versions).length !== items.length) throw new Error("Invalid order details");
+  const result: Record<string, CustomerCartVersion> = Object.create(null) as Record<string, CustomerCartVersion>;
+  for (const item of items) {
+    const token = versions[item.listingId];
+    if (!token || typeof token !== "object" || Array.isArray(token)) throw new Error("Invalid order details");
+    const value = token as Record<string, unknown>;
+    if (Object.keys(value).length !== 2 || !Number.isSafeInteger(value.version) || (value.version as number) < 1 ||
+        typeof value.generationId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.generationId)) {
+      throw new Error("Invalid order details");
+    }
+    result[item.listingId] = { version: value.version as number, generationId: value.generationId };
+  }
+  if (Object.keys(versions).some((listingId) => !items.some((item) => item.listingId === listingId))) {
+    throw new Error("Invalid order details");
+  }
+  return result;
+}
+
+export async function createWalletFundedOrder(headers: Headers, organizationId: string, rawInput: unknown, rawCartVersions: unknown) {
   const errors = validateCheckoutInput(rawInput);
   if (errors.some((error) => error.code === "INVALID_DISCLOSURE_VERSIONS")) throw new Error("Checkout disclosures changed");
   if (errors.length) throw new Error("Invalid order details");
   const input = rawInput as CheckoutInput;
+  const cartVersions = parseCartVersions(rawCartVersions, input.items);
   const digest = requestDigest(input);
   const actor = await requireVerifiedCustomer(headers);
 
@@ -93,6 +119,29 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
     }
 
     if (!checkoutDisclosuresAreCurrent(input.disclosureVersions)) throw new Error("Checkout disclosures changed");
+
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('gphkm:customer-cart:' || ${organizationId}, 0))`);
+    const savedRows = await tx.select().from(customerCartItem)
+      .where(eq(customerCartItem.organizationId, organizationId));
+    if (savedRows.length < input.items.length) throw new Error("Cart has changed. Refresh the shared cart before placing the order.");
+    const savedById = new Map(savedRows.map((row) => [row.listingId, row]));
+    for (const item of input.items) {
+      const saved = savedById.get(item.listingId);
+      const cartVersion = cartVersions[item.listingId];
+      if (!saved || saved.version !== cartVersion.version || saved.generationId !== cartVersion.generationId ||
+          saved.listingRevision !== item.expectedRevision) {
+        throw new Error("Cart has changed. Refresh the shared cart before placing the order.");
+      }
+      const draft = validateCustomerCartDraft(saved.draft);
+      if (draft.targetUrl.trim() !== item.targetUrl.trim() ||
+          draft.anchorText.trim() !== item.anchorText.trim() ||
+          draft.instructions.trim() !== (item.instructions ?? "").trim() ||
+          draft.useWriting !== (item.useWriting === true) ||
+          (draft.useWriting ? draft.writingBrief.trim() !== (item.writingBrief ?? "").trim()
+            : draft.articleText.trim() !== (item.articleText ?? "").trim())) {
+        throw new Error("Cart has changed. Refresh the shared cart before placing the order.");
+      }
+    }
 
     const now = new Date();
     const [org] = await tx.select({ createdAt: organization.createdAt }).from(organization)
@@ -203,6 +252,7 @@ export async function createWalletFundedOrder(headers: Headers, organizationId: 
       targetId: orderId,
       metadata: { itemCount: prepared.length, amountMinor: total.toString(), result: "PAID" },
     });
+    await clearCheckedOutCustomerCartItems(tx, organizationId, input.items.map((item) => item.listingId), cartVersions);
     return { orderId, totalMinor: total.toString(), currency: "USD" as const, replayed: false };
   });
 }
