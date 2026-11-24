@@ -35,7 +35,6 @@ test("shared detail inputs capture values before deferred state updates", async 
   assert.match(source, /function updateSharedDetail\(field: keyof typeof sharedDetails, value: string\)\s*\{\s*setSharedDetails\(current => \(\{ \.\.\.current, \[field\]: value \}\)\);\s*\}/);
   assert.doesNotMatch(sharedDetails, /setSharedDetails\(\(current\).*event\.currentTarget\.value/s);
 });
-
 test("marketplace selection drops a placement removed from the shared cart", async () => {
   const catalog = await readFile(new URL("../src/app/customer/catalog-browser.tsx", import.meta.url), "utf8");
   const cart = await readFile(new URL("../src/app/customer/customer-cart-button.tsx", import.meta.url), "utf8");
