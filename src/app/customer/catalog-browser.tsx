@@ -114,7 +114,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   const cartSaveErrorRef = useRef("");
   const flushCartItemRef = useRef<(listingId: string) => Promise<void>>(async () => undefined);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
-  useEffect(() => { if (confirmClearCart) clearCartCancelRef.current?.focus(); }, [confirmClearCart]);
+  useLayoutEffect(() => { if (confirmClearCart) clearCartCancelRef.current?.focus(); }, [confirmClearCart]);
   useEffect(() => { if (disclosuresOutdated) outdatedDisclosureRef.current?.focus(); }, [disclosuresOutdated]);
   useEffect(() => { if (step !== "browse") catalogFlowHeadingRef.current?.focus(); }, [step]);
   const selectedListings = Object.values(selected).flatMap((item) => item.listing ? [item.listing] : []);
@@ -562,7 +562,7 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
         })}
       </div>
       {selectedCount > 0 && <section className="catalogOrderTray" aria-label="Selected placements">
-        <div><strong>{selectedCount} of 25 placements</strong><span>{dollars(total)} estimated</span></div>
+        <div className="catalogCartSummary"><strong>{selectedCount} of 25 placements</strong><span>{dollars(total)} estimated</span></div>
         <p>This cart is shared with your organization. Members can view the saved placement details. Checkout consent is requested only when an order is placed.</p>
         <span className="catalogCartSaveState" role="status">{cartError ? `Cart issue: ${cartError}` : cartSaveState === "saving" ? "Saving shared cart…" : "Shared cart saved"}</span>
         <div className="catalogCartActions">
