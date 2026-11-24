@@ -42,3 +42,4 @@ ADRs capture material choices and their consequences. Product behavior details r
 - [ADR-0038: Preliminary notices for designated staging Google testers](ADR-0038-staging-tester-notices.md)
 - [ADR-0039: Production VM and database backup tiers](ADR-0039-production-vm-database-backups.md)
 - [ADR-0040: Open customer signup for staging review](ADR-0040-open-customer-staging-signup.md)
+- [ADR-0041: Persist the shared organization cart](ADR-0041-persistent-shared-organization-cart.md)

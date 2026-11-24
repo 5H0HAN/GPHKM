@@ -1415,6 +1415,34 @@
       "when": 1795475907293,
       "tag": "0201_auth_verification_marker_uniqueness",
       "breakpoints": true
+    },
+    {
+      "idx": 202,
+      "version": "7",
+      "when": 1795537824716,
+      "tag": "0202_customer_organization_cart",
+      "breakpoints": true
+    },
+    {
+      "idx": 203,
+      "version": "7",
+      "when": 1795537850445,
+      "tag": "0203_customer_cart_draft_constraints",
+      "breakpoints": true
+    },
+    {
+      "idx": 204,
+      "version": "7",
+      "when": 1795539888801,
+      "tag": "0204_customer_cart_draft_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 205,
+      "version": "7",
+      "when": 1795543834088,
+      "tag": "0205_protect_customer_cart_listing_deletion",
+      "breakpoints": true
     }
   ]
 }

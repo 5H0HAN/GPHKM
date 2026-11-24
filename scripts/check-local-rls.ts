@@ -253,9 +253,9 @@ try {
     `select relation.relname, relation.relrowsecurity
        from pg_class relation join pg_namespace schema on schema.oid = relation.relnamespace
       where schema.nspname = 'public' and relation.relname = any($1::text[])`,
-    [["organization", "organization_member", "wallet_account", "wallet_ledger_entry", "payment_attempt", "wallet_hold", "access_grant", "customer_order", "customer_order_item_milestone", "supplier_payment_record", "supplier_transfer_event", "supplier_transfer_allocation", "supplier_transfer_evidence"]],
+    [["organization", "organization_member", "wallet_account", "wallet_ledger_entry", "payment_attempt", "wallet_hold", "access_grant", "customer_order", "customer_order_item_milestone", "supplier_payment_record", "supplier_transfer_event", "supplier_transfer_allocation", "supplier_transfer_evidence", "customer_cart_item"]],
   );
-  assert.equal(rlsTables.rowCount, 13, "expected tenant, customer-history, and finance tables must exist");
+  assert.equal(rlsTables.rowCount, 14, "expected tenant, customer-history, finance, and shared-cart tables must exist");
   assert.ok(rlsTables.rows.every((table) => table.relrowsecurity), "tenant tables must have RLS enabled");
 
   phase = "checking supplier transfer permissions and uniqueness";
@@ -375,6 +375,7 @@ try {
   const holdA = randomUUID();
   const holdB = randomUUID();
   const listingFixture = randomUUID();
+  const cartListingFixture = randomUUID();
   const metricUrlHistoryListing = randomUUID();
   const checkoutListingFixture = randomUUID();
   const checkoutOrderFixture = randomUUID();
@@ -893,6 +894,13 @@ try {
        1000, 'DOFOLLOW', 'PERMANENT', 30, true)`,
     [listingFixture],
   );
+  await migration.query(
+    `insert into marketplace_listing (id, title, description, country_code, primary_language, categories,
+       retail_price_cents, link_type, link_validity, turnaround_days, sponsored_content_marking)
+     values ($1, 'RLS Cart Fixture Listing', 'Synthetic rollback-only cart fixture', 'US', 'English', ARRAY['General'],
+       1000, 'DOFOLLOW', 'PERMANENT', 30, true)`,
+    [cartListingFixture],
+  );
   phase = "checking supplier identity consistency on catalog listings";
   await expectCheckConstraint(migration, "supplier-sourced listing with different source and fulfillment suppliers", () =>
     migration.query(
@@ -917,6 +925,54 @@ try {
     "insert into marketplace_listing_url (listing_id, website_url) values ($1, 'https://blog.fixture.com/')",
     [listingFixture],
   );
+  phase = "checking shared organization cart RLS under the restricted runtime role";
+  const cartDraft = JSON.stringify({
+    targetUrl: "", anchorText: "", instructions: "", articleText: "Saved organization draft", writingBrief: "", useWriting: false,
+  });
+  await migration.query(
+    `insert into customer_cart_item (organization_id, listing_id, listing_revision, version, draft) values
+       ($1, $3, 1, 1, $5::jsonb), ($2, $4, 1, 1, $5::jsonb)`,
+    [organizationA, organizationB, listingFixture, cartListingFixture, cartDraft],
+  );
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationA]);
+  const ownerCart = await migration.query<{ organization_id: string; listing_id: string }>(
+    "select organization_id, listing_id from customer_cart_item order by listing_id",
+  );
+  assert.deepEqual(ownerCart.rows, [{ organization_id: organizationA, listing_id: listingFixture }],
+    "an active Owner reads only their organization cart");
+  const cartListingDeleteRule = await migration.query<{ delete_rule: string }>(
+    `select case constraint_row.confdeltype when 'r' then 'restrict' else constraint_row.confdeltype::text end as delete_rule
+       from pg_constraint constraint_row
+      where constraint_row.conrelid = 'public.customer_cart_item'::regclass
+        and constraint_row.conname = 'customer_cart_item_listing_id_marketplace_listing_id_fk'`,
+  );
+  assert.equal(cartListingDeleteRule.rows[0]?.delete_rule, "restrict",
+    "hard-deleting a listing cannot silently remove saved organization cart details");
+  await migration.query("select set_config('app.user_id', $1, true)", [memberA]);
+  const memberCart = await migration.query<{ organization_id: string; listing_id: string }>(
+    "select organization_id, listing_id from customer_cart_item order by listing_id",
+  );
+  assert.deepEqual(memberCart.rows, ownerCart.rows, "active Members share the Owner's same organization cart");
+  const memberDraft = JSON.stringify({
+    targetUrl: "https://example.invalid/updated", anchorText: "updated", instructions: "", articleText: "Member edit", writingBrief: "", useWriting: false,
+  });
+  const memberEdit = await migration.query(
+    "update customer_cart_item set draft = $1::jsonb, version = version + 1 where organization_id = $2 and listing_id = $3",
+    [memberDraft, organizationA, listingFixture],
+  );
+  assert.equal(memberEdit.rowCount, 1, "active Members may edit shared placement drafts");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [userA, organizationB]);
+  const spoofedCart = await migration.query("select organization_id from customer_cart_item where organization_id = $1", [organizationB]);
+  assert.equal(spoofedCart.rowCount, 0, "setting another organization context cannot expose its cart");
+  await migration.query("RESET ROLE");
+  await migration.query("update organization_member set active = false where organization_id = $1 and user_id = $2", [organizationA, memberA]);
+  await migration.query("SET LOCAL ROLE gphkm_runtime");
+  await migration.query("select set_config('app.user_id', $1, true), set_config('app.organization_id', $2, true)", [memberA, organizationA]);
+  const revokedCart = await migration.query("select 1 from customer_cart_item");
+  assert.equal(revokedCart.rowCount, 0, "membership revocation immediately removes cart access");
+  await migration.query("RESET ROLE");
+  await migration.query("update organization_member set active = true where organization_id = $1 and user_id = $2", [organizationA, memberA]);
   phase = "checking category migration, staged-import permissions, discard, and applied-history protection";
   const discardBatchId = randomUUID();
   const discardRowId = randomUUID();
@@ -3403,7 +3459,7 @@ try {
   );
   assert.deepEqual(resendPrivileges.rows[0], { can_process_event: true, can_claim_email: false, can_read_outbox: false },
     "the Resend webhook role may process signed delivery callbacks but cannot claim mail or read the outbox");
-  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, exact-consent checkout and wallet finalization with stale/missing legacy-consent rejection, atomic two-item debit and idempotent replay, scoped batch item reads and Support placement counts, private per-user Overview dismissals, trial and URL visibility boundary, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence with stage advancement and separate receipt acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, public-domain and URL-revision metric invalidation, and denied direct wallet writes.");
+  console.log("Local RLS smoke passed: runtime and Resend role logins, isolated Resend packet delivery and notification callbacks, exact-consent checkout and wallet finalization with stale/missing legacy-consent rejection, atomic two-item debit and idempotent replay, scoped batch item reads and Support placement counts, private per-user Overview dismissals, trial and URL visibility boundary, shared organization cart reads and edits with cross-tenant and revoked-membership denial, cancellation request/replay, work-start/handoff/send-reservation cutoffs, tenant and same-organization membership denial, assigned-Admin decision authorization, staff customer projections and account commands, capped directory pagination, serial last-owner rejection, literal LIKE search, staged-import Finance denial and applied-history protection, audited staged-import discard, exact writing-inclusive refund, decision idempotency, manual handoff evidence with stage advancement and separate receipt acknowledgement, customer/staff separation, Finance-only reporting, Stripe reconciliation, transfer evidence, metric display gating, public-domain and URL-revision metric invalidation, and denied direct wallet writes.");
 } catch (error) {
   console.error(`Local RLS smoke failed while ${phase}; any open synthetic-data transaction will be rolled back.`);
   if (error instanceof Error) console.error(error.message);

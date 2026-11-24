@@ -32,6 +32,10 @@ function checkoutConflict(message: string): { code: string; error: string } {
     code: "CHECKOUT_ATTEMPT_CONFLICT",
     error: "This checkout attempt conflicts with an earlier attempt. Check Orders before trying again.",
   };
+  if (message.includes("Cart has changed")) return {
+    code: "CUSTOMER_CART_CHANGED",
+    error: "A teammate changed the shared cart. Reload it and review the current placements before placing the order.",
+  };
   if (message.toLowerCase().includes("reconciliation")) return {
     code: "CHECKOUT_RECONCILIATION_REQUIRED",
     error: "We could not confirm the checkout result yet. Check Orders or contact Support before trying again.",
@@ -82,7 +86,7 @@ export async function POST(request: Request) {
     if (typeof body.organizationId !== "string") throw new Error("Invalid request");
     requestedOrganizationId = body.organizationId;
     requestedOrder = body.order;
-    const result = await createWalletFundedOrder(request.headers, body.organizationId, body.order);
+    const result = await createWalletFundedOrder(request.headers, body.organizationId, body.order, body.cartVersions);
     return NextResponse.json(result, { status: result.replayed ? 200 : 201, headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
@@ -91,7 +95,8 @@ export async function POST(request: Request) {
         : message === "Invalid order details" ? 400
           : message.includes("Insufficient available wallet balance") || message.includes("idempotency")
             || message.includes("reconciliation") || message.includes("listings changed") || message.includes("listings are unavailable")
-            || message.includes("Writing is not available") || message === "Checkout disclosures changed" ? 409 : 500;
+            || message.includes("Writing is not available") || message.includes("Cart has changed")
+            || message === "Checkout disclosures changed" ? 409 : 500;
     const requestId = status === 500 ? randomUUID() : null;
     const headers = { "Cache-Control": "no-store", ...(requestId ? { "X-Request-ID": requestId } : {}) };
     if (requestId) logSafeFailure("customer_order_checkout_failed", error, requestId, { organizationId: requestedOrganizationId });

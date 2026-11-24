@@ -99,6 +99,7 @@ See the detailed packet lifecycle and reconciliation contract in [Supplier Email
 | Data | Customer Owner/Member | Admin | Finance | Super Admin |
 |---|---|---|---|---|
 | Customer-safe live listing fields | Allowed by entitlement | Yes | As needed | Yes |
+| Shared organization cart and its unfinished placement details | Active Owner and Member: read and edit | No | No | No |
 | Supplier identity and contacts | No | Yes for catalog/assigned fulfillment | No by default | Yes |
 | Source rates and direct costs | No | No by default | Yes | Yes |
 | Customer brief/article | Owner: all org orders; Member: own orders | Assigned fulfillment only | No by default | Only for authorized support/security need |

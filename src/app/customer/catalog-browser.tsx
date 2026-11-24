@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import type { CustomerListing } from "@/modules/catalog/domain";
@@ -15,7 +15,8 @@ type ItemDraft = {
   writingBrief: string;
   useWriting: boolean;
 };
-type SelectedItem = { listing: CustomerListing; draft: ItemDraft; unavailable?: boolean };
+type SelectedItem = { listing?: CustomerListing; listingRevision: number; version: number; draft: ItemDraft; unavailable?: boolean };
+type SelectedItems = Record<string, SelectedItem>;
 
 const emptyDraft = (): ItemDraft => ({ targetUrl: "", anchorText: "", instructions: "", articleText: "", writingBrief: "", useWriting: false });
 const dollars = (cents: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100);
@@ -71,8 +72,27 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   organizationId: string; listings: CustomerListing[]; filterProps: CatalogFilterProps; pageProps: CatalogPageProps;
 }) {
   const router = useRouter();
-  const [step, setStep] = useState<"browse" | "details" | "review">("browse");
-  const [selected, setSelected] = useState<Record<string, SelectedItem>>({});
+  const [stepForOrganization, setStepForOrganization] = useState<{ organizationId: string; step: "browse" | "details" | "review" }>({ organizationId, step: "browse" });
+  const step = stepForOrganization.organizationId === organizationId ? stepForOrganization.step : "browse";
+  function setStep(nextStep: "browse" | "details" | "review") { setStepForOrganization({ organizationId, step: nextStep }); }
+  const [selectedForOrganization, setSelectedForOrganization] = useState<{ organizationId: string; items: SelectedItems }>({ organizationId, items: {} });
+  const selected = useMemo(() => selectedForOrganization.organizationId === organizationId ? selectedForOrganization.items : {}, [organizationId, selectedForOrganization]);
+  const setSelected = useCallback((action: SelectedItems | ((current: SelectedItems) => SelectedItems)) => {
+    setSelectedForOrganization((current) => ({
+      organizationId,
+      items: typeof action === "function"
+        ? action(current.organizationId === organizationId ? current.items : {})
+        : action,
+    }));
+  }, [organizationId]);
+  const [cartLoadedOrganization, setCartLoadedOrganization] = useState<string | null>(null);
+  const cartLoaded = cartLoadedOrganization === organizationId;
+  const [cartErrorState, setCartErrorState] = useState({ organizationId, message: "" });
+  const cartError = cartErrorState.organizationId === organizationId ? cartErrorState.message : "";
+  const setCartError = useCallback((message: string) => { setCartErrorState({ organizationId, message }); }, [organizationId]);
+  const [cartSaveState, setCartSaveState] = useState<"saved" | "saving">("saved");
+  const [cartBusy, setCartBusy] = useState(false);
+  const [confirmClearCart, setConfirmClearCart] = useState(false);
   const [sharedDetails, setSharedDetails] = useState({ targetUrl: "", anchorText: "", instructions: "", articleText: "", writingBrief: "" });
   const [consent, setConsent] = useState(false);
   const [policyAccepted, setPolicyAccepted] = useState(false);
@@ -81,49 +101,249 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   const [disclosuresOutdated, setDisclosuresOutdated] = useState(false);
   const idempotencyKeyRef = useRef("");
   const errorRef = useRef<HTMLParagraphElement>(null);
+  const clearCartTriggerRef = useRef<HTMLButtonElement>(null);
+  const clearCartConfirmRef = useRef<HTMLButtonElement>(null);
   const outdatedDisclosureRef = useRef<HTMLDivElement>(null);
   const catalogFlowHeadingRef = useRef<HTMLHeadingElement>(null);
+  const selectedRef = useRef(selected);
+  useLayoutEffect(() => { selectedRef.current = selected; }, [selected]);
+  const cartVersionsRef = useRef<Record<string, number>>({});
+  const cartTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const cartSavingRef = useRef(new Map<string, Promise<void>>());
+  const cartDirtyRef = useRef(new Set<string>());
+  const cartSaveErrorRef = useRef("");
+  const flushCartItemRef = useRef<(listingId: string) => Promise<void>>(async () => undefined);
   useEffect(() => { if (error) errorRef.current?.focus(); }, [error]);
+  useEffect(() => { if (confirmClearCart) clearCartConfirmRef.current?.focus(); }, [confirmClearCart]);
   useEffect(() => { if (disclosuresOutdated) outdatedDisclosureRef.current?.focus(); }, [disclosuresOutdated]);
   useEffect(() => { if (step !== "browse") catalogFlowHeadingRef.current?.focus(); }, [step]);
-  const selectedListings = Object.values(selected).map((item) => item.listing);
+  const selectedListings = Object.values(selected).flatMap((item) => item.listing ? [item.listing] : []);
+  const selectedCount = Object.keys(selected).length;
+  const unavailableItems = Object.entries(selected).filter(([, item]) => !item.listing || item.unavailable);
   const total = selectedListings.reduce((sum, listing) => sum + listing.retailPriceCents + (selected[listing.id].draft.useWriting ? listing.writingPriceCents ?? 0 : 0), 0);
 
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    cartSaveErrorRef.current = "";
+    cartVersionsRef.current = {};
+    void fetch(`/api/customer/cart?organizationId=${encodeURIComponent(organizationId)}`, {
+      credentials: "same-origin", cache: "no-store", signal: controller.signal,
+    }).then(async (response) => {
+      const result = await response.json() as { items?: Array<{
+        listingId: string; listingRevision: number; version: number; draft: ItemDraft; listing: CustomerListing | null;
+      }>; error?: string };
+      if (!response.ok) throw new Error(result.error ?? "The shared cart could not be loaded.");
+      if (!active || controller.signal.aborted) return;
+      const restored = Object.fromEntries((result.items ?? []).map((item) => [item.listingId, {
+        listing: item.listing ?? undefined,
+        listingRevision: item.listingRevision,
+        version: item.version,
+        draft: item.draft,
+        unavailable: !item.listing,
+      }]));
+      cartVersionsRef.current = Object.fromEntries((result.items ?? []).map((item) => [item.listingId, item.version]));
+      setSelected(restored);
+      setCartError("");
+      setCartLoadedOrganization(organizationId);
+      setCartSaveState("saved");
+    }).catch((caught) => {
+      if (!active || controller.signal.aborted) return;
+      const message = caught instanceof Error ? caught.message : "The shared cart could not be loaded.";
+      cartSaveErrorRef.current = message;
+      setCartError(message);
+    });
+    return () => { active = false; controller.abort(); };
+  }, [organizationId, setCartError, setSelected]);
+
+  function notifyCartUpdated() {
+    window.dispatchEvent(new Event("gphkm:customer-cart-updated"));
+  }
+
+  function scheduleCartSave(listingId: string) {
+    if (cartBusy) return;
+    cartDirtyRef.current.add(listingId);
+    cartSaveErrorRef.current = "";
+    setCartError("");
+    const currentTimer = cartTimersRef.current.get(listingId);
+    if (currentTimer) clearTimeout(currentTimer);
+    setCartSaveState("saving");
+    const timer = setTimeout(() => { cartTimersRef.current.delete(listingId); void flushCartItem(listingId); }, 450);
+    cartTimersRef.current.set(listingId, timer);
+  }
+
+  async function flushCartItem(listingId: string): Promise<void> {
+    const pending = cartSavingRef.current.get(listingId);
+    if (pending) {
+      await pending;
+      return;
+    }
+    if (!cartDirtyRef.current.has(listingId)) return;
+    cartDirtyRef.current.delete(listingId);
+    const item = selectedRef.current[listingId];
+    if (!item?.listing) return;
+    const version = cartVersionsRef.current[listingId] ?? item.version;
+    const saving = (async () => {
+      const response = await fetch("/api/customer/cart", {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          organizationId,
+          action: "save",
+          listingId,
+          listingRevision: item.listingRevision,
+          version,
+          draft: item.draft,
+        }),
+      });
+      const result = await response.json() as { version?: number; error?: string };
+      if (!response.ok || !Number.isSafeInteger(result.version)) throw new Error(result.error ?? "Cart details could not be saved.");
+      cartVersionsRef.current[listingId] = result.version!;
+      setSelected((current) => current[listingId]
+        ? { ...current, [listingId]: { ...current[listingId], version: result.version! } }
+        : current);
+      notifyCartUpdated();
+    })();
+    cartSavingRef.current.set(listingId, saving);
+    try {
+      await saving;
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "Cart details could not be saved.";
+      cartSaveErrorRef.current = message;
+      cartDirtyRef.current.add(listingId);
+      setCartError(message);
+    } finally {
+      cartSavingRef.current.delete(listingId);
+      setCartSaveState(cartDirtyRef.current.size || cartSavingRef.current.size ? "saving" : "saved");
+      if (cartDirtyRef.current.has(listingId) && !cartSaveErrorRef.current && !cartTimersRef.current.has(listingId)) {
+        const timer = setTimeout(() => { cartTimersRef.current.delete(listingId); void flushCartItem(listingId); }, 0);
+        cartTimersRef.current.set(listingId, timer);
+      }
+    }
+  }
+
+  useEffect(() => { flushCartItemRef.current = flushCartItem; });
+  useEffect(() => () => {
+    for (const timer of cartTimersRef.current.values()) clearTimeout(timer);
+    cartTimersRef.current.clear();
+    for (const listingId of cartDirtyRef.current) void flushCartItemRef.current(listingId);
+  }, [organizationId]);
+
+  async function flushAllCartItems() {
+    const listingIds = Object.keys(selectedRef.current);
+    for (const timer of cartTimersRef.current.values()) clearTimeout(timer);
+    cartTimersRef.current.clear();
+    await Promise.all(listingIds.map(async (listingId) => {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const pending = cartSavingRef.current.get(listingId);
+        if (pending) await pending;
+        if (cartDirtyRef.current.has(listingId)) await flushCartItem(listingId);
+        if (cartSaveErrorRef.current) break;
+        if (!cartSavingRef.current.has(listingId) && !cartDirtyRef.current.has(listingId)) break;
+      }
+    }));
+    if (cartSaveErrorRef.current) throw new Error(cartSaveErrorRef.current);
+  }
+
+  async function sendCartAction(body: Record<string, unknown>) {
+    const response = await fetch("/api/customer/cart", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ organizationId, ...body }),
+    });
+    const result = await response.json() as { error?: string };
+    if (!response.ok) throw new Error(result.error ?? "The shared cart could not be updated.");
+    return result;
+  }
+
   function change(listingId: string, field: keyof ItemDraft, value: string | boolean) {
+    if (cartBusy || !cartLoaded) return;
     idempotencyKeyRef.current = "";
     setSelected((current) => ({ ...current, [listingId]: { ...current[listingId], draft: { ...current[listingId].draft, [field]: value } } }));
+    scheduleCartSave(listingId);
   }
 
   function toggle(listingId: string, checked: boolean) {
+    if (cartBusy || !cartLoaded) return;
     idempotencyKeyRef.current = "";
     setError("");
     if (checked && !selected[listingId] && Object.keys(selected).length >= 25) {
       setError("An order can include up to 25 different listings.");
       return;
     }
-    setSelected((current) => {
-      if (!checked) {
+    if (!checked) { void removeSelected(listingId); return; }
+    const listing = listings.find((item) => item.id === listingId);
+    if (!listing) return;
+    setSelected((current) => ({ ...current, [listingId]: { listing, listingRevision: listing.revision, version: 0, draft: emptyDraft() } }));
+    cartVersionsRef.current[listingId] = 0;
+    scheduleCartSave(listingId);
+  }
+
+  async function removeSelected(listingId: string) {
+    if (cartBusy || !cartLoaded) return;
+    idempotencyKeyRef.current = "";
+    setError("");
+    setCartBusy(true);
+    const timer = cartTimersRef.current.get(listingId);
+    if (timer) clearTimeout(timer);
+    cartTimersRef.current.delete(listingId);
+    cartDirtyRef.current.delete(listingId);
+    try {
+      await cartSavingRef.current.get(listingId)?.catch(() => undefined);
+      await sendCartAction({ action: "remove", listingId });
+      cartVersionsRef.current = Object.fromEntries(Object.entries(cartVersionsRef.current).filter(([id]) => id !== listingId));
+      setSelected((current) => {
         const next = { ...current };
         delete next[listingId];
         return next;
-      }
-      const listing = listings.find((item) => item.id === listingId);
-      return listing ? { ...current, [listingId]: { listing, draft: emptyDraft() } } : current;
-    });
+      });
+      if (Object.keys(selectedRef.current).length <= 1) setStep("browse");
+      setCartError("");
+      cartSaveErrorRef.current = "";
+      notifyCartUpdated();
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "This placement could not be removed.";
+      setCartError(message);
+      cartSaveErrorRef.current = message;
+    } finally {
+      setCartBusy(false);
+    }
   }
 
-  function removeSelected(listingId: string) {
-    idempotencyKeyRef.current = "";
-    setError("");
-    setSelected((current) => {
-      const next = { ...current };
-      delete next[listingId];
-      return next;
-    });
-    if (Object.keys(selected).length <= 1) setStep("browse");
+  async function clearCart() {
+    if (cartBusy || !cartLoaded) return;
+    setCartBusy(true);
+    for (const timer of cartTimersRef.current.values()) clearTimeout(timer);
+    cartTimersRef.current.clear();
+    cartDirtyRef.current.clear();
+    try {
+      await Promise.all([...cartSavingRef.current.values()].map((pending) => pending.catch(() => undefined)));
+      await sendCartAction({ action: "clear" });
+      cartVersionsRef.current = {};
+      setSelected({});
+      setStep("browse");
+      setConfirmClearCart(false);
+      setCartError("");
+      cartSaveErrorRef.current = "";
+      notifyCartUpdated();
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "The shared cart could not be cleared.";
+      setCartError(message);
+      cartSaveErrorRef.current = message;
+      for (const listingId of Object.keys(selectedRef.current)) cartDirtyRef.current.add(listingId);
+    } finally {
+      setCartBusy(false);
+      if (cartSaveErrorRef.current) {
+        for (const listingId of Object.keys(selectedRef.current)) scheduleCartSave(listingId);
+      }
+    }
   }
 
   function copySharedDetails() {
+    if (cartBusy) return;
     idempotencyKeyRef.current = "";
     setSelected((current) => {
       const next = { ...current };
@@ -143,6 +363,17 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
       }
       return next;
     });
+    for (const listing of selectedListings) scheduleCartSave(listing.id);
+  }
+
+  function acceptUpdatedListing(listingId: string) {
+    const listing = listings.find((item) => item.id === listingId);
+    if (!listing) return;
+    idempotencyKeyRef.current = "";
+    setSelected((current) => current[listingId]
+      ? { ...current, [listingId]: { ...current[listingId], listing, listingRevision: listing.revision, unavailable: false } }
+      : current);
+    scheduleCartSave(listingId);
   }
 
   function continueToReview() {
@@ -150,6 +381,10 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
     if (!selectedListings.length) { setError("Select at least one website to continue."); return; }
     if (Object.values(selected).some((item) => item.unavailable)) {
       setError("Remove unavailable placements before continuing.");
+      return;
+    }
+    if (selectedListings.some((listing) => selected[listing.id].listingRevision !== listing.revision)) {
+      setError("A listing’s terms changed. Review the updated details and accept the current terms before continuing.");
       return;
     }
     for (const listing of selectedListings) {
@@ -184,12 +419,18 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
     setBusy(true);
     idempotencyKeyRef.current ||= window.crypto.randomUUID();
     try {
+      await flushAllCartItems();
+      const cartVersions = Object.fromEntries(selectedListings.map((listing) => [listing.id, cartVersionsRef.current[listing.id]]));
+      if (selectedListings.some((listing) => !Number.isSafeInteger(cartVersions[listing.id]))) {
+        throw new Error("The shared cart is still saving. Try again when it shows Saved.");
+      }
       const response = await fetch("/api/customer/orders", {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           organizationId,
+          cartVersions,
           order: {
             idempotencyKey: idempotencyKeyRef.current,
             acceptContentPolicy: policyAccepted,
@@ -219,8 +460,9 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
           setSelected((current) => Object.fromEntries(Object.entries(current).map(([id, item]) => {
             const listing = refreshed.get(id);
             return [id, listing ? {
+              ...item,
               listing,
-              draft: item.draft,
+              unavailable: false,
             } : { ...item, unavailable: true }];
           })));
           setStep("details");
@@ -234,10 +476,16 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
       }
       if (!response.ok) throw new Error(result?.error ?? "Order could not be completed.");
       idempotencyKeyRef.current = "";
+      notifyCartUpdated();
       router.push(`/customer/orders?organizationId=${encodeURIComponent(organizationId)}&placed=1`);
       router.refresh();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Order could not be completed.");
+      const message = caught instanceof Error ? caught.message : "Order could not be completed.";
+      setError(message);
+      if (/cart has changed/i.test(message)) {
+        cartSaveErrorRef.current = message;
+        setCartError(message);
+      }
     } finally {
       setBusy(false);
     }
@@ -259,6 +507,9 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
   const stepLabel = step === "browse" ? "Choose placements" : step === "details" ? "Add order details" : "Review order";
   return <>
     {step === "browse" && <>
+      {!cartLoaded && <p className="catalogCartLoadError" role={cartError ? "alert" : "status"}>
+        {cartError ? <>The shared cart could not be loaded. <button type="button" onClick={() => window.location.reload()}>Reload marketplace</button></> : "Loading shared organization cart…"}
+      </p>}
       <CatalogFilters organizationId={organizationId} {...filterProps} />
       <CatalogPagination organizationId={organizationId} {...pageProps} />
       <div className="catalogGrid">
@@ -266,7 +517,8 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
           const item = selected[listing.id]?.draft;
           const presentMetrics = metricProviders.flatMap(({ provider, label, shortLabel }) => listing.metrics.filter((metric) => metric.provider === provider).map((metric) => ({ metric, label, shortLabel })));
           return <article className="catalogCard" key={listing.id}>
-            <div className="catalogCardTop"><label className="catalogSelect"><input type="checkbox" checked={Boolean(item)} onChange={(event) => toggle(listing.id, event.currentTarget.checked)} aria-label={`${item ? "Remove" : "Add"} ${listing.title} ${item ? "from" : "to"} order`} /><span>{item ? "In your order" : "Add to order"}</span></label><div className="catalogPrice"><strong>{dollars(listing.retailPriceCents)}</strong><span>per placement</span></div></div>
+            <div className="catalogCardTop"><label className="catalogSelect"><input type="checkbox" checked={Boolean(item)} disabled={!cartLoaded || cartBusy} onChange={(event) => toggle(listing.id, event.currentTarget.checked)} aria-label={`${item ? "Remove" : "Add"} ${listing.title} ${item ? "from" : "to"} order`} /><span>{item ? "In your order" : "Add to order"}</span></label><div className="catalogPrice"><strong>{dollars(listing.retailPriceCents)}</strong><span>per placement</span></div></div>
+            {selected[listing.id] && selected[listing.id].listingRevision !== listing.revision && <div className="catalogCartChanged" role="status"><span>This listing’s price or terms changed since it was added.</span><button type="button" disabled={cartBusy} onClick={() => acceptUpdatedListing(listing.id)}>Review and accept current terms</button></div>}
             <div className="catalogIdentity"><span className="catalogDomainMark" aria-hidden="true">{listing.websiteUrl ? new URL(listing.websiteUrl).hostname.slice(0, 1).toUpperCase() : "G"}</span><div className="catalogIdentityText"><h2>{listing.title}</h2>{listing.websiteUrl ? <a className="catalogSite" href={listing.websiteUrl} target="_blank" rel="noreferrer">{new URL(listing.websiteUrl).hostname}<span aria-hidden="true">↗</span></a> : <span className="catalogHiddenSite">Website address hidden · revealed after a qualifying wallet recharge</span>}</div></div>
             <p className="catalogDescription">{listing.description}</p>
             <ul className="catalogCategories" aria-label="Website categories">{listing.categories.map((category) => <li key={category}>{category}</li>)}</ul>
@@ -276,7 +528,20 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
           </article>;
         })}
       </div>
-      {selectedListings.length > 0 && <section className="catalogOrderTray" aria-label="Selected placements"><div><strong>{selectedListings.length} of 25 placements</strong><span>{dollars(total)} estimated</span></div><p>Listing details and final wallet availability are checked again before the order is placed.</p><button type="button" onClick={() => { setError(""); setStep("details"); }}>Add order details <span aria-hidden="true">→</span></button></section>}
+      {selectedCount > 0 && <section className="catalogOrderTray" aria-label="Selected placements">
+        <div><strong>{selectedCount} of 25 placements</strong><span>{dollars(total)} estimated</span></div>
+        <p>This cart is shared with your organization. Members can view the saved placement details. Checkout consent is requested only when an order is placed.</p>
+        <span className="catalogCartSaveState" role="status">{cartError ? `Cart issue: ${cartError}` : cartSaveState === "saving" ? "Saving shared cart…" : "Shared cart saved"}</span>
+        <div className="catalogCartActions">
+          <button ref={clearCartTriggerRef} type="button" className="catalogClearCart" aria-expanded={confirmClearCart} aria-controls={confirmClearCart ? "catalog-clear-cart-confirmation" : undefined} disabled={cartBusy} onClick={() => setConfirmClearCart(true)}>Clear cart</button>
+          {confirmClearCart && <div className="catalogClearCartConfirmation" id="catalog-clear-cart-confirmation" role="group" aria-label="Confirm clearing the shared cart">
+            <span>Remove every placement and its saved details?</span>
+            <button ref={clearCartConfirmRef} type="button" className="catalogClearCart" disabled={cartBusy} onClick={() => void clearCart()}>Confirm clear</button>
+            <button type="button" className="catalogClearCart" disabled={cartBusy} onClick={() => { setConfirmClearCart(false); clearCartTriggerRef.current?.focus(); }}>Keep cart</button>
+          </div>}
+          <button type="button" disabled={!cartLoaded || cartBusy} onClick={() => { setError(""); setStep("details"); }}>Add order details <span aria-hidden="true">→</span></button>
+        </div>
+      </section>}
       {error && <p ref={errorRef} role="alert" tabIndex={-1} className="catalogError">{error}</p>}
     </>}
 
@@ -289,7 +554,8 @@ export function CatalogBrowser({ organizationId, listings, filterProps, pageProp
       </div>}
       {step === "details" ? <>
         <details className="catalogCopyDetails"><summary>Copy shared details across selected placements</summary><p>Copy text into each selected item, then review and edit it separately. Article text only copies to placements using customer-supplied content.</p><div className="catalogSharedGrid"><label>Shared destination URL<input type="url" maxLength={2048} value={sharedDetails.targetUrl} onChange={(event) => setSharedDetails((current) => ({ ...current, targetUrl: event.currentTarget.value }))} /></label><label>Shared anchor text<input maxLength={200} value={sharedDetails.anchorText} onChange={(event) => setSharedDetails((current) => ({ ...current, anchorText: event.currentTarget.value }))} /></label><label>Shared publication instructions<textarea maxLength={4000} rows={3} value={sharedDetails.instructions} onChange={(event) => setSharedDetails((current) => ({ ...current, instructions: event.currentTarget.value }))} /></label><label>Shared article<textarea maxLength={20000} rows={3} value={sharedDetails.articleText} onChange={(event) => setSharedDetails((current) => ({ ...current, articleText: event.currentTarget.value }))} /></label><label>Shared writing brief<textarea maxLength={4000} rows={3} value={sharedDetails.writingBrief} onChange={(event) => setSharedDetails((current) => ({ ...current, writingBrief: event.currentTarget.value }))} /></label></div><button type="button" className="catalogCopyButton" onClick={copySharedDetails}>Copy into selected placements</button></details>
-        <div className="catalogOrderItems">{selectedListings.map((listing, index) => <article className="catalogOrderItem" key={listing.id}><header><span className="catalogItemNumber">Placement {index + 1}</span><div><h3>{listing.title}</h3><p>{listing.categories.join(" · ")}</p><button type="button" className="catalogItemRemove" onClick={() => removeSelected(listing.id)}>Remove from order</button></div><strong>{dollars(listing.retailPriceCents + (selected[listing.id].draft.useWriting ? listing.writingPriceCents ?? 0 : 0))}</strong></header>{selected[listing.id].unavailable ? <p>This listing is no longer available. Remove it to continue.</p> : <>
+        {unavailableItems.map(([listingId]) => <article className="catalogOrderItem" key={listingId}><header><span className="catalogItemNumber">Unavailable placement</span><div><h3>This placement is no longer available</h3><p>Its saved details remain in the shared cart until removed.</p><button type="button" className="catalogItemRemove" disabled={cartBusy} onClick={() => void removeSelected(listingId)}>Remove from cart</button></div></header></article>)}
+        <div className="catalogOrderItems">{selectedListings.map((listing, index) => <article className="catalogOrderItem" key={listing.id}><header><span className="catalogItemNumber">Placement {index + 1}</span><div><h3>{listing.title}</h3><p>{listing.categories.join(" · ")}</p><button type="button" className="catalogItemRemove" disabled={cartBusy} onClick={() => void removeSelected(listing.id)}>Remove from cart</button></div><strong>{dollars(listing.retailPriceCents + (selected[listing.id].draft.useWriting ? listing.writingPriceCents ?? 0 : 0))}</strong></header>{selected[listing.id].listingRevision !== listing.revision && <div className="catalogCartChanged" role="status"><span>Price or terms changed. Review the current listing details below, then accept them to continue.</span><button type="button" disabled={cartBusy} onClick={() => acceptUpdatedListing(listing.id)}>Accept current listing terms</button></div>}{selected[listing.id].unavailable ? <p>This listing is no longer available. Remove it to continue.</p> : <>
           <ListingRequirements listing={listing} showOverview />
           {fields(listing)}
         </>}</article>)}</div>
